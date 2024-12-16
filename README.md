@@ -12,7 +12,7 @@ A few notes:
     - After grasping the object, define a range of final poses where the object might be placed
     - For each of the final pose, use some common planner to place down the object, the strategy could be dropping the object from random distance, or directly touching the ground
 - Idea of the forth step:
-    - $ Q = S_{success} ∗ (w_1 ∗ D + w_2 ∗ T) $ where $T$ is time taken, and $D$ is the pose shift
+    - $Q = S_{success} ∗ (w_1 ∗ D + w_2 ∗ T)$ where $T$ is time taken, and $D$ is the pose shift
 - For Sim-to-real gap, two potential methods:
     - **Domain randomization:** randomly vary fricition, angle of the ground, and add noises to sensors
     - **Real data fine-tuning:** After the model has been trained in simulation, also collects a small dataset in reality to fine-tune the model
