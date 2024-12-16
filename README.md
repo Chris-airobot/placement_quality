@@ -8,6 +8,7 @@
 6. **Runtime Use:** For a new object, run grasp generation and use the trained model to select the best grasp.
 
 A few notes:
+- Maybe use some common shapes that could represent most objects
 - Idea of the second step,:
     - After grasping the object, define a range of final poses where the object might be placed
     - For each of the final pose, use some common planner to place down the object, the strategy could be dropping the object from random distance, or directly touching the ground
