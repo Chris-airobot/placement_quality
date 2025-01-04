@@ -18,6 +18,19 @@ A few notes:
     - **Domain randomization:** randomly vary fricition, angle of the ground, and add noises to sensors
     - **Real data fine-tuning:** After the model has been trained in simulation, also collects a small dataset in reality to fine-tune the model
 
+## Discussions:
+1. Approaches for grasping and placement should be the same for training and testing?
+ - For now, yes?
+2. Steps:
+    - Random samples the object -> Use grasp planner to generate a bunch of grasps -> Place it down for a specific goal pose 
+    - Input of the model: initial_pose of the object, grasp pose, and the final pose of the object
+    - Start with fixing the orientation of the object, simply varying the positions
+
+3. When generating the goal pose, some poses may be not be feasible (like a donut is vertically placed). One way is to randomly drop the object to find discrete feasible poses.
+
+4. Consider the absolute poses?
+
+
 
 ## Simulator Choices:
 The simulator plan to use is IsaacSim
@@ -33,6 +46,14 @@ For the robot in the lab, IP address is **192.168.1.209**, i.e. Type "192.168.1.
 
 
 
-## Potential Questions
+## Troubleshooting Guides
 1. **Colcon build** might explode the ram so the PC freezes
 - Solutions: **export MAKEFLAGS="-j 1" colcon build --executor sequential**, this command will use one core and one package to build the workspace
+
+2. Ros2 extension may not be able to work when the simulator starts
+- Solutions: **make sure to configure the ROS for Isaac sim**, basically use the fastdds.xml
+
+3. The configuration may still not work, i.e. ros2 command pops up an error saying some configuration errors even after completing step 2
+- Solutions: **open up one terminal that set the environment first (export FASTRTPS_DEFAULT_PROFILES_FILE=...), then start the isaac sim.** No idea why it's not working even I put that in the *extra arg* of isaac sim 
+
+

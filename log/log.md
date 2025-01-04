@@ -26,6 +26,30 @@ check_urdf your_robot.urdf
 ./isaaclab.sh -p source/standalone/tools/convert_urdf.py /home/chris/Chris/placement_ws/src/xarm_ros2/xarm_description/urdf/xarm7.urdf source/extensions/omni.isaac.lab_assets/data/Robots/ANYbotics/xarm7.usd --merge-joints --make-instanceable 
 ```
 
+## Jan 2 2025
+A lot of happened basically, but changes are:
+- Plan to use the **panda robot rather than xarm in simulation**, potentially believe that the robot in simulation should not matter too much for the model, and importing xarm to the simulator producing too many troubles
 
 
+## Jan 3 2025
+Determined what services and topics should be implemented in Isaacsim for the project
 
+## Jan 4 2025
+### Topics that I should build
+
+| Name        | Description | Message Type | Input 
+| ----------- | ----------- | ----------- | ----------- |
+| /panda/joint_states      | Continuously provides the arm’s joint angles, velocities, and efforts.       | sensor_msgs/msg/JointState | Joint state values 
+| /panda/gripper_state   | Provides real-time updates about the gripper’s state        | Not sure | Gripper values
+
+### Services that I should build
+| Name        | Description | Request | Response 
+| ----------- | ----------- | ----------- | ----------- |
+| /panda/compute_grasps      | compute grasp positions for a known object pose.      | Object pose | A list of candidate grasp poses | 
+/panda/plan_joint_trajectory   | Perform path planning in a single call        | end-effector pose | A planned trajectory (list of waypoints) + success/failure| 
+/panda/execute_joint_trajectory   | Actually move the robot along the planned path        | A trajectory | Success/failure once execution completes| 
+/panda/move_gripper   | open the gripper        | a target width | Success/failure once execution completes
+/panda/move_to_pose   | planning + execution        | Cartesian pose of the end-effector | Success/failure once execution completes
+/reset_scene   | restore the simulation        | None | Success/failure once execution completes
+/spawn_object   | Dynamically add objects for grasp testing        | None | Success/failure once execution completes
+/save_data   | Store experiment outcomes        | None | Success/failure once execution completes
