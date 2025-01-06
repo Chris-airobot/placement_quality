@@ -25,7 +25,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'sim_control = placement_quality.sim_control:main'
+            'sim_control = placement_quality.sim_control:main',
+            'sim_initialization = placement_quality.sim_initialization:main',
         ],
     },
 )
