@@ -53,3 +53,12 @@ Determined what services and topics should be implemented in Isaacsim for the pr
 /reset_scene   | restore the simulation        | None | Success/failure once execution completes
 /spawn_object   | Dynamically add objects for grasp testing        | None | Success/failure once execution completes
 /save_data   | Store experiment outcomes        | None | Success/failure once execution completes
+
+## Jan 8 2025
+New updates, 
+- I need to first set up the camera
+- use the c++ libary of moveit deep grasps
+
+
+## Jan 9 2025
+- Camera should be ready soon, due to the problem of point cloud, one way is starting the simulation in a standalone style
