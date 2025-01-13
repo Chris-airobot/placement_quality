@@ -1,6 +1,4 @@
 import omni
-from isaacsim import SimulationApp
-
 import numpy as np
 from omni.isaac.core import SimulationContext
 from omni.isaac.core.utils import stage, extensions, nucleus
@@ -21,32 +19,38 @@ from omni.isaac.ros2_bridge import read_camera_info
 class MyCamera:
     def __init__(self, approx_freq = 30):
         self.camera = Camera(prim_path="/World/Camera",
-                             position=np.array([3, -0.2, 0.3]),
+                             position=np.array([3, 0, 0.3]),
                              frequency=20,
                              resolution=(256, 256),
-                             orientation=rot_utils.euler_angles_to_quats(np.array([90, 90, 0]), degrees=True),)
-        
+                            #  orientation=np.array([0.5, 0.5, 0.5,])) 90, -90,0
+                            #  orientation=rot_utils.euler_angles_to_quats(np.array([0, 180, 0]), degrees=True),) # -90. 90, 0
+                            #  orientation=rot_utils.euler_angles_to_quats(np.array([90, 90, 0]), degrees=True),) # 0. 0, 180
+                            #  orientation=rot_utils.euler_angles_to_quats(np.array([0, 0, 0]), degrees=True),) # 90, -90,0
+                            #  orientation=rot_utils.euler_angles_to_quats(np.array([0, 0, 90]), degrees=True),) # 90, 0, 0
+                             orientation=rot_utils.euler_angles_to_quats(np.array([0, 0, 180]), degrees=True),) # 90, 90, 0
+
         self.freq = approx_freq
 
-        self.render_product = self.camera._render_product_path
-        self.step_size = int(60/self.freq)
-        self.node_space = ""
-        self.frame_id = self.camera.prim_path.split("/")[-1]
+
 
         self.initialize()
     ###### Camera helper functions for setting up publishers. ########
 
     def publish_camera_info(self):
-        # The following code will link the camera's render product and publish the data to the specified topic name.
+
+        render_product = self.camera._render_product_path
+        step_size = int(60/self.freq)
         topic_name = self.camera.name+"_camera_info"
         queue_size = 1
-         # This matches what the TF tree is publishing.
+        node_namespace = "camera"
+        frame_id = self.camera.prim_path.split("/")[-1] # This matches what the TF tree is publishing.
 
         writer = rep.writers.get("ROS2PublishCameraInfo")
-        camera_info = read_camera_info(render_product_path=self.render_product)
+        camera_info = read_camera_info(render_product_path=render_product)
+
         writer.initialize(
-            frameId=self.frame_id,
-            nodeNamespace=self.node_namespace,
+            frameId=frame_id,
+            nodeNamespace=node_namespace,
             queueSize=queue_size,
             topicName=topic_name,
             width=camera_info["width"],
@@ -58,21 +62,26 @@ class MyCamera:
             physicalDistortionModel=camera_info["physicalDistortionModel"],
             physicalDistortionCoefficients=camera_info["physicalDistortionCoefficients"],
         )
-        writer.attach([self.render_product])
+
+        writer.attach([render_product])
 
         gate_path = omni.syntheticdata.SyntheticData._get_node_path(
-            "PostProcessDispatch" + "IsaacSimulationGate", self.render_product
+            "PostProcessDispatch" + "IsaacSimulationGate", render_product
         )
 
-        # Set step input of the Isaac Simulation Gate nodes upstream of ROS publishers to control their execution rate
-        og.Controller.attribute(gate_path + ".inputs:step").set(self.step_size)
+        og.Controller.attribute(gate_path + ".inputs:step").set(step_size)
+
         return
 
 
     def publish_pointcloud_from_depth(self):
         # The following code will link the camera's render product and publish the data to the specified topic name.
+        render_product = self.camera._render_product_path
+        step_size = int(60/self.freq)
         topic_name = self.camera.name+"_pointcloud" # Set topic name to the camera's name
         queue_size = 1
+        node_namespace = "camera"
+        frame_id = self.camera.prim_path.split("/")[-1] # This matches what the TF tree is publishing.
 
         # Note, this pointcloud publisher will simply convert the Depth image to a pointcloud using the Camera intrinsics.
         # This pointcloud generation method does not support semantic labelled objects.
@@ -82,68 +91,76 @@ class MyCamera:
 
         writer = rep.writers.get(rv + "ROS2PublishPointCloud")
         writer.initialize(
-            frameId=self.frame_id,
-            nodeNamespace=self.node_namespace,
+            frameId=frame_id,
+            nodeNamespace=node_namespace,
             queueSize=queue_size,
             topicName=topic_name
         )
-        writer.attach([self.render_product])
+        writer.attach([render_product])
 
         # Set step input of the Isaac Simulation Gate nodes upstream of ROS publishers to control their execution rate
         gate_path = omni.syntheticdata.SyntheticData._get_node_path(
-            rv + "IsaacSimulationGate", self.render_product
+            rv + "IsaacSimulationGate", render_product
         )
-        og.Controller.attribute(gate_path + ".inputs:step").set(self.step_size)
+        og.Controller.attribute(gate_path + ".inputs:step").set(step_size)
 
         return
 
 
     def publish_rgb(self):
         # The following code will link the camera's render product and publish the data to the specified topic name.
+        render_product = self.camera._render_product_path
+        step_size = int(60/self.freq)
         topic_name = self.camera.name+"_rgb"
         queue_size = 1
+        node_namespace = "camera"
+        frame_id = self.camera.prim_path.split("/")[-1] # This matches what the TF tree is publishing.
 
         rv = omni.syntheticdata.SyntheticData.convert_sensor_type_to_rendervar(sd.SensorType.Rgb.name)
         writer = rep.writers.get(rv + "ROS2PublishImage")
         writer.initialize(
-            frameId=self.frame_id,
-            nodeNamespace=self.node_namespace,
+            frameId=frame_id,
+            nodeNamespace=node_namespace,
             queueSize=queue_size,
             topicName=topic_name
         )
-        writer.attach([self.render_product])
+        writer.attach([render_product])
 
         # Set step input of the Isaac Simulation Gate nodes upstream of ROS publishers to control their execution rate
         gate_path = omni.syntheticdata.SyntheticData._get_node_path(
-            rv + "IsaacSimulationGate", self.render_product
+            rv + "IsaacSimulationGate", render_product
         )
-        og.Controller.attribute(gate_path + ".inputs:step").set(self.step_size)
+        og.Controller.attribute(gate_path + ".inputs:step").set(step_size)
 
         return
 
 
     def publish_depth(self):
         # The following code will link the camera's render product and publish the data to the specified topic name.
+        render_product = self.camera._render_product_path
+        step_size = int(60/self.freq)
         topic_name = self.camera.name+"_depth"
         queue_size = 1
+        node_namespace = "camera"
+        frame_id = self.camera.prim_path.split("/")[-1] # This matches what the TF tree is publishing.
 
         rv = omni.syntheticdata.SyntheticData.convert_sensor_type_to_rendervar(
                                 sd.SensorType.DistanceToImagePlane.name
                             )
         writer = rep.writers.get(rv + "ROS2PublishImage")
         writer.initialize(
-            frameId=self.frame_id,
-            nodeNamespace=self.node_namespace,
+            frameId=frame_id,
+            nodeNamespace=node_namespace,
             queueSize=queue_size,
             topicName=topic_name
         )
-        writer.attach([self.render_product])
+        writer.attach([render_product])
 
         # Set step input of the Isaac Simulation Gate nodes upstream of ROS publishers to control their execution rate
         gate_path = omni.syntheticdata.SyntheticData._get_node_path(
-            rv + "IsaacSimulationGate", self.render_product
+            rv + "IsaacSimulationGate", render_product
         )
-        og.Controller.attribute(gate_path + ".inputs:step").set(self.step_size)
+        og.Controller.attribute(gate_path + ".inputs:step").set(step_size)
 
         return
 
@@ -161,7 +178,7 @@ class MyCamera:
             camera_frame_id=camera_prim.split("/")[-1]
 
             # Generate an action graph associated with camera TF publishing.
-            ros_camera_graph_path = "/CameraTFActionGraph"
+            ros_camera_graph_path = "/Graphs/CameraTFActionGraph"
 
             # If a camera graph is not found, create a new one.
             if not is_prim_path_valid(ros_camera_graph_path):
@@ -224,6 +241,8 @@ class MyCamera:
             targetPrimPaths=[camera_prim],
         )
         return
+    
+
     ###################################################################
     def start_camera(self):
         self.publish_camera_tf()
@@ -238,4 +257,13 @@ class MyCamera:
 
 
 
+def main():
 
+    camera = MyCamera()
+    camera.initialize()
+
+    # Starting the camera
+    camera.start_camera()
+
+if __name__ == "__main__":
+    main()

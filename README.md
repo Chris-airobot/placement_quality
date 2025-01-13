@@ -20,10 +20,10 @@ A few notes:
 
 ## Discussions:
 1. Approaches for grasping and placement should be the same for training and testing?
- - For now, yes?
+ - Yes. But it feels like a bit limited considering there are infinite ways to grasping and placing
 2. Steps:
     - Random samples the object -> Use grasp planner to generate a bunch of grasps -> Place it down for a specific goal pose 
-    - Input of the model: initial_pose of the object, grasp pose, and the final pose of the object
+    - Input of the model: initial pose of the object, grasp pose, and the final pose of the object
     - Start with fixing the orientation of the object, simply varying the positions
 
 3. When generating the goal pose, some poses may be not be feasible (like a donut is vertically placed). One way is to randomly drop the object to find discrete feasible poses.
@@ -55,5 +55,10 @@ For the robot in the lab, IP address is **192.168.1.209**, i.e. Type "192.168.1.
 
 3. The configuration may still not work, i.e. ros2 command pops up an error saying some configuration errors even after completing step 2
 - Solutions: **open up one terminal that set the environment first (export FASTRTPS_DEFAULT_PROFILES_FILE=...), then start the isaac sim.** No idea why it's not working even I put that in the *extra arg* of isaac sim 
+4. For running Graspnet, it requires different cuda versions
+- Solutions: 
+    - rm -rf /usr/local/cuda    # delete link
+    - sudo ln -s /usr/local/cuda-11.0 /usr/local/cuda    # build new-link
+    -nvcc --version    # check cuda version
 
 

@@ -25,8 +25,9 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'sim_control = placement_quality.sim_control:main',
-            'sim_initialization = placement_quality.sim_initialization:main',
+            'sim_control = grasp_placement.sim_control:main',
+            'sim_initialization = grasp_placement.sim_initialization:main',
+            'camera_initialization = grasp_placement.camera_initialization:main',
         ],
     },
 )

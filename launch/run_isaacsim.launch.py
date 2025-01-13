@@ -24,11 +24,11 @@ launch_args = [
     
     DeclareLaunchArgument('dds_type', default_value='fastdds', description='Set to "fastdds" or "cyclonedds" (Cyclone only supported for ROS Humble) to run Isaac Sim with a specific dds type.'),
     
-    DeclareLaunchArgument('gui', default_value='/home/chris/Desktop/gripper/panda.usd', description='Provide the path to a usd file to open it when starting Isaac Sim in standard gui mode. If left empty, Isaac Sim will open an empty stage in standard gui mode.'),
+    DeclareLaunchArgument('gui', default_value='/home/chris/Chris/placement_ws/src/grasp_placement/panda.usd', description='Provide the path to a usd file to open it when starting Isaac Sim in standard gui mode. If left empty, Isaac Sim will open an empty stage in standard gui mode.'),
     
     DeclareLaunchArgument('standalone', default_value='', description='Provide the path to the python file to open it and start Isaac Sim in standalone workflow. If left empty, Isaac Sim will open an empty stage in standard Gui mode.'),
     
-    DeclareLaunchArgument('play_sim_on_start', default_value='true', description='If enabled and Isaac Sim will start playing the scene after it is loaded. (Only applicable when in standard gui mode and loading a scene)'),
+    DeclareLaunchArgument('play_sim_on_start', default_value='false', description='If enabled and Isaac Sim will start playing the scene after it is loaded. (Only applicable when in standard gui mode and loading a scene)'),
     
     DeclareLaunchArgument('ros_distro', default_value='humble', description='Provide ROS version to use. Only Humble and Foxy is supported.'),
     
@@ -82,11 +82,23 @@ def launch_setup(context):
             'headless': LaunchConfiguration('headless')
         }]
     )
+
+    # Launch your camera initialization node (assuming it is in package `grasp_placement`)
+    camera_init_node = Node(
+        package='grasp_placement',
+        executable='camera_initialization',
+        name='camera_init',
+        output='screen'
+    )
+
+
     return [isaacsim_node]
 
 
 # Create and return the launch description with all declared arguments and the execute launch_setup
 def generate_launch_description():
+
+
     opfunc = OpaqueFunction(function = launch_setup)
     ld = LaunchDescription(launch_args)
     ld.add_action(opfunc)
