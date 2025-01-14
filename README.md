@@ -60,5 +60,7 @@ For the robot in the lab, IP address is **192.168.1.209**, i.e. Type "192.168.1.
     - rm -rf /usr/local/cuda    # delete link
     - sudo ln -s /usr/local/cuda-11.0 /usr/local/cuda    # build new-link
     -nvcc --version    # check cuda version
-
+5. If Vscode does not recognize some certain packages
+- Solutions:
+    - import the package, then print(package.\_\_file__)
 
