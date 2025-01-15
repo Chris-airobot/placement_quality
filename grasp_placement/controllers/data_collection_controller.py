@@ -8,7 +8,7 @@
 #
 from typing import List, Optional
 
-from my_base_controller import MyBaseController
+from controllers import MyBaseController
 from omni.isaac.core.articulations import Articulation
 from omni.isaac.franka.controllers.rmpflow_controller import RMPFlowController
 from omni.isaac.manipulators.grippers.parallel_gripper import ParallelGripper

@@ -1,0 +1,51 @@
+import numpy as np
+from scipy.spatial.transform import Rotation as R
+import os
+import json
+DIR_PATH = "/home/chris/Chris/placement_ws/src/grasp_placement/data/"
+
+def surface_detection(rpy):
+    local_normals = {
+        "1": np.array([0, 0, 1]),   # +z going up (0, 0, 0)
+        "2": np.array([1, 0, 0]),   # +x going up (-90, -90, -90)
+        "3": np.array([0, 0, -1]),  # -z going up (180, 0, -180)
+        "4": np.array([-1, 0, 0]),  # -x going up (90, 90, -90)
+        "5": np.array([0, -1, 0]),  # -y going up (-90, 0, 0)
+        "6": np.array([0, 1, 0]),   # +y going up (90, 0, 0)
+        }
+    
+    global_up = np.array([0, 0, 1]) 
+
+      # Replace with your actual quaternion x,y,z,w
+    rotation = R.from_euler('xyz', rpy, degrees=True)
+
+    # Transform normals to the world frame
+    world_normals = {face: rotation.apply(local_normal) for face, local_normal in local_normals.items()}
+
+    # Find the face with the highest dot product with the global up direction
+    upward_face = max(world_normals, key=lambda face: np.dot(world_normals[face], global_up))
+    
+    return int(upward_face)
+
+
+def extract_grasping(input_file_path):
+    # Load the original JSON data
+  output_file_path = os.path.dirname(input_file_path) + '/grasping.json'  # Path to save the filtered file
+
+  with open(input_file_path, 'r') as file:
+      data = json.load(file)
+
+  # Extract data until the stage number hits 4
+  filtered_data = []
+  for entry in data.get("Isaac Sim Data", []):
+      if entry["data"]["stage"] == 4:
+          break
+      filtered_data.append(entry)
+
+  output_data = {"Isaac Sim Data": filtered_data}
+
+  # Save the filtered data into a new JSON file
+  with open(output_file_path, 'w') as output_file:
+      json.dump(output_data, output_file)
+
+

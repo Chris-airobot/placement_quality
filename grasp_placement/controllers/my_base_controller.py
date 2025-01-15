@@ -34,7 +34,21 @@ class MyBaseController(BaseController):
     - Phase 7: loosen the grip.
     - Phase 8: Move end_effector vertically up again at the 'end_effector_initial_height'
     - Phase 9: Move end_effector towards the old xy position.
+    
+    - Once the object has been grasped, just apply random orientations for the ee to place the object down 
+    - Maybe not totally random, like increment specifc orientations so that the whole range of possible orientations have been used 
     - Phase 0, 1 are the same, Phase 456 are the same again, No need for Phase 8
+    - Collections:
+        - Begining of Phase 0 for object initial pose, End effector target pose               | done
+        - End of Phase 3 for grasping pose                                                    | done
+        - Begining of phase 7 to the end for object pose change + object final pose           | done
+        - Start of Phase 0 to the end of phase 7 for time consumption                         | done 
+        - If possible, discrete face of the object                                            | done
+        - Object mass                                                                         | 0.02 for fixed
+
+    - Procedure:
+        - 1 File for replay from Phase 0 to Phase 3
+        - 1 File for actual all data collections
 
     Args:
         name (str): Name id of the controller
@@ -156,7 +170,6 @@ class MyBaseController(BaseController):
             end_effector_orientation_offset = np.random.uniform(low=-0.1, high=0.1, size=3)
 
             noisy_euler = end_effector_orientation + end_effector_orientation_offset
-            print(f'At stage {self._event}, my noisy value is: {noisy_euler}')
             # Convert back to quaternion
             end_effector_orientation = euler_angles_to_quat(noisy_euler)
             target_joint_positions = self._cspace_controller.forward(
