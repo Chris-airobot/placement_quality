@@ -17,7 +17,7 @@ def surface_detection(rpy):
     global_up = np.array([0, 0, 1]) 
 
       # Replace with your actual quaternion x,y,z,w
-    rotation = R.from_euler('xyz', rpy, degrees=True)
+    rotation = R.from_euler('xyz', rpy)
 
     # Transform normals to the world frame
     world_normals = {face: rotation.apply(local_normal) for face, local_normal in local_normals.items()}

@@ -11,6 +11,7 @@ import numpy as np
 import asyncio
 import json
 import os
+import glob
 from omni.isaac.core import World
 from omni.isaac.core.utils import stage, extensions
 from omni.isaac.core.scenes import Scene
@@ -80,8 +81,7 @@ class StartSimulation:
 
     def _on_logging_event(self, val):
         print(f"----------------- Grasping {self.grasp_counter} Placement {self.placement_counter} Start -----------------")
-        print(f'Cube position is: {self.task.get_params()["cube_position"]["value"]}')
-        print(f'Cube orientation is: {self.task.get_params()["cube_orientation"]["value"]}\n')
+        print(f'Cube position is: {self.task.get_params()["cube_position"]["value"]}\n')
         if not self.world.get_data_logger().is_started():
             robot_name = self.task_params["robot_name"]["value"]
             cube_name = self.task_params["cube_name"]["value"]
@@ -92,7 +92,7 @@ class StartSimulation:
             def frame_logging_func(tasks, scene: Scene):
                 cube_position, cube_orientation =  scene.get_object(cube_name).get_world_pose()
                 ee_position, ee_orientation =  scene.get_object(robot_name).end_effector.get_world_pose()
-                surface = surface_detection(quat_to_euler_angles(ee_orientation))
+                surface = surface_detection(quat_to_euler_angles(cube_orientation))
 
                 return {
                     "joint_positions": scene.get_object(robot_name).get_joint_positions().tolist(),# save data as lists since its a json file.
@@ -103,8 +103,8 @@ class StartSimulation:
                     "cube_orientation": cube_orientation.tolist(),
                     "stage": self.controller.get_current_event(),
                     "surface": surface,
-                    "grasp_failure": self.grasping_failure,
-                    "placement_failure": self.placement_failure
+                    # "grasp_failure": self.grasping_failure,
+                    # "placement_failure": self.placement_failure
                 }
 
             self.data_logger.add_data_frame_logging_func(frame_logging_func) # adds the function to be called at each physics time step.
@@ -119,6 +119,7 @@ class StartSimulation:
     def _on_save_data_event(self, log_path=GRASP_PATH):
         print("----------------- Saving Start -----------------\n")
         self.data_logger.save(log_path=log_path) # Saves the collected data to the json file specified.
+
         print(f"----------------- Successfully saved it to {log_path} -----------------\n")
         self.data_logger.reset() # Resets the DataLogger internal state so that another set of data can be collected and saved separately.
         return
@@ -161,13 +162,17 @@ class StartSimulation:
         self.placement_failure = False
         self.grasping_failure = False
 
+        ranges = [(-0.3, -0.1), (0.1, 0.3)]
+        range_choice = ranges[np.random.choice(len(ranges))]
+        
         # Generate x and y as random values between -π and π
-        x, y = np.random.uniform(low=-0.3, high=0.3, size=2)
-        p, q = np.random.uniform(low=-np.pi, high=np.pi, size=2)
+        x, y = np.random.uniform(low=range_choice[0], high=range_choice[1]), np.random.uniform(low=range_choice[0], high=range_choice[1])
+        p, q = np.random.uniform(low=range_choice[0], high=range_choice[1]), np.random.uniform(low=range_choice[0], high=range_choice[1])
+
         # Create the cube position with z fixed at 0
         self.task.set_params(
             cube_position=np.array([x, y, 0]),
-            target_position=np.array([p, q, 0])
+            target_position=np.array([p, q, 0.05])
         )
         self.placement_orientation = np.random.uniform(low=-np.pi, high=np.pi, size=3)
 
@@ -184,7 +189,7 @@ def log_grasping(start_logging, env: StartSimulation):
 def record_grasping(recorded, env: StartSimulation):
     # Recording section
     if not recorded:
-        file_path = DIR_PATH + f"Grasping_{env.grasp_counter}/placement_{env.placement_counter}.json"
+        file_path = DIR_PATH + f"Grasping_{env.grasp_counter}/placement_{env.placement_counter}_{env.grasping_failure}_{env.placement_failure}.json"
 
         # Ensure the parent directories exist
         directory = os.path.dirname(file_path)
@@ -195,7 +200,6 @@ def record_grasping(recorded, env: StartSimulation):
             # Open the file in write mode and create an empty JSON structure
             with open(file_path, 'w') as file:
                 json.dump({}, file)
-
         env._on_save_data_event(file_path)
         recorded = True
     return recorded
@@ -208,7 +212,10 @@ def replay_grasping(env: StartSimulation):
 
     # If the replay data does not exist, create one
     if not os.path.exists(file_path):
-        extract_grasping(DIR_PATH + f"Grasping_{env.grasp_counter}/placement_{env.placement_counter}.json")
+        file_pattern = os.path.join(DIR_PATH, f"Grasping_{env.grasp_counter}/placement_*.json")
+        file_list = glob.glob(file_pattern)
+
+        extract_grasping(file_list[0])
 
     asyncio.ensure_future(env._on_replay_scene_event_async(file_path))
     return True
@@ -254,20 +261,28 @@ def main():
 
             # One placement is done
             elif placement_finished:
-                env.world.reset()
-                env.controller.reset()
-                replay = True
-                placement_finished = False
-                env.placement_failure = False
+
+                # Maximum placement has been reached
+                if env.placement_counter >= 200:
+                    reset_needed = True
+                else: 
+                    env.reset()
+                    replay = True
+                    placement_finished = False
                 
             elif env.replay_finished:
 
-                
-
                 # Recording Session
                 start_logging = log_grasping(start_logging, env)
+                try:
+                    observations = env.world.get_observations()
+                except:
+                    print("Something wrong with hitting the floor")
+                    if env.placement_counter > 1 and env.placement_counter < 200:
+                        env.reset()
+                        replay = True
+                        continue
 
-                observations = env.world.get_observations()
                 actions = env.controller.forward(
                     picking_position=observations[env.task_params["cube_name"]["value"]]["position"],
                     placing_position=observations[env.task_params["cube_name"]["value"]]["target_position"],
@@ -282,15 +297,21 @@ def main():
                 # Gripper release, but could not place the object into the ground
                 if env.controller.get_current_event() == 7:
                     position, _ = env.world.scene.get_object(env.task_params["cube_name"]["value"]).get_world_pose()
-                    if position[2] != 0:
+                    target = env.task_params["target_position"]["value"]
+                    distance = math.sqrt(
+                        (target[0] - position[0]) ** 2 +
+                        (target[1] - position[1]) ** 2
+                    )
+                    threshold = 0.1
+                    if distance > threshold:
                         env.placement_failure = True
 
                 # Gripper fully closed, did not grasp the object
                 if env.controller.get_current_event() == 4:
                     if np.floor(env.robot._gripper.get_joint_positions()[0] * 100) == 0 : 
                         env.grasping_failure = True
+                        recorded = record_grasping(recorded, env)
                         reset_needed = True
-                        recorded = True
 
                 env.articulation_controller.apply_action(actions)
 
