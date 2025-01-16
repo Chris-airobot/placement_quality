@@ -45,6 +45,7 @@ class MyBaseController(BaseController):
         - Start of Phase 0 to the end of phase 7 for time consumption                         | done 
         - If possible, discrete face of the object                                            | done
         - Object mass                                                                         | 0.02 for fixed
+        - Object dimensions                                                                   | 0.02 for fixed
 
     - Procedure:
         - 1 File for replay from Phase 0 to Phase 3
@@ -114,8 +115,8 @@ class MyBaseController(BaseController):
         placing_position: np.ndarray,
         current_joint_positions: np.ndarray,
         end_effector_offset: typing.Optional[np.ndarray] = None,
-        end_effector_orientation_offset: typing.Optional[np.ndarray] = None,
-        end_effector_orientation: typing.Optional[np.ndarray] = None,
+        grasping_orientation: typing.Optional[np.ndarray] = None,
+        placement_orientation: typing.Optional[np.ndarray] = None,
     ) -> ArticulationAction:
         """Runs the controller one step.
 
@@ -132,11 +133,11 @@ class MyBaseController(BaseController):
         if end_effector_offset is None:
             end_effector_offset = np.array([0, 0, 0])
 
-        if end_effector_orientation_offset is None:
-            end_effector_orientation_offset = np.array([0.0, 0.0, 0.0])
+        if grasping_orientation is None:
+            grasping_orientation = np.array([0.0, np.pi, 0.0])
 
-        if end_effector_orientation is None:
-            end_effector_orientation = np.array([0.0, np.pi, 0.0])
+        if placement_orientation is None:
+            placement_orientation = np.array([0.0, np.pi, 0.0])
  
 
 
@@ -151,6 +152,8 @@ class MyBaseController(BaseController):
         elif self._event == 7:
             target_joint_positions = self._gripper.forward(action="open")
         else:
+
+            ### Position Section
             if self._event in [0, 1]:
                 self._current_target_x = picking_position[0]
                 self._current_target_y = picking_position[1]
@@ -167,14 +170,15 @@ class MyBaseController(BaseController):
                 ]
             )
 
-            end_effector_orientation_offset = np.random.uniform(low=-0.1, high=0.1, size=3)
+            ### Orientation Section
 
-            noisy_euler = end_effector_orientation + end_effector_orientation_offset
-            # Convert back to quaternion
-            end_effector_orientation = euler_angles_to_quat(noisy_euler)
+            end_effector_orientation = grasping_orientation if self._event in [0, 1] else placement_orientation
+
             target_joint_positions = self._cspace_controller.forward(
-                target_end_effector_position=position_target, target_end_effector_orientation=end_effector_orientation
+                target_end_effector_position=position_target, 
+                target_end_effector_orientation=euler_angles_to_quat(end_effector_orientation)
             )
+            
         self._t += self._events_dt[self._event]
         if self._t >= 1.0:
             self._event += 1

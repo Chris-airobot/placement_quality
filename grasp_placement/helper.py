@@ -49,3 +49,19 @@ def extract_grasping(input_file_path):
       json.dump(output_data, output_file)
 
 
+def orientation_creation():
+
+    # Define the range and step in radians
+    start = -np.pi
+    end = np.pi
+    step = np.deg2rad(36)  # Convert 10 degrees to radians
+
+    # Create the list using nested loops
+    result = []
+    for i in np.arange(start, end + step, step):
+        for j in np.arange(start, end + step, step):
+            for k in np.arange(start, end + step, step):
+                result.append(np.array([i, j, k]))
+    
+    return result
+

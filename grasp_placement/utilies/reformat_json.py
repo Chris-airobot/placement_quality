@@ -1,7 +1,7 @@
 import json
-
+import os
 # Example JSON string
-file_path = "/home/chris/Chris/placement_ws/src/grasp_placement/data/Grasping_0/Placement_0.json"
+file_path = "/home/chris/Chris/placement_ws/src/grasp_placement/data/Grasping_0/placement_1.json"
 
 # Parse the JSON string into a Python dictionary
 
@@ -13,6 +13,9 @@ with open(file_path, "r") as file:
 # Pretty-print the JSON
 pretty_json = json.dumps(raw_data, indent=4)
 
+directory, base_name = os.path.split(file_path)
+pretty_name = "pretty_" + base_name
+output_path = os.path.join(directory, pretty_name)
 
-with open("/home/chris/Chris/placement_ws/src/grasp_placement/data/Grasping_0/Placement_0_pretty.json", "w") as pretty_file:
+with open(output_path, "w") as pretty_file:
     pretty_file.write(pretty_json)
