@@ -65,3 +65,38 @@ def orientation_creation():
     
     return result
 
+
+
+def count_files_in_subfolders(directory):
+    """
+    Count the number of files within all subfolders of a directory.
+
+    Args:
+        directory (str): Path to the main directory.
+
+    Returns:
+        dict: A dictionary where keys are subfolder paths and values are the file counts.
+        int: Total number of files across all subfolders.
+    """
+    file_count_per_subfolder = {}
+    total_file_count = 0
+
+    for root, dirs, files in os.walk(directory):
+        # Only consider subfolders (not the main folder)
+        if root != directory:
+            file_count = len(files)
+            file_count_per_subfolder[root] = file_count
+            total_file_count += file_count
+
+    return file_count_per_subfolder, total_file_count
+
+
+# # Example Usage
+# main_directory = "/home/chris/Chris/placement_ws/src/grasp_placement/data"  # Replace with your directory path
+# file_counts, total_files = count_files_in_subfolders(main_directory)
+
+# print("File counts in each subfolder:")
+# for subfolder, count in file_counts.items():
+#     print(f"{subfolder}: {count} files")
+
+# print(f"Total files across all subfolders: {total_files}")

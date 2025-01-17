@@ -19,14 +19,11 @@ import omni.graph.core as og
 import omni.replicator.core as rep
 import omni.syntheticdata._syntheticdata as sd
 import sys
+
 from omni.isaac.core_nodes.scripts.utils import set_target_prims
 
 modules = [
-    "omni.graph.core",
-    "omni.replicator.core",
-    "omni.syntheticdata._syntheticdata",
-    "omni.isaac.core_nodes.scripts.utils",
-    "isaacsim"
+    "omni.isaac.isaac_sensor",
 ]
 
 for module_name in modules:
@@ -35,8 +32,11 @@ for module_name in modules:
         mod = sys.modules[module_name]
         # Attempt to print the __file__ attribute if it exists
         try:
-            print(f"  __file__ = {mod.__file__}")
+            print(f"  __file__ = {mod.__path__}")
         except AttributeError:
             print("  No __file__ attribute (likely a compiled/binary extension).")
     else:
         print(f"\nModule '{module_name}' is NOT loaded.")
+
+
+

@@ -114,6 +114,7 @@ class MyBaseController(BaseController):
         picking_position: np.ndarray,
         placing_position: np.ndarray,
         current_joint_positions: np.ndarray,
+        previous_position_target,
         end_effector_offset: typing.Optional[np.ndarray] = None,
         grasping_orientation: typing.Optional[np.ndarray] = None,
         placement_orientation: typing.Optional[np.ndarray] = None,
@@ -140,7 +141,7 @@ class MyBaseController(BaseController):
             placement_orientation = np.array([0.0, np.pi, 0.0])
  
 
-
+        position_target = np.array([0,0,0])
         if self._pause or self.is_done():
             self.pause()
             target_joint_positions = [None] * current_joint_positions.shape[0]
@@ -174,16 +175,30 @@ class MyBaseController(BaseController):
 
             end_effector_orientation = grasping_orientation if self._event in [0, 1] else placement_orientation
 
+
             target_joint_positions = self._cspace_controller.forward(
                 target_end_effector_position=position_target, 
                 target_end_effector_orientation=euler_angles_to_quat(end_effector_orientation)
             )
-            
+
         self._t += self._events_dt[self._event]
-        if self._t >= 1.0:
+
+        stage_time = 1
+
+
+        # if self._event == 0:
+        #     if np.array_equal(previous_position_target, position_target) or self._t >= stage_time:
+        #         self._event += 1
+        #         self._t = 0
+        # elif self._event == 1:
+        #     if previous_position_target[2] < position_target[2] or self._t >= stage_time:
+        #         self._event += 1
+        #         self._t = 0
+
+        if self._t >= stage_time:
             self._event += 1
             self._t = 0
-        return target_joint_positions
+        return target_joint_positions, position_target
 
     def _get_interpolated_xy(self, target_x, target_y, current_x, current_y):
         alpha = self._get_alpha()

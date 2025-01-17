@@ -28,8 +28,7 @@ simulation_app.update()
 
 GRIPPER_MAX = 0.04
 GRIPPER_SPEED = 0.005
-GRASP_PATH = "/home/chris/Chris/placement_ws/src/grasp_placement/grasp_placement/data/picking.json"
-DIR_PATH = "/home/chris/Chris/placement_ws/src/grasp_placement/data/"
+DIR_PATH = "/home/chris/Chris/placement_ws/src/data/"
 
 class StartSimulation:
 
@@ -46,7 +45,7 @@ class StartSimulation:
         
         self.data_logger = None
 
-        self.grasp_counter = 0
+        self.grasp_counter = 34
         self.placement_counter = 0
 
         self.replay_finished = True
@@ -85,6 +84,7 @@ class StartSimulation:
         if not self.world.get_data_logger().is_started():
             robot_name = self.task_params["robot_name"]["value"]
             cube_name = self.task_params["cube_name"]["value"]
+            target_position = self.task_params["target_position"]["value"]
  
             # A data logging function is called at every time step index if the data logger is started already.
             # We define the function here. The tasks and scene are passed to this function when called.
@@ -99,6 +99,7 @@ class StartSimulation:
                     "applied_joint_positions": scene.get_object(robot_name).get_applied_action().joint_positions.tolist(),
                     "ee_position": ee_position.tolist(),
                     "ee_orientation": ee_orientation.tolist(),
+                    "target_position": target_position.tolist(),
                     "cube_position": cube_position.tolist(),
                     "cube_orientation": cube_orientation.tolist(),
                     "stage": self.controller.get_current_event(),
@@ -116,7 +117,7 @@ class StartSimulation:
 
 
 
-    def _on_save_data_event(self, log_path=GRASP_PATH):
+    def _on_save_data_event(self, log_path):
         print("----------------- Saving Start -----------------\n")
         self.data_logger.save(log_path=log_path) # Saves the collected data to the json file specified.
 
@@ -126,7 +127,7 @@ class StartSimulation:
 
 
     # This is for replying the whole scene
-    async def _on_replay_scene_event_async(self, data_file=GRASP_PATH):
+    async def _on_replay_scene_event_async(self, data_file):
             self.data_logger.load(log_path=data_file)
             await self.world.play_async()
             self.world.add_physics_callback("replay_scene", self._on_replay_scene_step)
@@ -232,6 +233,8 @@ def main():
     recorded = False     # Used to check if the data has been recorded
     replay = False       # Used for replay data     
     placement_finished = False     # Use when placement is done
+    previous_position_target = np.array([0,0,0])
+
 
     while simulation_app.is_running():
         env.world.step(render=True)
@@ -246,6 +249,7 @@ def main():
                 placement_finished = False
                 env.grasp_counter += 1
                 env.placement_counter = 0
+                previous_position_target = np.array([0,0,0])
                 
             
             # Replaying Session
@@ -258,6 +262,8 @@ def main():
                 start_logging = True
                 recorded = False
                 env.placement_failure = False
+                previous_position_target = np.array([0,0,0])
+
 
             # One placement is done
             elif placement_finished:
@@ -269,6 +275,8 @@ def main():
                     env.reset()
                     replay = True
                     placement_finished = False
+                    previous_position_target = np.array([0,0,0])
+
                 
             elif env.replay_finished:
 
@@ -278,22 +286,27 @@ def main():
                     observations = env.world.get_observations()
                 except:
                     print("Something wrong with hitting the floor")
-                    if env.placement_counter > 1 and env.placement_counter < 200:
+                    if env.placement_counter <= 1:
+                        reset_needed = True
+                        continue
+                    elif env.placement_counter > 1 and env.placement_counter < 200:
                         env.reset()
                         replay = True
                         continue
 
-                actions = env.controller.forward(
+                actions, position_target = env.controller.forward(
                     picking_position=observations[env.task_params["cube_name"]["value"]]["position"],
                     placing_position=observations[env.task_params["cube_name"]["value"]]["target_position"],
                     current_joint_positions=observations[env.task_params["robot_name"]["value"]]["joint_positions"],
                     end_effector_offset=np.array([0, 0.005, 0]),
                     placement_orientation=env.placement_orientation,  
-                    grasping_orientation=env.grasping_orientation[env.grasp_counter],           
+                    grasping_orientation=env.grasping_orientation[env.grasp_counter],    
+                    previous_position_target=previous_position_target       
                     # grasping_orientation=np.array([0, np.pi, 0]),           
                     # placement_orientation=np.array([0, np.pi, 0]),  
                 )
-
+                previous_position_target = position_target
+                
                 # Gripper release, but could not place the object into the ground
                 if env.controller.get_current_event() == 7:
                     position, _ = env.world.scene.get_object(env.task_params["cube_name"]["value"]).get_world_pose()
