@@ -1,7 +1,7 @@
 import json
 import os
 # Example JSON string
-file_path = "/home/chris/Chris/placement_ws/src/grasp_placement/data/Grasping_35/placement_24_False_True.json"
+file_path = "/home/chris/Chris/placement_ws/src/data/Grasping_35/placement_24_False_True.json"
 
 # Parse the JSON string into a Python dictionary
 

@@ -62,3 +62,8 @@ New updates,
 
 ## Jan 9 2025
 - Camera should be ready soon, due to the problem of point cloud, one way is starting the simulation in a standalone style
+
+
+## Jan 20 2025
+Meeting notes:
+- Remember to check the frames, should record the data in base frame

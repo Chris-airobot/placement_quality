@@ -18,6 +18,7 @@ from omni.isaac.core.scenes import Scene
 from omni.isaac.franka import Franka
 from omni.isaac.franka.tasks import PickPlace
 from controllers.data_collection_controller import DataCollectionController
+from omni.isaac.franka.controllers.pick_place_controller import PickPlaceController
 from omni.isaac.core.utils.types import ArticulationAction
 from helper import *
 from omni.isaac.core.utils.rotations import euler_angles_to_quat, quat_to_euler_angles
@@ -41,11 +42,12 @@ class StartSimulation:
         self.task = None
         self.task_params = None
         self.grasping_orientation = None
-        self.placement_orientation = None
+        self.placement_orientation = None  # Gripper orientation when the cube is about to be placed
+        self.T_ee_inv = None
         
         self.data_logger = None
 
-        self.grasp_counter = 34
+        self.grasp_counter = 81
         self.placement_counter = 0
 
         self.replay_finished = True
@@ -61,7 +63,18 @@ class StartSimulation:
 
         # Set up the world
         self.world: World = World(stage_units_in_meters=1.0)
+
+        ranges = [(-0.3, -0.1), (0.1, 0.3)]
+        range_choice = ranges[np.random.choice(len(ranges))]
+        
+        # Generate x and y as random values between -π and π
+        x, y = np.random.uniform(low=range_choice[0], high=range_choice[1]), np.random.uniform(low=range_choice[0], high=range_choice[1])
+        p, q = np.random.uniform(low=range_choice[0], high=range_choice[1]), np.random.uniform(low=range_choice[0], high=range_choice[1])
+
+
         self.task = PickPlace()
+        
+
         self.data_logger = self.world.get_data_logger() # a DataLogger object is defined in the World by default
 
         self.world.add_task(self.task)
@@ -77,6 +90,13 @@ class StartSimulation:
             robot_articulation=self.robot
         )
         self.articulation_controller = self.robot.get_articulation_controller() 
+
+        self.task.set_params(
+            cube_position=np.array([x, y, 0]),
+            target_position=np.array([p, q, 0.05])
+        )
+
+        self.placement_orientation = np.random.uniform(low=-np.pi, high=np.pi, size=3)
 
     def _on_logging_event(self, val):
         print(f"----------------- Grasping {self.grasp_counter} Placement {self.placement_counter} Start -----------------")
@@ -99,11 +119,12 @@ class StartSimulation:
                     "applied_joint_positions": scene.get_object(robot_name).get_applied_action().joint_positions.tolist(),
                     "ee_position": ee_position.tolist(),
                     "ee_orientation": ee_orientation.tolist(),
-                    "target_position": target_position.tolist(),
+                    "target_position": target_position.tolist(), # Cube target position
                     "cube_position": cube_position.tolist(),
                     "cube_orientation": cube_orientation.tolist(),
                     "stage": self.controller.get_current_event(),
                     "surface": surface,
+                    "ee_target_orientation":self.placement_orientation.tolist(),
                     # "grasp_failure": self.grasping_failure,
                     # "placement_failure": self.placement_failure
                 }
@@ -175,8 +196,9 @@ class StartSimulation:
             cube_position=np.array([x, y, 0]),
             target_position=np.array([p, q, 0.05])
         )
+        
         self.placement_orientation = np.random.uniform(low=-np.pi, high=np.pi, size=3)
-
+        
 
 def log_grasping(start_logging, env: StartSimulation):
     # Logging sections
@@ -233,7 +255,6 @@ def main():
     recorded = False     # Used to check if the data has been recorded
     replay = False       # Used for replay data     
     placement_finished = False     # Use when placement is done
-    previous_position_target = np.array([0,0,0])
 
 
     while simulation_app.is_running():
@@ -301,11 +322,9 @@ def main():
                     end_effector_offset=np.array([0, 0.005, 0]),
                     placement_orientation=env.placement_orientation,  
                     grasping_orientation=env.grasping_orientation[env.grasp_counter],    
-                    previous_position_target=previous_position_target       
                     # grasping_orientation=np.array([0, np.pi, 0]),           
                     # placement_orientation=np.array([0, np.pi, 0]),  
                 )
-                previous_position_target = position_target
                 
                 # Gripper release, but could not place the object into the ground
                 if env.controller.get_current_event() == 7:
@@ -320,7 +339,7 @@ def main():
                         env.placement_failure = True
 
                 # Gripper fully closed, did not grasp the object
-                if env.controller.get_current_event() == 4:
+                if env.controller.get_current_event() == 4 and env.placement_counter <= 1:
                     if np.floor(env.robot._gripper.get_joint_positions()[0] * 100) == 0 : 
                         env.grasping_failure = True
                         recorded = record_grasping(recorded, env)

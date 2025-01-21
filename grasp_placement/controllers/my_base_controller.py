@@ -114,7 +114,6 @@ class MyBaseController(BaseController):
         picking_position: np.ndarray,
         placing_position: np.ndarray,
         current_joint_positions: np.ndarray,
-        previous_position_target,
         end_effector_offset: typing.Optional[np.ndarray] = None,
         grasping_orientation: typing.Optional[np.ndarray] = None,
         placement_orientation: typing.Optional[np.ndarray] = None,
