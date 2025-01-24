@@ -5,7 +5,7 @@ import json
 import numpy as np
 from transforms3d.quaternions import quat2mat, mat2quat, qmult, qinverse
 from transforms3d.axangles import axangle2mat
-import omni.graph.core as og
+from tf2_msgs.msg import TFMessage
 
 DIR_PATH = "/home/chris/Chris/placement_ws/src/grasp_placement/data/"
 
@@ -157,7 +157,7 @@ def projection(q_current_cube, q_current_ee, q_desired_ee):
 
 
 
-def joint_graph_generation():
+def tf_graph_generation():
     import omni.graph.core as og
     keys = og.Controller.Keys
 
@@ -177,6 +177,7 @@ def joint_graph_generation():
                 ("IsaacClock", "omni.isaac.core_nodes.IsaacReadSimulationTime"),
                 ("RosContext", "omni.isaac.ros2_bridge.ROS2Context"),
                 ("TF_Tree", "omni.isaac.ros2_bridge.ROS2PublishTransformTree"),
+                
             ],
 
             keys.SET_VALUES: [
@@ -194,6 +195,32 @@ def joint_graph_generation():
             ]
         }
     )
+
+
+
+
+def process_tf_message(tf_message: TFMessage):
+    # Extract the frames and transformations
+    tf_data = []
+    for transform in tf_message.transforms:
+        frame_data = {
+            "parent_frame": transform.header.frame_id,
+            "child_frame": transform.child_frame_id,
+            "translation": {
+                "x": transform.transform.translation.x,
+                "y": transform.transform.translation.y,
+                "z": transform.transform.translation.z
+            },
+            "rotation": {
+                "x": transform.transform.rotation.x,
+                "y": transform.transform.rotation.y,
+                "z": transform.transform.rotation.z,
+                "w": transform.transform.rotation.w
+            }
+        }
+        tf_data.append(frame_data)
+    return tf_data
+
 
 
 if __name__ == "__main__":

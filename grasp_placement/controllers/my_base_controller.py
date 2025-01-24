@@ -184,20 +184,10 @@ class MyBaseController(BaseController):
 
         stage_time = 1
 
-
-        # if self._event == 0:
-        #     if np.array_equal(previous_position_target, position_target) or self._t >= stage_time:
-        #         self._event += 1
-        #         self._t = 0
-        # elif self._event == 1:
-        #     if previous_position_target[2] < position_target[2] or self._t >= stage_time:
-        #         self._event += 1
-        #         self._t = 0
-
         if self._t >= stage_time:
             self._event += 1
             self._t = 0
-        return target_joint_positions, position_target
+        return target_joint_positions
 
     def _get_interpolated_xy(self, target_x, target_y, current_x, current_y):
         alpha = self._get_alpha()

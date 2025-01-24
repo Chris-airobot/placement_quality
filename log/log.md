@@ -67,3 +67,10 @@ New updates,
 ## Jan 20 2025
 Meeting notes:
 - Remember to check the frames, should record the data in base frame
+
+
+## Jan 22 2025
+Use docker to generate grasps:
+- build a network socket between host and the docker/container
+- Container will be the server that generating the grasps
+- Host just wait for the corresponding grasps

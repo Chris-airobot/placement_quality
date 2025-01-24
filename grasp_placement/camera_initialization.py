@@ -42,7 +42,7 @@ class MyCamera:
         step_size = int(60/self.freq)
         topic_name = self.camera.name+"_camera_info"
         queue_size = 1
-        node_namespace = "camera"
+        node_namespace = ""
         frame_id = self.camera.prim_path.split("/")[-1] # This matches what the TF tree is publishing.
 
         writer = rep.writers.get("ROS2PublishCameraInfo")
@@ -80,7 +80,7 @@ class MyCamera:
         step_size = int(60/self.freq)
         topic_name = self.camera.name+"_pointcloud" # Set topic name to the camera's name
         queue_size = 1
-        node_namespace = "camera"
+        node_namespace = ""
         frame_id = self.camera.prim_path.split("/")[-1] # This matches what the TF tree is publishing.
 
         # Note, this pointcloud publisher will simply convert the Depth image to a pointcloud using the Camera intrinsics.
@@ -113,7 +113,7 @@ class MyCamera:
         step_size = int(60/self.freq)
         topic_name = self.camera.name+"_rgb"
         queue_size = 1
-        node_namespace = "camera"
+        node_namespace = ""
         frame_id = self.camera.prim_path.split("/")[-1] # This matches what the TF tree is publishing.
 
         rv = omni.syntheticdata.SyntheticData.convert_sensor_type_to_rendervar(sd.SensorType.Rgb.name)
@@ -141,7 +141,7 @@ class MyCamera:
         step_size = int(60/self.freq)
         topic_name = self.camera.name+"_depth"
         queue_size = 1
-        node_namespace = "camera"
+        node_namespace = ""
         frame_id = self.camera.prim_path.split("/")[-1] # This matches what the TF tree is publishing.
 
         rv = omni.syntheticdata.SyntheticData.convert_sensor_type_to_rendervar(
@@ -260,7 +260,6 @@ class MyCamera:
 def main():
 
     camera = MyCamera()
-    camera.initialize()
 
     # Starting the camera
     camera.start_camera()

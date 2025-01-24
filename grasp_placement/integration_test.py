@@ -1,6 +1,8 @@
 # import carb
 from isaacsim import SimulationApp
 
+import rclpy.wait_for_message
+
 CONFIG = {"headless": False}
 simulation_app = SimulationApp(CONFIG)
 
@@ -12,17 +14,21 @@ import asyncio
 import json
 import os
 import glob
+import rclpy
+from rclpy.node import Node
+from tf2_msgs.msg import TFMessage
+from rclpy.wait_for_message import wait_for_message
+
 from omni.isaac.core import World
 from omni.isaac.core.utils import stage, extensions
 from omni.isaac.core.scenes import Scene
 from omni.isaac.franka import Franka
-from omni.isaac.franka.tasks import PickPlace
+from controllers.pick_place_camera import PickPlaceCamera
 from controllers.data_collection_controller import DataCollectionController
-from omni.isaac.franka.controllers.pick_place_controller import PickPlaceController
 from omni.isaac.core.utils.types import ArticulationAction
 from helper import *
+from utilies.camera_utility import *
 from omni.isaac.core.utils.rotations import euler_angles_to_quat, quat_to_euler_angles
-from camera_initialization import MyCamera
 
 # from graph_initialization import joint_graph_generation, gripper_graph_generation
 # Enable ROS2 bridge extension
@@ -33,8 +39,25 @@ GRIPPER_MAX = 0.04
 GRIPPER_SPEED = 0.005
 DIR_PATH = "/home/chris/Chris/placement_ws/src/data/"
 
-class StartSimulation:
 
+class TFSubscriber(Node):
+    def __init__(self):
+        super().__init__("tf_subscriber")
+        self.latest_tf = None  # Store the latest TFMessage here
+
+        # Create the subscription
+        self.subscription = self.create_subscription(
+            TFMessage,           # Message type
+            "/tf",               # Topic name
+            self.tf_callback,    # Callback function
+            10                   # QoS
+        )
+
+    def tf_callback(self, msg):
+        # This callback is triggered for every new TF message on /tf
+        self.latest_tf = msg
+
+class StartSimulation:
     def __init__(self):
         self.world = None
         self.cube = None
@@ -50,14 +73,13 @@ class StartSimulation:
         
         self.data_logger = None
 
-        self.grasp_counter = 81
+        self.grasp_counter = 30
         self.placement_counter = 0
 
         self.replay_finished = True
 
         self.grasping_failure = False
-        self.placement_failure = False
-
+        self.placement_failure = False 
 
     def start(self):
 
@@ -75,17 +97,19 @@ class StartSimulation:
         p, q = np.random.uniform(low=range_choice[0], high=range_choice[1]), np.random.uniform(low=range_choice[0], high=range_choice[1])
 
 
-        self.task = PickPlace()
+        self.task = PickPlaceCamera()
         
 
         self.data_logger = self.world.get_data_logger() # a DataLogger object is defined in the World by default
 
         self.world.add_task(self.task)
+
+
+
         self.world.reset()
 
 
-        self.camera = MyCamera()
-        self.camera.start_camera()
+        
 
 
         self.task_params = self.task.get_params()
@@ -107,24 +131,32 @@ class StartSimulation:
         self.placement_orientation = np.random.uniform(low=-np.pi, high=np.pi, size=3)
 
         tf_graph_generation()
+        start_camera(self.task._camera)
+        
 
         
 
-    def _on_logging_event(self, val):
+    def _on_logging_event(self, val, tf_node: TFSubscriber):
         print(f"----------------- Grasping {self.grasp_counter} Placement {self.placement_counter} Start -----------------")
         print(f'Cube position is: {self.task.get_params()["cube_position"]["value"]}\n')
+
         if not self.world.get_data_logger().is_started():
             robot_name = self.task_params["robot_name"]["value"]
             cube_name = self.task_params["cube_name"]["value"]
             target_position = self.task_params["target_position"]["value"]
- 
+            camera_name = self.task_params["camera_name"]["value"]
+            if tf_node.latest_tf is not None:
+                tf_data = process_tf_message(tf_node.latest_tf)
+            else:
+                tf_data = None
             # A data logging function is called at every time step index if the data logger is started already.
             # We define the function here. The tasks and scene are passed to this function when called.
 
             def frame_logging_func(tasks, scene: Scene):
-                cube_position, cube_orientation =  scene.get_object(cube_name).get_world_pose()
-                ee_position, ee_orientation =  scene.get_object(robot_name).end_effector.get_world_pose()
+                cube_position, cube_orientation =  scene.get_object(cube_name).get_local_pose()
+                ee_position, ee_orientation =  scene.get_object(robot_name).end_effector.get_local_pose()
                 surface = surface_detection(quat_to_euler_angles(cube_orientation))
+                camera_position, camera_orientation =  scene.get_object(camera_name).get_local_pose()
 
                 return {
                     "joint_positions": scene.get_object(robot_name).get_joint_positions().tolist(),# save data as lists since its a json file.
@@ -137,6 +169,9 @@ class StartSimulation:
                     "stage": self.controller.get_current_event(),
                     "surface": surface,
                     "ee_target_orientation":self.placement_orientation.tolist(),
+                    "camera_position": camera_position.tolist(),
+                    "camera_orientation": camera_orientation.tolist(),
+                    "tf": tf_data
                     # "grasp_failure": self.grasping_failure,
                     # "placement_failure": self.placement_failure
                 }
@@ -162,15 +197,16 @@ class StartSimulation:
     # This is for replying the whole scene
     async def _on_replay_scene_event_async(self, data_file):
             self.data_logger.load(log_path=data_file)
+
             await self.world.play_async()
             self.world.add_physics_callback("replay_scene", self._on_replay_scene_step)
             return 
 
 
     def _on_replay_scene_step(self, step_size):
-
         if self.world.current_time_step_index < self.data_logger.get_num_of_data_frames():
             cube_name = self.task_params["cube_name"]["value"]
+            camera_name = self.task_params["camera_name"]["value"]
             data_frame = self.data_logger.get_data_frame(data_frame_index=self.world.current_time_step_index)
             self.articulation_controller.apply_action(
                 ArticulationAction(joint_positions=data_frame.data["applied_joint_positions"])
@@ -180,6 +216,12 @@ class StartSimulation:
                 position=np.array(data_frame.data["cube_position"]),
                 orientation=np.array(data_frame.data["cube_orientation"])
             )
+            # Sets the world position of the goal camera to the same recoded position
+            self.world.scene.get_object(camera_name).set_world_pose(
+                position=np.array(data_frame.data["camera_position"]),
+                orientation=np.array(data_frame.data["camera_orientation"])
+            )
+
 
         elif self.world.current_time_step_index == self.data_logger.get_num_of_data_frames():
             print("----------------- Replay Finished, now moving to Placement Phase -----------------\n")
@@ -191,7 +233,9 @@ class StartSimulation:
         return
 
     def reset(self):
-        self.world.reset()
+        self.world.reset(True)
+        self.world._timeline_timer_callback_fn(None)
+        self.task._camera.initialize()
         self.controller.reset()
         self.placement_failure = False
         self.grasping_failure = False
@@ -212,10 +256,10 @@ class StartSimulation:
         self.placement_orientation = np.random.uniform(low=-np.pi, high=np.pi, size=3)
         
 
-def log_grasping(start_logging, env: StartSimulation):
+def log_grasping(start_logging, env: StartSimulation, tf_node: TFSubscriber):
     # Logging sections
     if start_logging:
-        env._on_logging_event(True)
+        env._on_logging_event(True, tf_node)
         start_logging = False
 
     return start_logging
@@ -251,12 +295,18 @@ def replay_grasping(env: StartSimulation):
         file_list = glob.glob(file_pattern)
 
         extract_grasping(file_list[0])
-
     asyncio.ensure_future(env._on_replay_scene_event_async(file_path))
     return True
 
 
 def main():
+    rclpy.init()
+    tf_node = TFSubscriber()
+    
+    # Create an executor (SingleThreadedExecutor is the simplest choice)
+    from rclpy.executors import SingleThreadedExecutor
+    executor = SingleThreadedExecutor()
+    executor.add_node(tf_node)
 
     env = StartSimulation()
     env.start()
@@ -267,10 +317,24 @@ def main():
     recorded = False     # Used to check if the data has been recorded
     replay = False       # Used for replay data     
     placement_finished = False     # Use when placement is done
+    tf_started = False
 
 
     while simulation_app.is_running():
-        env.world.step(render=True)
+        try:
+            env.world.step(render=True)
+        except:
+            print("Something wrong with hitting the floor")
+            if env.placement_counter <= 1:
+                reset_needed = True
+                continue
+            elif env.placement_counter > 1 and env.placement_counter < 200:
+                env.reset()
+                replay = True
+                continue
+        # 2) Spin ROS for a short time so callbacks are processed
+        executor.spin_once(timeout_sec=0.01)
+        tf_started = not tf_node.latest_tf==None
         if env.world.is_playing():
             # The grasp is done, no more placement 
             if reset_needed:
@@ -282,8 +346,6 @@ def main():
                 placement_finished = False
                 env.grasp_counter += 1
                 env.placement_counter = 0
-                previous_position_target = np.array([0,0,0])
-                
             
             # Replaying Session
             if replay:
@@ -295,8 +357,6 @@ def main():
                 start_logging = True
                 recorded = False
                 env.placement_failure = False
-                previous_position_target = np.array([0,0,0])
-
 
             # One placement is done
             elif placement_finished:
@@ -308,13 +368,11 @@ def main():
                     env.reset()
                     replay = True
                     placement_finished = False
-                    previous_position_target = np.array([0,0,0])
-
                 
-            elif env.replay_finished:
+            elif env.replay_finished and tf_started:
 
                 # Recording Session
-                start_logging = log_grasping(start_logging, env)
+                start_logging = log_grasping(start_logging, env, tf_node)
                 try:
                     observations = env.world.get_observations()
                 except:
@@ -327,7 +385,7 @@ def main():
                         replay = True
                         continue
 
-                actions, position_target = env.controller.forward(
+                actions = env.controller.forward(
                     picking_position=observations[env.task_params["cube_name"]["value"]]["position"],
                     placing_position=observations[env.task_params["cube_name"]["value"]]["target_position"],
                     current_joint_positions=observations[env.task_params["robot_name"]["value"]]["joint_positions"],
@@ -339,16 +397,16 @@ def main():
                 )
                 
                 # Gripper release, but could not place the object into the ground
-                if env.controller.get_current_event() == 7:
-                    position, _ = env.world.scene.get_object(env.task_params["cube_name"]["value"]).get_world_pose()
-                    target = env.task_params["target_position"]["value"]
-                    distance = math.sqrt(
-                        (target[0] - position[0]) ** 2 +
-                        (target[1] - position[1]) ** 2
-                    )
-                    threshold = 0.1
-                    if distance > threshold:
-                        env.placement_failure = True
+                # if env.controller.get_current_event() == 7:
+                #     position, _ = env.world.scene.get_object(env.task_params["cube_name"]["value"]).get_world_pose()
+                #     target = env.task_params["target_position"]["value"]
+                #     distance = math.sqrt(
+                #         (target[0] - position[0]) ** 2 +
+                #         (target[1] - position[1]) ** 2
+                #     )
+                #     threshold = 0.1
+                #     if distance > threshold:
+                #         env.placement_failure = True
 
                 # Gripper fully closed, did not grasp the object
                 if env.controller.get_current_event() == 4 and env.placement_counter <= 1:
