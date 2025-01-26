@@ -14,7 +14,7 @@ def publish_camera_info(camera: Camera, freq):
     step_size = int(60/freq)
     topic_name = camera.name+"_camera_info"
     queue_size = 1
-    node_namespace = f"/namespace_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    node_namespace = f""
     frame_id = camera.prim_path.split("/")[-1] # This matches what the TF tree is publishing.
 
     writer = rep.writers.get("ROS2PublishCameraInfo")
@@ -50,7 +50,7 @@ def publish_pointcloud_from_depth(camera: Camera, freq):
     step_size = int(60/freq)
     topic_name = camera.name+"_pointcloud" # Set topic name to the camera's name
     queue_size = 1
-    node_namespace = f"/namespace_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    node_namespace = f""
     frame_id = camera.prim_path.split("/")[-1] # This matches what the TF tree is publishing.
 
     # Note, this pointcloud publisher will simply convert the Depth image to a pointcloud using the Camera intrinsics.
@@ -201,7 +201,6 @@ def publish_camera_tf(camera: Camera):
             },
         )
     except Exception as e:
-        print("are you here at all????")
         print(e)
 
     # Add target prims for the USD pose. All other frames are static.
@@ -216,6 +215,6 @@ def start_camera(camera: Camera):
     approx_freq = 30
     publish_camera_tf(camera)
     publish_camera_info(camera, approx_freq)
-    # # publish_rgb(camera, approx_freq)
-    # # publish_depth(camera, approx_freq)
-    # publish_pointcloud_from_depth(camera, approx_freq)
+    publish_rgb(camera, approx_freq)
+    publish_depth(camera, approx_freq)
+    publish_pointcloud_from_depth(camera, approx_freq)

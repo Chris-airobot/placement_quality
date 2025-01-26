@@ -17,6 +17,7 @@ import glob
 import rclpy
 from rclpy.node import Node
 from tf2_msgs.msg import TFMessage
+from sensor_msgs.msg import PointCloud2
 from rclpy.wait_for_message import wait_for_message
 
 from omni.isaac.core import World
@@ -44,14 +45,26 @@ class TFSubscriber(Node):
     def __init__(self):
         super().__init__("tf_subscriber")
         self.latest_tf = None  # Store the latest TFMessage here
+        self.latest_pcd = None # Store the latest Pointcloud here
 
         # Create the subscription
-        self.subscription = self.create_subscription(
+        self.tf_subscription = self.create_subscription(
             TFMessage,           # Message type
             "/tf",               # Topic name
             self.tf_callback,    # Callback function
             10                   # QoS
         )
+
+        self.pcd_subscription = self.create_subscription(
+            PointCloud2,           # Message type
+            "/my_camera_pointcloud",               # Topic name
+            self.pcd_callback,    # Callback function
+            10                   # QoS
+        )
+
+    def pcd_callback(self, msg):
+        self.latest_pcd = msg
+
 
     def tf_callback(self, msg):
         # This callback is triggered for every new TF message on /tf
@@ -110,7 +123,6 @@ class StartSimulation:
 
 
         
-
 
         self.task_params = self.task.get_params()
         self.robot: Franka =  self.world.scene.get_object(self.task_params["robot_name"]["value"])
@@ -317,7 +329,7 @@ def main():
     recorded = False     # Used to check if the data has been recorded
     replay = False       # Used for replay data     
     placement_finished = False     # Use when placement is done
-    tf_started = False
+    tf_started = False   # Topic has initianiated
 
 
     while simulation_app.is_running():
