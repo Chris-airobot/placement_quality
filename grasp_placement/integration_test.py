@@ -78,29 +78,25 @@ class StartSimulation:
         self.robot = None
         self.task = None
         self.task_params = None
-        self.grasping_orientation = None
         self.placement_orientation = None  # Gripper orientation when the cube is about to be placed
         self.camera = None
         self.contact = None
-
+        self.current_grasp_pose = None # Should be in a format of [np.array[x,y,z], np.array[x,y,z]]
+        self.grasp_poses = []
         
         self.data_logger = None
 
+        self.pcd_counter = 0
         self.grasp_counter = 0
         self.placement_counter = 0
+        
 
         self.replay_finished = True
-
         self.grasping_failure = False
-        self.placement_failure = False 
 
 
 
     def start(self):
-
-        # Orientations creation
-        self.grasping_orientation = orientation_creation()
-
         # Set up the world
         self.world: World = World(stage_units_in_meters=1.0)
 
@@ -202,7 +198,7 @@ class StartSimulation:
 
 
     def _on_logging_event(self, val, tf_node: TFSubscriber):
-        print(f"----------------- Grasping {self.grasp_counter} Placement {self.placement_counter} Start -----------------")
+        print(f"----------------- Pcd {self.pcd_counter} Grasping {self.grasp_counter} Placement {self.placement_counter} Start -----------------")
         print(f'Cube position is: {self.task.get_params()["cube_position"]["value"]}\n')
 
         if not self.world.get_data_logger().is_started():
@@ -238,8 +234,6 @@ class StartSimulation:
                     "camera_orientation": camera_orientation.tolist(),
                     "tf": tf_data,
                     "contact": self.contact
-                    # "grasp_failure": self.grasping_failure,
-                    # "placement_failure": self.placement_failure
                 }
 
             self.data_logger.add_data_frame_logging_func(frame_logging_func) # adds the function to be called at each physics time step.
@@ -294,15 +288,12 @@ class StartSimulation:
             self.replay_finished = True
             self.controller._event = 4
             self.world.clear_physics_callbacks()
-        
-        
         return
 
     def reset(self):
         self.world.reset()
         self.task._camera.initialize()
         self.controller.reset()
-        self.placement_failure = False
         self.grasping_failure = False
 
         ranges = [(-0.3, -0.1), (0.1, 0.3)]
@@ -333,7 +324,7 @@ def log_grasping(start_logging, env: StartSimulation, tf_node: TFSubscriber):
 def record_grasping(recorded, env: StartSimulation):
     # Recording section
     if not recorded:
-        file_path = DIR_PATH + f"Grasping_{env.grasp_counter}/placement_{env.placement_counter}_{env.grasping_failure}_{env.placement_failure}.json"
+        file_path = DIR_PATH + f"Pcd_{env.pcd_counter}/Grasping_{env.grasp_counter}/placement_{env.placement_counter}_{env.grasping_failure}.json"
 
         # Ensure the parent directories exist
         directory = os.path.dirname(file_path)
@@ -350,13 +341,13 @@ def record_grasping(recorded, env: StartSimulation):
 
 
 def replay_grasping(env: StartSimulation):
-    print(f"----------------- Replaying Grasping {env.grasp_counter} ----------------- \n")
+    print(f"----------------- Replaying Pcd {env.pcd_counter} Grasping {env.grasp_counter} ----------------- \n")
 
-    file_path = DIR_PATH + f"Grasping_{env.grasp_counter}/grasping.json"
+    file_path = DIR_PATH + f"Pcd_{env.pcd_counter}/Grasping_{env.grasp_counter}/Grasping.json"
 
     # If the replay data does not exist, create one
     if not os.path.exists(file_path):
-        file_pattern = os.path.join(DIR_PATH, f"Grasping_{env.grasp_counter}/placement_*.json")
+        file_pattern = os.path.join(DIR_PATH, f"Pcd_{env.pcd_counter}/Grasping_{env.grasp_counter}/Placement_*.json")
         file_list = glob.glob(file_pattern)
 
         extract_grasping(file_list[0])
@@ -377,12 +368,11 @@ def main():
     env.start()
 
     # One grasp corresponding to many placements
-    reset_needed = False # Used when grasp is done 
-    start_logging = True # Used for start logging
-    recorded = False     # Used to check if the data has been recorded
-    replay = False       # Used for replay data     
-    placement_finished = False     # Use when placement is done
-    tf_started = False   # Topic has initianiated
+    reset_needed = True            # Used when grasp is done 
+    start_logging = True           # Used for start logging
+    recorded = False               # Used to check if the data has been recorded
+    replay = False                 # Used for replay data     
+    # tf_started = False             # Topic has initianiated
 
 
     while simulation_app.is_running():
@@ -391,20 +381,35 @@ def main():
         except:
             print("Something wrong with hitting the floor in step")
             env.reset()
-            reset_needed = True
+            reset_needed = False
+            start_logging = True
+            recorded = False
+            replay = False
         # 2) Spin ROS for a short time so callbacks are processed
         executor.spin_once(timeout_sec=0.01)
-        tf_started = not tf_node.latest_tf==None
+
+        # tf_started = not tf_node.latest_tf==None
+        if tf_node.latest_tf is not None:
+            continue
+
         if env.world.is_playing():
-            # The grasp is done, no more placement 
+            # Current grasp pose is done, forward to next grasp pose 
             if reset_needed:
                 env.reset()
                 reset_needed = False
                 start_logging = True
                 recorded = False
                 replay = False
-                placement_finished = False
-                env.grasp_counter += 1
+                if env.grasp_poses: # There are saved existing poses 
+                    env.current_grasp_pose = env.grasp_poses.pop(0)
+                    env.grasp_counter += 1
+                else:
+                    save_pointcloud(tf_node.latest_pcd)
+                    env.pcd_counter += 1
+                    env.grasp_poses = obtain_grasps(tf_node.latest_pcd)
+                    env.current_grasp_pose = env.grasp_poses.pop(0)
+                    env.grasp_counter = 1
+
                 env.placement_counter = 0
             
             # Replaying Session
@@ -416,21 +421,9 @@ def main():
                 replay = False
                 start_logging = True
                 recorded = False
-                env.placement_failure = False
 
-            # One placement is done
-            elif placement_finished:
-
-                # Maximum placement has been reached
-                if env.placement_counter >= 200:
-                    reset_needed = True
-                else: 
-                    env.reset()
-                    replay = True
-                    placement_finished = False
-                
-            elif env.replay_finished and tf_started:
-
+            elif env.replay_finished:
+            # elif env.replay_finished and tf_started:
                 # Recording Session
                 start_logging = log_grasping(start_logging, env, tf_node)
                 try:
@@ -438,36 +431,27 @@ def main():
                 except:
                     print("Something wrong with hitting the floor in observation")
                     if env.placement_counter <= 1:
-                        reset_needed = True
+                        env.reset()
+                        reset_needed = False
+                        start_logging = True
+                        recorded = False
+                        replay = False
                         continue
                     elif env.placement_counter > 1 and env.placement_counter < 200:
                         env.reset()
                         replay = True
                         continue
 
+                
                 actions = env.controller.forward(
                     picking_position=observations[env.task_params["cube_name"]["value"]]["position"],
                     placing_position=observations[env.task_params["cube_name"]["value"]]["target_position"],
                     current_joint_positions=observations[env.task_params["robot_name"]["value"]]["joint_positions"],
                     end_effector_offset=np.array([0, 0.005, 0]),
                     placement_orientation=env.placement_orientation,  
-                    grasping_orientation=env.grasping_orientation[env.grasp_counter],    
-                    # grasping_orientation=np.array([0, np.pi, 0]),           
-                    # placement_orientation=np.array([0, np.pi, 0]),  
+                    grasping_orientation=env.current_grasp_pose[1],    
                 )
                 
-                # Gripper release, but could not place the object into the ground
-                # if env.controller.get_current_event() == 7:
-                #     position, _ = env.world.scene.get_object(env.task_params["cube_name"]["value"]).get_world_pose()
-                #     target = env.task_params["target_position"]["value"]
-                #     distance = math.sqrt(
-                #         (target[0] - position[0]) ** 2 +
-                #         (target[1] - position[1]) ** 2
-                #     )
-                #     threshold = 0.1
-                #     if distance > threshold:
-                #         env.placement_failure = True
-
                 # Gripper fully closed, did not grasp the object
                 if env.controller.get_current_event() == 4 and env.placement_counter <= 1:
                     if np.floor(env.robot._gripper.get_joint_positions()[0] * 100) == 0 : 
@@ -479,9 +463,13 @@ def main():
 
             if env.controller.is_done():
                 print("----------------- done picking and placing ----------------- \n\n")
-                placement_finished = True
                 recorded = record_grasping(recorded, env)
 
+                if env.placement_counter >= 200:
+                    reset_needed = True
+                else: 
+                    env.reset()
+                    replay = True
             
     simulation_app.close()
 

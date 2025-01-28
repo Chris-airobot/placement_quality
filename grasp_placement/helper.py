@@ -6,6 +6,7 @@ import numpy as np
 from transforms3d.quaternions import quat2mat, mat2quat, qmult, qinverse
 from transforms3d.axangles import axangle2mat
 from tf2_msgs.msg import TFMessage
+from sensor_msgs.msg import PointCloud2
 
 DIR_PATH = "/home/chris/Chris/placement_ws/src/grasp_placement/data/"
 
@@ -222,6 +223,12 @@ def process_tf_message(tf_message: TFMessage):
     return tf_data
 
 
+def save_pointcloud(msg: PointCloud2):
+    pass
+
+def obtain_grasps(pcd):
+    # also save poses
+    pass
 
 if __name__ == "__main__":
     # # # Example Usage
