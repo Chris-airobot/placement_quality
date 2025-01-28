@@ -147,7 +147,7 @@ def publish_camera_tf(camera: Camera):
         camera_frame_id=camera_prim.split("/")[-1]
 
         # Generate an action graph associated with camera TF publishing.
-        ros_camera_graph_path = "/CameraTFActionGraph"
+        ros_camera_graph_path = "/Graphs/CameraTFActionGraph"
 
         # If a camera graph is not found, create a new one.
         if not is_prim_path_valid(ros_camera_graph_path):
@@ -211,10 +211,128 @@ def publish_camera_tf(camera: Camera):
     )
     return
 
+
+
+def camera_graph_generation(
+    camera: Camera,
+    graph_path: str = "/Graphs/ROS_Camera",
+    node_namespace: str = "",
+    rgb_topic: str = "/rgb",
+    depth_topic: str = "/depth",
+    depth_pcl_topic: str = "/depth_pcl",
+):
+    """
+    Creates an OmniGraph that publishes:
+    1) Camera Info
+    2) RGB Image
+    3) Depth Image
+    4) Depth Pointcloud
+    from the specified camera prim via ROS2.
+
+    No conditionals—always publishes the three streams plus camera info.
+    """
+    camera_prim = camera.prim_path
+    frame_id = camera_prim.split("/")[-1]
+
+    # # Stop the timeline so we can safely build the graph
+    # timeline = omni.timeline.get_timeline_interface()
+    # timeline.stop()
+
+    # Create a new graph with OnPlaybackTick, RunOnce, RenderProduct, ROS2Context
+    # Always use "execution" evaluator
+    graph_edit_result = og.Controller.edit(
+        {
+            "graph_path": graph_path, 
+            "evaluator_name": "execution",
+            "pipeline_stage": og.GraphPipelineStage.GRAPH_PIPELINE_STAGE_SIMULATION,
+        },
+        {
+            # Create nodes
+            og.Controller.Keys.CREATE_NODES: [
+                ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
+                ("RunOnce", "omni.isaac.core_nodes.OgnIsaacRunOneSimulationFrame"),
+                ("RenderProduct", "omni.isaac.core_nodes.IsaacCreateRenderProduct"),
+                ("Context", "omni.isaac.ros2_bridge.ROS2Context"),
+                ("CameraInfo", "omni.isaac.ros2_bridge.ROS2CameraInfoHelper"),
+                ("RGB", "omni.isaac.ros2_bridge.ROS2CameraHelper"),
+                ("Depth", "omni.isaac.ros2_bridge.ROS2CameraHelper"),
+                ("DepthPCL", "omni.isaac.ros2_bridge.ROS2CameraHelper"),
+            ],
+            # Set attribute values
+            og.Controller.Keys.SET_VALUES: [
+                ("RenderProduct.inputs:cameraPrim", camera_prim),
+                ("CameraInfo.inputs:topicName", "camera_info"),
+                ("CameraInfo.inputs:frameId", frame_id),
+                ("CameraInfo.inputs:nodeNamespace", node_namespace),
+                ("CameraInfo.inputs:resetSimulationTimeOnStop", True),
+
+                ("RGB.inputs:topicName", rgb_topic),
+                ("RGB.inputs:type", "rgb"),
+                ("RGB.inputs:frameId", frame_id),
+                ("RGB.inputs:nodeNamespace", node_namespace),
+                ("RGB.inputs:resetSimulationTimeOnStop", True),
+
+                ("Depth.inputs:topicName", depth_topic),
+                ("Depth.inputs:type", "depth"),
+                ("Depth.inputs:frameId", frame_id),
+                ("Depth.inputs:nodeNamespace", node_namespace),
+                ("Depth.inputs:resetSimulationTimeOnStop", True),
+
+                ("DepthPCL.inputs:topicName", depth_pcl_topic),
+                ("DepthPCL.inputs:type", "depth_pcl"),
+                ("DepthPCL.inputs:frameId", frame_id),
+                ("DepthPCL.inputs:nodeNamespace", node_namespace),
+                ("DepthPCL.inputs:resetSimulationTimeOnStop", True),
+            ],
+            # Connect execution flows and data
+            og.Controller.Keys.CONNECT: [
+                # Tick -> RunOnce
+                ("OnPlaybackTick.outputs:tick", "RunOnce.inputs:execIn"),
+
+                # RunOnce -> RenderProduct
+                ("RunOnce.outputs:step", "RenderProduct.inputs:execIn"),
+
+                # RenderProduct -> CameraInfo
+                ("RenderProduct.outputs:execOut", "CameraInfo.inputs:execIn"),
+                ("RenderProduct.outputs:renderProductPath", "CameraInfo.inputs:renderProductPath"),
+
+                # RenderProduct -> RGB
+                ("RenderProduct.outputs:execOut", "RGB.inputs:execIn"),
+                ("RenderProduct.outputs:renderProductPath", "RGB.inputs:renderProductPath"),
+
+                # RenderProduct -> Depth
+                ("RenderProduct.outputs:execOut", "Depth.inputs:execIn"),
+                ("RenderProduct.outputs:renderProductPath", "Depth.inputs:renderProductPath"),
+
+                # RenderProduct -> DepthPCL
+                ("RenderProduct.outputs:execOut", "DepthPCL.inputs:execIn"),
+                ("RenderProduct.outputs:renderProductPath", "DepthPCL.inputs:renderProductPath"),
+
+                # Context -> CameraInfo
+                ("Context.outputs:context", "CameraInfo.inputs:context"),
+                # Context -> RGB
+                ("Context.outputs:context", "RGB.inputs:context"),
+                # Context -> Depth
+                ("Context.outputs:context", "Depth.inputs:context"),
+                # Context -> DepthPCL
+                ("Context.outputs:context", "DepthPCL.inputs:context"),
+            ],
+        },
+    )
+
+
+
+
+
+
+
+
+
 def start_camera(camera: Camera):
     approx_freq = 30
     publish_camera_tf(camera)
-    publish_camera_info(camera, approx_freq)
-    publish_rgb(camera, approx_freq)
-    publish_depth(camera, approx_freq)
-    publish_pointcloud_from_depth(camera, approx_freq)
+    camera_graph_generation(camera)
+    # publish_camera_info(camera, approx_freq)
+    # publish_rgb(camera, approx_freq)
+    # publish_depth(camera, approx_freq)
+    # publish_pointcloud_from_depth(camera, approx_freq)

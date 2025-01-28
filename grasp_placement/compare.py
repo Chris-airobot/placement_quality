@@ -11,74 +11,67 @@ from isaacsim import SimulationApp
 
 simulation_app = SimulationApp({"headless": False})
 
-import carb
-from omni.isaac.core import World
-from omni.isaac.franka import KinematicsSolver
-from omni.isaac.franka.controllers.rmpflow_controller import RMPFlowController
-from omni.isaac.franka.tasks import FollowTarget
-from omni.isaac.sensor import ContactSensor, _sensor
-import omni.kit.commands
-import numpy as np
-from omni.physx import get_physx_interface, get_physx_simulation_interface
-from pxr import Usd, UsdLux, UsdGeom, UsdShade, Sdf, Gf, Tf, Vt, UsdPhysics, PhysxSchema
-from omni.physx.scripts.physicsUtils import *
-import omni.usd
+import argparse
+import sys
 
-def get_current_stage() -> Usd.Stage:
-    return omni.usd.get_context().get_stage()
+import carb
+import numpy as np
+from omni.isaac.core import World
+from omni.isaac.core.articulations import Articulation
+from omni.isaac.core.utils.stage import add_reference_to_stage
+from omni.isaac.nucleus import get_assets_root_path
+from omni.isaac.sensor import ContactSensor
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--test", default=False, action="store_true", help="Run in test mode")
+args, unknown = parser.parse_known_args()
+
+assets_root_path = get_assets_root_path()
+if assets_root_path is None:
+    carb.log_error("Could not find Isaac Sim assets folder")
+    simulation_app.close()
+    sys.exit()
 
 
 my_world = World(stage_units_in_meters=1.0)
-my_task = FollowTarget(name="follow_target_task")
-my_world.add_task(my_task)
+my_world.scene.add_default_ground_plane()
+asset_path = assets_root_path + "/Isaac/Robots/Ant/ant.usd"
+add_reference_to_stage(usd_path=asset_path, prim_path="/World/Ant")
+
+ant = my_world.scene.add(Articulation(prim_path="/World/Ant/torso", name="ant", translation=np.array([0, 0, 1.5])))
+
+ant_foot_prim_names = ["right_back_foot", "left_back_foot", "front_right_foot", "front_left_foot"]
+
+translations = np.array(
+    [[0.38202, -0.40354, -0.0887], [-0.4, -0.40354, -0.0887], [-0.4, 0.4, -0.0887], [0.4, 0.4, -0.0887]]
+)
+
+ant_sensors = []
+for i in range(4):
+    ant_sensors.append(
+        my_world.scene.add(
+            ContactSensor(
+                prim_path="/World/Ant/" + ant_foot_prim_names[i] + "/contact_sensor",
+                name="ant_contact_sensor_{}".format(i),
+                min_threshold=0,
+                max_threshold=10000000,
+                radius=0.1,
+                translation=translations[i],
+            )
+        )
+    )
+
+ant_sensors[0].add_raw_contact_data_to_frame()
 my_world.reset()
-
-
-
-task_params = my_world.get_task("follow_target_task").get_params()
-franka_name = task_params["robot_name"]["value"]
-target_name = task_params["target_name"]["value"]
-my_franka = my_world.scene.get_object(franka_name)
-my_controller = KinematicsSolver(my_franka)
-articulation_controller = my_franka.get_articulation_controller()
 reset_needed = False
-
-
-# apply contact report
-stage = get_current_stage()
-spherePrim = stage.GetPrimAtPath("/World/Franka")
-add_rigid_xform(stage,"/World/Franka")
-contactReportAPI = PhysxSchema.PhysxContactReportAPI.Apply(spherePrim)
-contactReportAPI.CreateThresholdAttr().Set(200000)
-
-
-
 while simulation_app.is_running():
     my_world.step(render=True)
     if my_world.is_stopped() and not reset_needed:
         reset_needed = True
     if my_world.is_playing():
+        print(ant_sensors[0].get_current_frame())
         if reset_needed:
             my_world.reset()
             reset_needed = False
-        observations = my_world.get_observations()
-        actions, succ = my_controller.compute_inverse_kinematics(
-            target_position=observations[target_name]["position"],
-            target_orientation=observations[target_name]["orientation"],
-        )
 
-        contact_headers, contact_data = get_physx_simulation_interface().get_contact_report()
-        print(len(contact_headers))
-        for contact_header in contact_headers:
-            print("Got contact header type: " + str(contact_header.type))
-            print("Actor0: " + str(PhysicsSchemaTools.intToSdfPath(contact_header.actor0)))
-            print("Actor1: " + str(PhysicsSchemaTools.intToSdfPath(contact_header.actor1)))
-            print("Collider0: " + str(PhysicsSchemaTools.intToSdfPath(contact_header.collider0)))
-            print("Collider1: " + str(PhysicsSchemaTools.intToSdfPath(contact_header.collider1)))
-            print("StageId: " + str(contact_header.stage_id))
-            print("Number of contacts: " + str(contact_header.num_contact_data))
-        if succ:
-            articulation_controller.apply_action(actions)
-        else:
-            carb.log_warn("IK did not converge to a solution.  No action is being taken.")
 simulation_app.close()

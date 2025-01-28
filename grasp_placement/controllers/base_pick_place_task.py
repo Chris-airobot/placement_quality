@@ -18,6 +18,7 @@ from omni.isaac.core.utils.stage import get_stage_units
 from omni.isaac.core.utils.string import find_unique_string_name
 from omni.isaac.sensor import Camera
 from pyquaternion import Quaternion
+from omni.isaac.franka import Franka
 class MyPickPlace(ABC, BaseTask):
     """[summary]
 
@@ -85,13 +86,14 @@ class MyPickPlace(ABC, BaseTask):
         )
         self._task_objects[self._cube.name] = self._cube
         camera_position = self._cube_initial_position + np.array([0.0, 0.0, 1.1])
-        # camera_orientation = self.camera_orientation(camera_position, self._cube_initial_position)
-        camera_orientation = np.array([0.5, 0.5, -0.5, -0.5])
+        # camera_orientation = np.array([1, 0, 0, 0])
+        camera_orientation = np.array([0.5, -0.5, 0.5, 0.5])
 
         self._camera:Camera = self.set_camera(camera_position, camera_orientation)
         scene.add(self._camera)
         self._task_objects[self._camera.name] = self._camera
-        self._robot = self.set_robot()
+        self._robot: Franka = self.set_robot()
+        self._robot.set_enabled_self_collisions(True)
         scene.add(self._robot)
         self._task_objects[self._robot.name] = self._robot
         self._move_task_objects_to_their_frame()
@@ -116,7 +118,8 @@ class MyPickPlace(ABC, BaseTask):
         if cube_position is not None or cube_orientation is not None:
             camera_position = cube_position + np.array([0, 0.0, 1.1])
             # camera_orientation = self.camera_orientation(camera_position, cube_position)
-            camera_orientation = np.array([0.5, 0.5, -0.5, -0.5])
+            camera_orientation = np.array([0.5, -0.5, 0.5, 0.5])
+            # camera_orientation = np.array([1, 0, 0, 0])
             self._cube.set_local_pose(translation=cube_position, orientation=cube_orientation)
             self._camera.set_local_pose(translation=camera_position, orientation=camera_orientation)
         return

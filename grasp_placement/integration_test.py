@@ -1,8 +1,5 @@
 # import carb
 from isaacsim import SimulationApp
-
-import rclpy.wait_for_message
-
 CONFIG = {"headless": False}
 simulation_app = SimulationApp(CONFIG)
 
@@ -18,10 +15,9 @@ import rclpy
 from rclpy.node import Node
 from tf2_msgs.msg import TFMessage
 from sensor_msgs.msg import PointCloud2
-from rclpy.wait_for_message import wait_for_message
 
 from omni.isaac.core import World
-from omni.isaac.core.utils import stage, extensions
+from omni.isaac.core.utils import extensions
 from omni.isaac.core.scenes import Scene
 from omni.isaac.franka import Franka
 from controllers.pick_place_camera import PickPlaceCamera
@@ -30,6 +26,9 @@ from omni.isaac.core.utils.types import ArticulationAction
 from helper import *
 from utilies.camera_utility import *
 from omni.isaac.core.utils.rotations import euler_angles_to_quat, quat_to_euler_angles
+from omni.isaac.sensor import ContactSensor
+from functools import partial
+from typing import List
 
 # from graph_initialization import joint_graph_generation, gripper_graph_generation
 # Enable ROS2 bridge extension
@@ -57,7 +56,7 @@ class TFSubscriber(Node):
 
         self.pcd_subscription = self.create_subscription(
             PointCloud2,           # Message type
-            "/my_camera_pointcloud",               # Topic name
+            "/pointcloud_for_grasper",               # Topic name
             self.pcd_callback,    # Callback function
             10                   # QoS
         )
@@ -82,17 +81,20 @@ class StartSimulation:
         self.grasping_orientation = None
         self.placement_orientation = None  # Gripper orientation when the cube is about to be placed
         self.camera = None
+        self.contact = None
 
         
         self.data_logger = None
 
-        self.grasp_counter = 30
+        self.grasp_counter = 0
         self.placement_counter = 0
 
         self.replay_finished = True
 
         self.grasping_failure = False
         self.placement_failure = False 
+
+
 
     def start(self):
 
@@ -117,12 +119,40 @@ class StartSimulation:
 
         self.world.add_task(self.task)
 
+        self.world.reset()
 
+        panda_prim_names = [
+            "panda_link0",
+            "panda_link1",
+            "panda_link2",
+            "panda_link3",
+            "panda_link4",
+            "panda_link5",
+            "panda_link6",
+            "panda_link7",
+            "panda_link8",
+            "panda_hand",
+        ]
+
+        panda_sensors = []
+        for i, link_name in enumerate(panda_prim_names):
+            sensor: ContactSensor = self.world.scene.add(
+                ContactSensor(
+                    prim_path=f"/World/Franka/{link_name}/contact_sensor",
+                    name=f"panda_contact_sensor_{i}",
+                    min_threshold=0.0,
+                    max_threshold=1e7,
+                    radius=0.1,
+                )
+            )
+            # Use raw contact data if desired
+            sensor.add_raw_contact_data_to_frame()
+            panda_sensors.append(sensor)
 
         self.world.reset()
 
-
-        
+        # Contact report for links
+        self.world.add_physics_callback("contact_sensor_callback", partial(self.on_sensor_contact_report, sensors=panda_sensors))
 
         self.task_params = self.task.get_params()
         self.robot: Franka =  self.world.scene.get_object(self.task_params["robot_name"]["value"])
@@ -146,7 +176,30 @@ class StartSimulation:
         start_camera(self.task._camera)
         
 
-        
+    def on_sensor_contact_report(self, dt, sensors: List[ContactSensor]):
+        """Physics-step callback: checks all sensors, sets self.contact accordingly."""
+        any_contact = False  # track if at least one sensor had contact
+
+        for sensor in sensors:
+            frame_data = sensor.get_current_frame()
+            if frame_data["in_contact"]:
+                # We have contact! Extract the bodies, force, etc.
+                for c in frame_data["contacts"]:
+                    body0 = c["body0"]
+                    body1 = c["body1"]
+                    # Example: store the bodies in a single string
+                    if ("GroundPlane" in body0) or ("GroundPlane" in body1):
+                        print("Hits the ground, and it will be recorded")
+                        any_contact = True
+                        self.contact = f"{body0} | {body1}"
+
+        # If, after checking all sensors, none had contact, reset self.contact to None
+        if not any_contact:
+            self.contact = None
+
+
+
+
 
     def _on_logging_event(self, val, tf_node: TFSubscriber):
         print(f"----------------- Grasping {self.grasp_counter} Placement {self.placement_counter} Start -----------------")
@@ -183,7 +236,8 @@ class StartSimulation:
                     "ee_target_orientation":self.placement_orientation.tolist(),
                     "camera_position": camera_position.tolist(),
                     "camera_orientation": camera_orientation.tolist(),
-                    "tf": tf_data
+                    "tf": tf_data,
+                    "contact": self.contact
                     # "grasp_failure": self.grasping_failure,
                     # "placement_failure": self.placement_failure
                 }
@@ -245,8 +299,7 @@ class StartSimulation:
         return
 
     def reset(self):
-        self.world.reset(True)
-        self.world._timeline_timer_callback_fn(None)
+        self.world.reset()
         self.task._camera.initialize()
         self.controller.reset()
         self.placement_failure = False
@@ -264,7 +317,7 @@ class StartSimulation:
             cube_position=np.array([x, y, 0]),
             target_position=np.array([p, q, 0.05])
         )
-        
+        print(f"cube_position is :{np.array([x, y, 0])}")
         self.placement_orientation = np.random.uniform(low=-np.pi, high=np.pi, size=3)
         
 
@@ -336,14 +389,9 @@ def main():
         try:
             env.world.step(render=True)
         except:
-            print("Something wrong with hitting the floor")
-            if env.placement_counter <= 1:
-                reset_needed = True
-                continue
-            elif env.placement_counter > 1 and env.placement_counter < 200:
-                env.reset()
-                replay = True
-                continue
+            print("Something wrong with hitting the floor in step")
+            env.reset()
+            reset_needed = True
         # 2) Spin ROS for a short time so callbacks are processed
         executor.spin_once(timeout_sec=0.01)
         tf_started = not tf_node.latest_tf==None
@@ -388,7 +436,7 @@ def main():
                 try:
                     observations = env.world.get_observations()
                 except:
-                    print("Something wrong with hitting the floor")
+                    print("Something wrong with hitting the floor in observation")
                     if env.placement_counter <= 1:
                         reset_needed = True
                         continue
@@ -440,21 +488,8 @@ def main():
 if __name__ == "__main__":
     main()
     
-    # Global upward direction
+
     
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
