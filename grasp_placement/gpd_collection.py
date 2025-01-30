@@ -15,12 +15,13 @@ import rclpy
 from rclpy.node import Node
 from tf2_msgs.msg import TFMessage
 from sensor_msgs.msg import PointCloud2
+import tf2_ros
 
 from omni.isaac.core import World
 from omni.isaac.core.utils import extensions
 from omni.isaac.core.scenes import Scene
 from omni.isaac.franka import Franka
-from controllers.pick_place_camera import PickPlaceCamera
+from controllers.pick_place_task_with_camera import PickPlaceCamera
 from controllers.data_collection_controller import DataCollectionController
 from omni.isaac.core.utils.types import ArticulationAction
 from helper import *
@@ -46,6 +47,9 @@ class TFSubscriber(Node):
         self.latest_tf = None  # Store the latest TFMessage here
         self.latest_pcd = None # Store the latest Pointcloud here
 
+        self.buffer = tf2_ros.Buffer()
+        self.listener = tf2_ros.TransformListener(self.buffer, self)
+
         # Create the subscription
         self.tf_subscription = self.create_subscription(
             TFMessage,           # Message type
@@ -55,9 +59,9 @@ class TFSubscriber(Node):
         )
 
         self.pcd_subscription = self.create_subscription(
-            PointCloud2,           # Message type
-            "/pointcloud_for_grasper",               # Topic name
-            self.pcd_callback,    # Callback function
+            PointCloud2,         # Message type
+            "/depth_pcl",        # Topic name
+            self.pcd_callback,   # Callback function
             10                   # QoS
         )
 
@@ -287,7 +291,7 @@ class StartSimulation:
             print("----------------- Replay Finished, now moving to Placement Phase -----------------\n")
             self.replay_finished = True
             self.controller._event = 4
-            self.world.clear_physics_callbacks()
+            self.world.remove_physics_callback("replay_scene")
         return
 
     def reset(self):
@@ -389,7 +393,9 @@ def main():
         executor.spin_once(timeout_sec=0.01)
 
         # tf_started = not tf_node.latest_tf==None
-        if tf_node.latest_tf is not None:
+
+        # Technically only pcd ready should be sufficient because it seems pcd takes longer to be prepared
+        if tf_node.latest_tf is None or tf_node.latest_pcd is None:
             continue
 
         if env.world.is_playing():
@@ -404,9 +410,10 @@ def main():
                     env.current_grasp_pose = env.grasp_poses.pop(0)
                     env.grasp_counter += 1
                 else:
-                    save_pointcloud(tf_node.latest_pcd)
+                    transformed_pcd = transform_pointcloud_to_frame(tf_node.latest_pcd, tf_node.buffer, 'panda_link0')
+                    saved_path = save_pointcloud(transformed_pcd, env.pcd_counter)
                     env.pcd_counter += 1
-                    env.grasp_poses = obtain_grasps(tf_node.latest_pcd)
+                    env.grasp_poses = obtain_grasps(saved_path)
                     env.current_grasp_pose = env.grasp_poses.pop(0)
                     env.grasp_counter = 1
 

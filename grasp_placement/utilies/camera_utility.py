@@ -328,10 +328,10 @@ def camera_graph_generation(
 
 
 
-def start_camera(camera: Camera):
-    approx_freq = 30
+def start_camera(camera: Camera, enable_pcd=False):
     publish_camera_tf(camera)
-    camera_graph_generation(camera)
+    if enable_pcd:
+        camera_graph_generation(camera)
     # publish_camera_info(camera, approx_freq)
     # publish_rgb(camera, approx_freq)
     # publish_depth(camera, approx_freq)

@@ -52,7 +52,7 @@ class MyPickPlace(ABC, BaseTask):
         if self._cube_size is None:
             self._cube_size = np.array([0.0515, 0.0515, 0.0515]) / get_stage_units()
         if self._cube_initial_position is None:
-            self._cube_initial_position = np.array([0.3, 0.3, 0.3]) / get_stage_units()
+            self._cube_initial_position = np.array([0.3, 0., 0.3]) / get_stage_units()
         if self._cube_initial_orientation is None:
             self._cube_initial_orientation = np.array([1, 0, 0, 0])
         if self._target_position is None:

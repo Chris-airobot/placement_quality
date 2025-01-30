@@ -1,14 +1,19 @@
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import os
+import open3d as o3d
 import json
-import numpy as np
+import tf2_ros
+from rclpy.time import Time
+import struct
+from network_client import GraspClient
 from transforms3d.quaternions import quat2mat, mat2quat, qmult, qinverse
 from transforms3d.axangles import axangle2mat
 from tf2_msgs.msg import TFMessage
 from sensor_msgs.msg import PointCloud2
+from geometry_msgs.msg import TransformStamped
 
-DIR_PATH = "/home/chris/Chris/placement_ws/src/grasp_placement/data/"
+DIR_PATH = "/home/chris/Chris/placement_ws/src/data/"
 
 def surface_detection(rpy):
     local_normals = {
@@ -94,7 +99,17 @@ def count_files_in_subfolders(directory):
             file_count_per_subfolder[root] = file_count
             total_file_count += file_count
 
-    return file_count_per_subfolder, total_file_count
+
+    sorted_subfolders = sorted(
+        ((subfolder, count) for subfolder, count in file_count_per_subfolder.items() if count > 1 
+        and os.path.basename(subfolder).startswith("Grasping_")),
+        key=lambda item: int(os.path.basename(item[0]).split('_')[-1])
+    )
+
+    for subfolder, count in sorted_subfolders:
+        print(f"{subfolder}: {count} files")
+
+    print(f"Total files across all subfolders: {total_file_count}")
 
 
 
@@ -223,25 +238,287 @@ def process_tf_message(tf_message: TFMessage):
     return tf_data
 
 
-def save_pointcloud(msg: PointCloud2):
-    pass
+def downsample_points(points: np.ndarray, voxel_size: float = 0.0025) -> np.ndarray:
+    """
+    Downsample a Nx4 or Nx3 point cloud using Open3D's voxel grid filter.
+    This reduces the file size and solves many 'voxelized cloud: 0' issues in PCL.
+    """
+    # Create Open3D PointCloud
+    pcd = o3d.geometry.PointCloud()
+    if points.shape[1] == 3:
+        pcd.points = o3d.utility.Vector3dVector(points[:, :3])
+    else:  # Nx4, ignoring last column for geometry
+        pcd.points = o3d.utility.Vector3dVector(points[:, :3])
 
-def obtain_grasps(pcd):
-    # also save poses
-    pass
+    # Downsample
+    down_pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
+    # Convert back to NumPy (only x,y,z)
+    down_xyz = np.asarray(down_pcd.points)
+
+    # If original data had 4 columns, reattach the 'rgb' (0.0f or something):
+    # We'll do a simple approach: everything gets the same 4th column
+    if points.shape[1] == 4:
+        # For now set all 'rgb' to 0.0. If you want to preserve color,
+        # you'd need a more advanced approach, e.g. approximate nearest neighbors
+        # in the original data.
+        downsampled = np.zeros((down_xyz.shape[0], 4), dtype=np.float32)
+        downsampled[:, :3] = down_xyz
+        return downsampled
+    else:
+        return down_xyz
+
+
+def save_pointcloud(msg: PointCloud2, pcd_counter: int) -> str:
+    """
+    Saves a ROS PointCloud2 (with x,y,z,[rgb]) to an ASCII PCD file.
+    The file includes a voxel-based downsampling step to reduce size.
+
+    The output path is:  DIR_PATH/pcd_{pcd_counter}/pointcloud.pcd
+    """
+    # 1) Create the directory
+    dir_name = os.path.join(DIR_PATH, f"pcd_{pcd_counter}")
+    os.makedirs(dir_name, exist_ok=True)
+
+    # 2) Fixed filename: "pointcloud.pcd"
+    file_path = os.path.join(dir_name, "pointcloud.pcd")
+
+    # 3) Identify offsets for x,y,z,rgb
+    offset_x = offset_y = offset_z = None
+    offset_rgb = None
+    for field in msg.fields:
+        if field.name == "x":
+            offset_x = field.offset
+        elif field.name == "y":
+            offset_y = field.offset
+        elif field.name == "z":
+            offset_z = field.offset
+        elif field.name in ("rgb", "rgba"):
+            offset_rgb = field.offset
+
+    if offset_x is None or offset_y is None or offset_z is None:
+        raise ValueError("PointCloud2 does not contain x, y, z fields!")
+
+    # 4) Convert data to (N,4) float32 array: [x y z rgb]
+    num_points = len(msg.data) // msg.point_step
+    points = np.zeros((num_points, 4), dtype=np.float32)
+
+    for i in range(num_points):
+        start = i * msg.point_step
+        x = struct.unpack_from("f", msg.data, start + offset_x)[0]
+        y = struct.unpack_from("f", msg.data, start + offset_y)[0]
+        z = struct.unpack_from("f", msg.data, start + offset_z)[0]
+
+        if offset_rgb is not None:
+            # read raw 32 bits as float or int
+            rgb_uint = struct.unpack_from("I", msg.data, start + offset_rgb)[0]
+            # store as float so we can put it in 'rgb' column
+            points[i] = [x, y, z, float(rgb_uint)]
+        else:
+            points[i] = [x, y, z, 0.0]
+
+    # 5) Downsample to reduce size (voxel_size=0.01 => 1cm grid; adjust as needed)
+    points_down = downsample_points(points, voxel_size=0.005)
+
+    # 6) Build ASCII PCD header
+    # NOTE: We now do "TYPE F F F F" for the 4 fields, so that PCL's voxel/crop
+    #       filter doesn't reject them. (Instead of 'I' for rgb.)
+    header = (
+        "# .PCD v.7 - Point Cloud Data file format\n"
+        "VERSION .7\n"
+        "FIELDS x y z rgb\n"
+        "SIZE 4 4 4 4\n"
+        "TYPE F F F F\n"  # <--- we changed the last field to F
+        "COUNT 1 1 1 1\n"
+        f"WIDTH {points_down.shape[0]}\n"
+        "HEIGHT 1\n"
+        f"POINTS {points_down.shape[0]}\n"
+        "DATA ascii\n"
+    )
+
+    # 7) Write ASCII data: x, y, z, rgb
+    with open(file_path, "w") as f:
+        f.write(header)
+        for i in range(points_down.shape[0]):
+            x, y, z, rgbf = points_down[i]
+            # Here we treat the last column as float
+            f.write(f"{x:.6f} {y:.6f} {z:.6f} {rgbf:.6f}\n")
+
+    print(f"[INFO] Saved ASCII PCD to {file_path}: {points_down.shape[0]} points (down from {num_points}).")
+    return file_path
+
+
+
+def transform_pointcloud_to_frame(
+    cloud_in: PointCloud2,
+    tf_buffer: tf2_ros.Buffer,
+    target_frame: str="panda_link0"
+) -> PointCloud2:
+    """
+    Transforms a PointCloud2 from its current frame (cloud_in.header.frame_id)
+    into 'target_frame', using the transform data in tf_msg.
+
+    Args:
+        cloud_in (PointCloud2): The input point cloud.
+        tf_msg (TFMessage): A TFMessage containing one or more transforms.
+        target_frame (str): Name of the desired target frame, e.g. "panda_link0".
+
+    Returns:
+        PointCloud2: A new point cloud in the target frame.
+    """
+    # ---------------------------------------------------
+    # 1. Find the Transform from cloud_in's frame to target_frame
+    # ---------------------------------------------------
+    source_frame = cloud_in.header.frame_id
+
+    # We assume tf_msg.transforms has the needed transform directly
+    transform_stamped: TransformStamped = tf_buffer.lookup_transform(
+        target_frame=target_frame,
+        source_frame=source_frame,
+        time=Time())  # "latest" transform
+
+    if transform_stamped is None:
+        raise ValueError(f"No direct transform from '{source_frame}' to '{target_frame}' found in TFMessage.")
+
+    # Extract translation
+    tx = transform_stamped.transform.translation.x
+    ty = transform_stamped.transform.translation.y
+    tz = transform_stamped.transform.translation.z
+
+    # Extract rotation (quaternion)
+    qx = transform_stamped.transform.rotation.x
+    qy = transform_stamped.transform.rotation.y
+    qz = transform_stamped.transform.rotation.z
+    qw = transform_stamped.transform.rotation.w
+
+    # ---------------------------------------------------
+    # 2. Build a 4x4 transform matrix
+    # ---------------------------------------------------
+    # Rotation from quaternion
+    # https://en.wikipedia.org/wiki/Rotation_matrix#Quaternion
+    # Construct the rotation part of the matrix:
+    rx = 1 - 2*(qy**2 + qz**2)
+    ry = 2*(qx*qy - qz*qw)
+    rz = 2*(qx*qz + qy*qw)
+
+    ux = 2*(qx*qy + qz*qw)
+    uy = 1 - 2*(qx**2 + qz**2)
+    uz = 2*(qy*qz - qx*qw)
+
+    fx = 2*(qx*qz - qy*qw)
+    fy = 2*(qy*qz + qx*qw)
+    fz = 1 - 2*(qx**2 + qy**2)
+
+    transform_mat = np.array([
+        [rx, ry, rz, tx],
+        [ux, uy, uz, ty],
+        [fx, fy, fz, tz],
+        [ 0,  0,  0,  1]
+    ], dtype=np.float64)
+
+    # ---------------------------------------------------
+    # 3. Parse points from cloud_in into a Nx? array
+    #    We'll handle x,y,z at least, and keep other fields as-is.
+    # ---------------------------------------------------
+    # Identify offsets for x, y, z
+    offset_x = offset_y = offset_z = None
+    # We keep track of other fields too, so we can copy them unmodified
+    fields_dict = {}  # {field_name: (offset, datatype, count)}
+
+    for f in cloud_in.fields:
+        fields_dict[f.name] = (f.offset, f.datatype, f.count)
+        if f.name == 'x':
+            offset_x = f.offset
+        elif f.name == 'y':
+            offset_y = f.offset
+        elif f.name == 'z':
+            offset_z = f.offset
+
+    if offset_x is None or offset_y is None or offset_z is None:
+        raise ValueError("PointCloud2 is missing x, y, or z fields.")
+
+    point_step = cloud_in.point_step
+    row_step = cloud_in.row_step
+    data_bytes = cloud_in.data
+
+    num_points = cloud_in.width * cloud_in.height
+
+    # We'll build a new bytearray for the output data
+    out_data = bytearray(len(data_bytes))
+
+    # For each point, transform x,y,z
+    for i in range(num_points):
+        point_offset = i * point_step
+
+        # Read x,y,z from the input
+        x = struct.unpack_from('f', data_bytes, point_offset + offset_x)[0]
+        y = struct.unpack_from('f', data_bytes, point_offset + offset_y)[0]
+        z = struct.unpack_from('f', data_bytes, point_offset + offset_z)[0]
+
+        # Make it homogeneous
+        pt_hom = np.array([x, y, z, 1.0], dtype=np.float64)
+
+        # Apply the transform
+        pt_trans = transform_mat @ pt_hom
+        x_out = pt_trans[0]
+        y_out = pt_trans[1]
+        z_out = pt_trans[2]
+
+        # Store x_out,y_out,z_out into the new data
+        struct.pack_into('f', out_data, point_offset + offset_x, x_out)
+        struct.pack_into('f', out_data, point_offset + offset_y, y_out)
+        struct.pack_into('f', out_data, point_offset + offset_z, z_out)
+
+    # We'll do a small fix: first copy everything, then transform x,y,z in the loop above
+    out_data[:] = data_bytes[:]  # copy entire buffer
+    # Then the loop modifies x,y,z in place
+
+    for i in range(num_points):
+        point_offset = i * point_step
+        x = struct.unpack_from('f', data_bytes, point_offset + offset_x)[0]
+        y = struct.unpack_from('f', data_bytes, point_offset + offset_y)[0]
+        z = struct.unpack_from('f', data_bytes, point_offset + offset_z)[0]
+
+        pt_hom = np.array([x, y, z, 1.0], dtype=np.float64)
+        pt_trans = transform_mat @ pt_hom
+        x_out, y_out, z_out = pt_trans[0], pt_trans[1], pt_trans[2]
+
+        struct.pack_into('f', out_data, point_offset + offset_x, x_out)
+        struct.pack_into('f', out_data, point_offset + offset_y, y_out)
+        struct.pack_into('f', out_data, point_offset + offset_z, z_out)
+
+    # ---------------------------------------------------
+    # 4. Construct a new PointCloud2 with the same metadata
+    #    but updated frame & data
+    # ---------------------------------------------------
+    cloud_out = PointCloud2()
+    cloud_out.header.stamp = cloud_in.header.stamp
+    cloud_out.header.frame_id = target_frame  # new frame
+    cloud_out.height = cloud_in.height
+    cloud_out.width = cloud_in.width
+    cloud_out.fields = cloud_in.fields
+    cloud_out.is_bigendian = cloud_in.is_bigendian
+    cloud_out.point_step = cloud_in.point_step
+    cloud_out.row_step = cloud_in.row_step
+    cloud_out.is_dense = cloud_in.is_dense
+
+    # set the new data
+    cloud_out.data = bytes(out_data)
+
+    return cloud_out
+
+
+def obtain_grasps(file_path):
+    node = GraspClient()
+    raw_grasps = node.request_grasps(file_path)
+    print(raw_grasps)
+
+
+def view_pcd(file_path):
+    # Load and visualize the point cloud
+    pcd = o3d.io.read_point_cloud(file_path)
+    o3d.visualization.draw_geometries([pcd])
 
 if __name__ == "__main__":
     # # # Example Usage
-    main_directory = "/home/chris/Chris/placement_ws/src/data"  # Replace with your directory path
-    file_counts, total_files = count_files_in_subfolders(main_directory)
-
-    sorted_subfolders = sorted(
-        ((subfolder, count) for subfolder, count in file_counts.items() if count > 1 
-        and os.path.basename(subfolder).startswith("Grasping_")),
-        key=lambda item: int(os.path.basename(item[0]).split('_')[-1])
-    )
-
-    for subfolder, count in sorted_subfolders:
-        print(f"{subfolder}: {count} files")
-
-    print(f"Total files across all subfolders: {total_files}")
+    file_path = "/home/chris/Chris/placement_ws/src/data/pcd_0/pointcloud.pcd"
+    view_pcd(file_path)

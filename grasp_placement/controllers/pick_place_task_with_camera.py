@@ -9,7 +9,7 @@
 from typing import Optional
 
 import numpy as np
-from controllers.base_pick_place_task import MyPickPlace
+from controllers import MyPickPlace
 from omni.isaac.core.utils.prims import is_prim_path_valid
 from omni.isaac.core.utils.string import find_unique_string_name
 from omni.isaac.franka import Franka

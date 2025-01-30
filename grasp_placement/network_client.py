@@ -10,15 +10,15 @@ class GraspClient(Node):
     def __init__(self):
         super().__init__('grasp_client')
  
-    def request_grasps(self):
+    def request_grasps(self, file_path="/home/chris/Desktop/krylon.pcd"):
         # The IP/hostname should match how you can access the container
         # For Docker on the same machine, you might use 'localhost' + port-mapping
         # Or you might have a specific container IP address (e.g. 172.17.x.x)
         HOST = '127.0.0.1'  # or container IP / hostname
-        PORT = 12345
+        PORT = 12341
  
         # Construct some sample point cloud info (JSON-serializable dict)
-        pointcloud_data = self.format_pcd()
+        pointcloud_data = self.format_pcd(file_path)
  
         self.get_logger().info(f"Connecting to container server at {HOST}:{PORT}")
  
@@ -39,8 +39,8 @@ class GraspClient(Node):
             print(f"received data:{response_str}")
             response_data = json.loads(response_str)
  
-        self.get_logger().info(f"Received response: {response_data}")
- 
+
+        return response_data.get('grasps', [])
         # Example of parsing the grasps
         # grasps = response_data.get('grasps', [])
         # for i, g in enumerate(grasps):
@@ -49,14 +49,12 @@ class GraspClient(Node):
         #     self.get_logger().info(f"Grasp #{i}: position={pos}, orientation={ori}")
  
  
-    def format_pcd(self):
+    def format_pcd(self, file_path):
         """
         Reads a PCD file and converts its contents into a JSON-friendly format.
         Each point is represented as a dictionary with x, y, z, and rgb fields.
         """
- 
-        file_path = "/home/chris/Desktop/krylon.pcd"
- 
+
         with open(file_path, 'r') as file:
             lines = file.readlines()
  
@@ -80,9 +78,11 @@ class GraspClient(Node):
  
  
 def main(args=None):
+    file_path = "/home/chris/Chris/placement_ws/src/data/pcd_0/pointcloud.pcd"
+    # file_path = "/home/chris/Chris/placement_ws/src/krylon.pcd"
     rclpy.init(args=args)
     node = GraspClient()
-    node.request_grasps()
+    node.request_grasps(file_path)
     rclpy.shutdown()
  
 if __name__ == '__main__':
