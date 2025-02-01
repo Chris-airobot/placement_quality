@@ -384,6 +384,7 @@ def main():
     while simulation_app.is_running():
         try:
             env.world.step(render=True)
+            
         except:
             print("Something wrong with hitting the floor in step")
             env.reset()
@@ -395,8 +396,11 @@ def main():
                 env.reset()
                 replay = True
                 continue
-
-
+            
+        # prim_path = "/World/Cube"
+        # prim = env.world.stage.GetPrimAtPath(prim_path)
+        # parent_prim = prim.GetParent()
+        # print("Parent prim:", parent_prim.GetPath())
         # 2) Spin ROS for a short time so callbacks are processed
         executor.spin_once(timeout_sec=0.01)
         # Technically only pcd ready should be sufficient because it seems pcd takes longer to be prepared
