@@ -513,6 +513,41 @@ def obtain_grasps(file_path):
     print(raw_grasps)
 
 
+
+
+def filter_robot_bounding_box(points, box_center, box_size):
+    """
+    Remove points that lie inside a specified 3D box in the world frame.
+    
+    Args:
+        points (np.ndarray): Nx3 array of (x, y, z) points in the world frame.
+        box_center (tuple/list/np.ndarray): (cx, cy, cz) - center of the box.
+        box_size (tuple/list/np.ndarray): (sx, sy, sz) - size of the box.
+        
+    Returns:
+        np.ndarray: The filtered Nx3 array of points.
+    """
+    # Convert inputs to numpy arrays
+    points = np.asarray(points)
+    c = np.asarray(box_center)
+    s = np.asarray(box_size) / 2.0  # half sizes
+
+    # Compute the min/max corners of the box
+    box_min = c - s  # [cx - sx/2, cy - sy/2, cz - sz/2]
+    box_max = c + s  # [cx + sx/2, cy + sy/2, cz + sz/2]
+
+    # Check if each point is within box_min <= point <= box_max (all dims)
+    inside_mask = np.all((points >= box_min) & (points <= box_max), axis=1)
+
+    # We want to REMOVE points that are inside the box
+    filtered_points = points[~inside_mask]
+
+    return filtered_points
+
+
+
+
+
 def view_pcd(file_path):
     # Load and visualize the point cloud
     pcd = o3d.io.read_point_cloud(file_path)
@@ -520,5 +555,17 @@ def view_pcd(file_path):
 
 if __name__ == "__main__":
     # # # Example Usage
-    file_path = "/home/chris/Chris/placement_ws/src/data/pcd_0/pointcloud.pcd"
-    view_pcd(file_path)
+    # file_path = "/home/chris/Chris/placement_ws/src/data/pcd_0/pointcloud.pcd"
+    # view_pcd(file_path)
+
+
+    # Suppose you have an Nx3 cloud (world frame), e.g.:
+    cloud_world = np.random.rand(1000, 3) - 0.5  # random points in [-0.5, 0.5]^3
+
+    # Your robot bounding box info:
+    robot_center = [-0.04, 0.0, 0.0]
+    robot_size   = [0.24, 0.20, 0.01]
+
+    filtered_cloud = filter_robot_bounding_box(cloud_world, robot_center, robot_size)
+    print("Original cloud size:", len(cloud_world))
+    print("Filtered cloud size:", len(filtered_cloud))

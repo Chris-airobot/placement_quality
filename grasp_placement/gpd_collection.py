@@ -3,7 +3,7 @@ from isaacsim import SimulationApp
 CONFIG = {"headless": False}
 simulation_app = SimulationApp(CONFIG)
 
-import carb
+# import carb
 import omni
 import math
 import numpy as np

@@ -3,7 +3,7 @@ from isaacsim import SimulationApp
 CONFIG = {"headless": False}
 simulation_app = SimulationApp(CONFIG)
 
-import carb
+# import carb
 import omni
 import math
 import numpy as np
@@ -218,10 +218,10 @@ class StartSimulation:
             # We define the function here. The tasks and scene are passed to this function when called.
 
             def frame_logging_func(tasks, scene: Scene):
-                cube_position, cube_orientation =  scene.get_object(cube_name).get_local_pose()
-                ee_position, ee_orientation =  scene.get_object(robot_name).end_effector.get_local_pose()
+                cube_position, cube_orientation =  scene.get_object(cube_name).get_world_pose()
+                ee_position, ee_orientation =  scene.get_object(robot_name).end_effector.get_world_pose()
                 surface = surface_detection(quat_to_euler_angles(cube_orientation))
-                camera_position, camera_orientation =  scene.get_object(camera_name).get_local_pose()
+                camera_position, camera_orientation =  scene.get_object(camera_name).get_world_pose()
 
                 return {
                     "joint_positions": scene.get_object(robot_name).get_joint_positions().tolist(),# save data as lists since its a json file.
