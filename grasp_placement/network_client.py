@@ -15,7 +15,7 @@ class GraspClient(Node):
         # For Docker on the same machine, you might use 'localhost' + port-mapping
         # Or you might have a specific container IP address (e.g. 172.17.x.x)
         HOST = '127.0.0.1'  # or container IP / hostname
-        PORT = 12341
+        PORT = 12344
  
         # Construct some sample point cloud info (JSON-serializable dict)
         pointcloud_data = self.format_pcd(file_path)
@@ -36,11 +36,13 @@ class GraspClient(Node):
             response_len = struct.unpack('>I', s.recv(4))[0]
             response_bytes = s.recv(response_len)  # adjust as needed
             response_str = response_bytes.decode('utf-8')
-            print(f"received data:{response_str}")
+            # print(f"received data:{response_str}")
             response_data = json.loads(response_str)
  
+        
 
-        return response_data.get('grasps', [])
+
+        return response_data
         # Example of parsing the grasps
         # grasps = response_data.get('grasps', [])
         # for i, g in enumerate(grasps):

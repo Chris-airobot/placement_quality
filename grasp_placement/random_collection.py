@@ -29,7 +29,7 @@ from omni.isaac.core.utils.rotations import euler_angles_to_quat, quat_to_euler_
 from omni.isaac.sensor import ContactSensor
 from functools import partial
 from typing import List
-
+from omni.isaac.core.objects import DynamicCuboid
 # from graph_initialization import joint_graph_generation, gripper_graph_generation
 # Enable ROS2 bridge extension
 extensions.enable_extension("omni.isaac.ros2_bridge")
@@ -174,7 +174,20 @@ class StartSimulation:
 
         tf_graph_generation()
         start_camera(self.task._camera)
-        
+
+        # self.test_cube = self.world.scene.add(
+        #     DynamicCuboid(
+        #         name="test",
+        #         position=[-0.04, 0, 0],
+        #         # orientation=self._cube_initial_orientation,
+        #         prim_path="/World/Franka/test_cube",
+        #         scale= [0.24, 0.2, 0.01],
+        #         size=1.0,
+        #         color=np.array([0, 0, 1]),
+        #     )
+        # )
+
+
 
     def on_sensor_contact_report(self, dt, sensors: List[ContactSensor]):
         """Physics-step callback: checks all sensors, sets self.contact accordingly."""
@@ -469,7 +482,7 @@ def main():
                         recorded = record_grasping(recorded, env)
                         reset_needed = True
 
-                env.articulation_controller.apply_action(actions)
+                # env.articulation_controller.apply_action(actions)
 
             if env.controller.is_done():
                 print("----------------- done picking and placing ----------------- \n\n")

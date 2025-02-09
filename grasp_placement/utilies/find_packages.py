@@ -17,13 +17,14 @@ simulation_app = SimulationApp(CONFIG)
 
 import omni.graph.core as og
 import omni.replicator.core as rep
-import omni.syntheticdata._syntheticdata as sd
+import omni.syntheticdata as sd
 import sys
 
-from omni.isaac.core_nodes.scripts.utils import set_target_prims
 
 modules = [
-    "omni.isaac.isaac_sensor",
+    "omni.replicator.core",
+    "omni.syntheticdata",
+    "omni.isaac.core_nodes"
 ]
 
 for module_name in modules:

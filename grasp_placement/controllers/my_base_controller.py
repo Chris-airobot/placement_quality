@@ -177,7 +177,7 @@ class MyBaseController(BaseController):
 
             target_joint_positions = self._cspace_controller.forward(
                 target_end_effector_position=position_target, 
-                target_end_effector_orientation=euler_angles_to_quat(end_effector_orientation)
+                target_end_effector_orientation=np.array(end_effector_orientation)
             )
 
         self._t += self._events_dt[self._event]

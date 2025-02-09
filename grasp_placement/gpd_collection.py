@@ -170,10 +170,10 @@ class StartSimulation:
             target_position=np.array([p, q, 0.05])
         )
 
-        self.placement_orientation = np.random.uniform(low=-np.pi, high=np.pi, size=3)
+        self.placement_orientation = euler_angles_to_quat(np.random.uniform(low=-np.pi, high=np.pi, size=3))
 
         tf_graph_generation()
-        start_camera(self.task._camera)
+        start_camera(self.task._camera, True)
         
 
     def on_sensor_contact_report(self, dt, sensors: List[ContactSensor]):
@@ -313,7 +313,7 @@ class StartSimulation:
             target_position=np.array([p, q, 0.05])
         )
         print(f"cube_position is :{np.array([x, y, 0])}")
-        self.placement_orientation = np.random.uniform(low=-np.pi, high=np.pi, size=3)
+        self.placement_orientation = euler_angles_to_quat(np.random.uniform(low=-np.pi, high=np.pi, size=3))
         
 
 def log_grasping(start_logging, env: StartSimulation, tf_node: TFSubscriber):
@@ -328,7 +328,7 @@ def log_grasping(start_logging, env: StartSimulation, tf_node: TFSubscriber):
 def record_grasping(recorded, env: StartSimulation):
     # Recording section
     if not recorded:
-        file_path = DIR_PATH + f"Pcd_{env.pcd_counter}/Grasping_{env.grasp_counter}/placement_{env.placement_counter}_{env.grasping_failure}.json"
+        file_path = DIR_PATH + f"Pcd_{env.pcd_counter}/Grasping_{env.grasp_counter}/Placement_{env.placement_counter}_{env.grasping_failure}.json"
 
         # Ensure the parent directories exist
         directory = os.path.dirname(file_path)
@@ -353,6 +353,8 @@ def replay_grasping(env: StartSimulation):
     if not os.path.exists(file_path):
         file_pattern = os.path.join(DIR_PATH, f"Pcd_{env.pcd_counter}/Grasping_{env.grasp_counter}/Placement_*.json")
         file_list = glob.glob(file_pattern)
+        print(f"file_pattern: {file_pattern}")
+        print(f"file_list: {file_list}")
 
         extract_grasping(file_list[0])
     asyncio.ensure_future(env._on_replay_scene_event_async(file_path))
@@ -393,7 +395,6 @@ def main():
         executor.spin_once(timeout_sec=0.01)
 
         # tf_started = not tf_node.latest_tf==None
-
         # Technically only pcd ready should be sufficient because it seems pcd takes longer to be prepared
         if tf_node.latest_tf is None or tf_node.latest_pcd is None:
             continue
@@ -411,8 +412,8 @@ def main():
                     env.grasp_counter += 1
                 else:
                     transformed_pcd = transform_pointcloud_to_frame(tf_node.latest_pcd, tf_node.buffer, 'panda_link0')
-                    saved_path = save_pointcloud(transformed_pcd, env.pcd_counter)
                     env.pcd_counter += 1
+                    saved_path = save_pointcloud(transformed_pcd, env.pcd_counter)
                     env.grasp_poses = obtain_grasps(saved_path)
                     env.current_grasp_pose = env.grasp_poses.pop(0)
                     env.grasp_counter = 1
@@ -448,10 +449,11 @@ def main():
                         env.reset()
                         replay = True
                         continue
-
                 
+
                 actions = env.controller.forward(
                     picking_position=observations[env.task_params["cube_name"]["value"]]["position"],
+                    # picking_position=env.current_grasp_pose[0], # This is wrong, grasp position is off
                     placing_position=observations[env.task_params["cube_name"]["value"]]["target_position"],
                     current_joint_positions=observations[env.task_params["robot_name"]["value"]]["joint_positions"],
                     end_effector_offset=np.array([0, 0.005, 0]),

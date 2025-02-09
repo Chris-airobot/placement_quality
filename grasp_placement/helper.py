@@ -12,7 +12,7 @@ from transforms3d.axangles import axangle2mat
 from tf2_msgs.msg import TFMessage
 from sensor_msgs.msg import PointCloud2
 from geometry_msgs.msg import TransformStamped
-
+import omni.graph.core as og
 DIR_PATH = "/home/chris/Chris/placement_ws/src/data/"
 
 def surface_detection(rpy):
@@ -41,7 +41,7 @@ def surface_detection(rpy):
 
 def extract_grasping(input_file_path):
     # Load the original JSON data
-  output_file_path = os.path.dirname(input_file_path) + '/grasping.json'  # Path to save the filtered file
+  output_file_path = os.path.dirname(input_file_path) + '/Grasping.json'  # Path to save the filtered file
 
   with open(input_file_path, 'r') as file:
       data = json.load(file)
@@ -174,12 +174,12 @@ def projection(q_current_cube, q_current_ee, q_desired_ee):
 
 
 def tf_graph_generation():
-    import omni.graph.core as og
     keys = og.Controller.Keys
 
     robot_frame_path= "/World/Franka"
     cube_frame = "/World/Cube"
     graph_path = "/Graphs/TF"
+    # test_cube = "/World/Franka/test_cube"
 
     (graph_handle, list_of_nodes, _, _) = og.Controller.edit(
         {
@@ -268,15 +268,40 @@ def downsample_points(points: np.ndarray, voxel_size: float = 0.0025) -> np.ndar
         return down_xyz
 
 
+def filter_points_in_bounding_box(points, box_center, box_size):
+    """
+    Removes points that lie **inside** a specified axis-aligned bounding box.
+
+    Args:
+        points (np.ndarray): Nx4 array of [x, y, z, rgb].
+        box_center (list/tuple): [cx, cy, cz] for the center of the box.
+        box_size (list/tuple): [sx, sy, sz] for the full box dimensions.
+                               (orientation = 0,0,0, so axis-aligned)
+
+    Returns:
+        np.ndarray: Filtered Nx4 array, with points inside the box removed.
+    """
+    c = np.array(box_center, dtype=np.float32)
+    s = np.array(box_size, dtype=np.float32) * 0.5  # half-extends
+    box_min = c - s
+    box_max = c + s
+
+    pts_xyz = points[:, :3]  # Nx3
+    inside_mask = np.all((pts_xyz >= box_min) & (pts_xyz <= box_max), axis=1)
+
+    # Keep points that are **outside** the box
+    return points[~inside_mask]
+
+
 def save_pointcloud(msg: PointCloud2, pcd_counter: int) -> str:
     """
     Saves a ROS PointCloud2 (with x,y,z,[rgb]) to an ASCII PCD file.
     The file includes a voxel-based downsampling step to reduce size.
 
-    The output path is:  DIR_PATH/pcd_{pcd_counter}/pointcloud.pcd
+    The output path is:  DIR_PATH/Pcd_{pcd_counter}/pointcloud.pcd
     """
     # 1) Create the directory
-    dir_name = os.path.join(DIR_PATH, f"pcd_{pcd_counter}")
+    dir_name = os.path.join(DIR_PATH, f"Pcd_{pcd_counter}")
     os.makedirs(dir_name, exist_ok=True)
 
     # 2) Fixed filename: "pointcloud.pcd"
@@ -316,8 +341,20 @@ def save_pointcloud(msg: PointCloud2, pcd_counter: int) -> str:
         else:
             points[i] = [x, y, z, 0.0]
 
+
+    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    # [A] FILTER OUT POINTS INSIDE THE ROBOT'S BOUNDING BOX
+    # NOTE: Make sure points are in the same coordinate frame as the bounding box
+    box_center = [-0.04, 0.0, 0.0]  # center of the robot bounding box in "world" frame
+    box_size   = [0.24, 0.20, 1] # size in x,y,z
+    points_filtered = filter_points_in_bounding_box(points, box_center, box_size)
+    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+
+
+
     # 5) Downsample to reduce size (voxel_size=0.01 => 1cm grid; adjust as needed)
-    points_down = downsample_points(points, voxel_size=0.005)
+    points_down = downsample_points(points_filtered, voxel_size=0.005)
 
     # 6) Build ASCII PCD header
     # NOTE: We now do "TYPE F F F F" for the 4 fields, so that PCL's voxel/crop
@@ -510,39 +547,17 @@ def transform_pointcloud_to_frame(
 def obtain_grasps(file_path):
     node = GraspClient()
     raw_grasps = node.request_grasps(file_path)
-    print(raw_grasps)
 
+    grasps = []
+    for key in sorted(raw_grasps.keys(), key=int):
+        item = raw_grasps[key]
+        position = item["position"]
+        orientation = item["orientation_wxyz"]
+        # Each grasp: [ [position], [orientation] ]
+        grasps.append([position, orientation])
 
+    return grasps
 
-
-def filter_robot_bounding_box(points, box_center, box_size):
-    """
-    Remove points that lie inside a specified 3D box in the world frame.
-    
-    Args:
-        points (np.ndarray): Nx3 array of (x, y, z) points in the world frame.
-        box_center (tuple/list/np.ndarray): (cx, cy, cz) - center of the box.
-        box_size (tuple/list/np.ndarray): (sx, sy, sz) - size of the box.
-        
-    Returns:
-        np.ndarray: The filtered Nx3 array of points.
-    """
-    # Convert inputs to numpy arrays
-    points = np.asarray(points)
-    c = np.asarray(box_center)
-    s = np.asarray(box_size) / 2.0  # half sizes
-
-    # Compute the min/max corners of the box
-    box_min = c - s  # [cx - sx/2, cy - sy/2, cz - sz/2]
-    box_max = c + s  # [cx + sx/2, cy + sy/2, cz + sz/2]
-
-    # Check if each point is within box_min <= point <= box_max (all dims)
-    inside_mask = np.all((points >= box_min) & (points <= box_max), axis=1)
-
-    # We want to REMOVE points that are inside the box
-    filtered_points = points[~inside_mask]
-
-    return filtered_points
 
 
 
@@ -555,17 +570,17 @@ def view_pcd(file_path):
 
 if __name__ == "__main__":
     # # # Example Usage
-    # file_path = "/home/chris/Chris/placement_ws/src/data/pcd_0/pointcloud.pcd"
-    # view_pcd(file_path)
+    file_path = "/home/chris/Chris/placement_ws/src/data/pcd_0/pointcloud.pcd"
+    view_pcd(file_path)
 
-
+    
     # Suppose you have an Nx3 cloud (world frame), e.g.:
-    cloud_world = np.random.rand(1000, 3) - 0.5  # random points in [-0.5, 0.5]^3
+    # cloud_world = np.random.rand(1000, 3) - 0.5  # random points in [-0.5, 0.5]^3
 
-    # Your robot bounding box info:
-    robot_center = [-0.04, 0.0, 0.0]
-    robot_size   = [0.24, 0.20, 0.01]
+    # # Your robot bounding box info:
+    # robot_center = [-0.04, 0.0, 0.0]
+    # robot_size   = [0.24, 0.20, 0.01]
 
-    filtered_cloud = filter_robot_bounding_box(cloud_world, robot_center, robot_size)
-    print("Original cloud size:", len(cloud_world))
-    print("Filtered cloud size:", len(filtered_cloud))
+    # filtered_cloud = filter_robot_bounding_box(cloud_world, robot_center, robot_size)
+    # print("Original cloud size:", len(cloud_world))
+    # print("Filtered cloud size:", len(filtered_cloud))

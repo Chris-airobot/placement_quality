@@ -64,3 +64,13 @@ For the robot in the lab, IP address is **192.168.1.209**, i.e. Type "192.168.1.
 - Solutions:
     - import the package, then print(package.\_\_file__)
 
+6. Cannot Plot in the docker for gpd:
+- Solutions:
+  - xhost +local:
+  - docker run -it \
+        -v /home/chris/Chris/placement_ws/src/placement_quality/docker_files:/home \
+        --name ros1 \
+        -e DISPLAY=$DISPLAY \
+        -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
+        my-ros1-x11:latest
+
