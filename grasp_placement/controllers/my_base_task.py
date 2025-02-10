@@ -19,6 +19,10 @@ from omni.isaac.core.utils.string import find_unique_string_name
 from omni.isaac.sensor import Camera
 from pyquaternion import Quaternion
 from omni.isaac.franka import Franka
+from pxr import Usd, UsdGeom, UsdShade, Sdf, Gf
+import omni
+
+
 class MyPickPlace(ABC, BaseTask):
     """[summary]
 
@@ -88,6 +92,7 @@ class MyPickPlace(ABC, BaseTask):
                 color=np.array([0, 0, 1]),
             )
         )
+        self.attach_face_markers(cube_prim_path)
         self._task_objects[self._cube.name] = self._cube
 
         if self._set_camera:
@@ -113,6 +118,54 @@ class MyPickPlace(ABC, BaseTask):
     @abstractmethod
     def set_camera(self) -> Camera:
         raise NotImplementedError
+    
+
+    def attach_face_markers(self, cube_prim_path, cube_size=1.0, offset=0.05):
+        """
+        Attaches a small sphere marker (with a label in its name) to each face of the cube.
+        These markers are visual-only and will not be used for collisions.
+        
+        Args:
+            cube_prim_path (str): The prim path of the cube.
+            cube_size (float): The overall (uniform) size of the cube.
+            offset (float): Extra offset to push the marker outwards from the face.
+        """
+        stage = omni.usd.get_context().get_stage()
+        half = cube_size / 2.0
+
+        # Define for each face: a translation and a label.
+        markers = {
+            "front":  (Gf.Vec3d(half + offset, 0, 0),        "1"),
+            "back":   (Gf.Vec3d(-half - offset, 0, 0),       "2"),
+            "left":   (Gf.Vec3d(0, half + offset, 0),        "3"),
+            "right":  (Gf.Vec3d(0, -half - offset, 0),       "4"),
+            "top":    (Gf.Vec3d(0, 0, half + offset),        "5"),
+            "bottom": (Gf.Vec3d(0, 0, -half - offset),       "6")
+        }
+        
+        # Get the cube prim.
+        cube_prim = stage.GetPrimAtPath(cube_prim_path)
+        if not cube_prim:
+            print(f"Cube prim not found at {cube_prim_path}")
+            return
+
+        # Loop over each face.
+        for face, (translation, label) in markers.items():
+            # Create a marker Xform as a child of the cube.
+            marker_path = cube_prim.GetPath().AppendChild(f"marker_{face}")
+            marker = UsdGeom.Xform.Define(stage, marker_path)
+            marker.AddTranslateOp().Set(translation)
+            
+            # Under the marker, create a small sphere.
+            sphere_path = marker_path.AppendChild("sphere")
+            sphere = UsdGeom.Sphere.Define(stage, sphere_path)
+            sphere.GetRadiusAttr().Set(0.03)
+            
+            # (Optional) You could also set a custom attribute on the marker or sphere
+            # to indicate the face number, or name the prim accordingly.
+            print(f"Attached marker for face '{face}' with label {label} at {translation}")
+
+
 
     def set_params(
         self,

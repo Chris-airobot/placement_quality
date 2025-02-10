@@ -38,7 +38,7 @@ simulation_app.update()
 
 GRIPPER_MAX = 0.04
 GRIPPER_SPEED = 0.005
-DIR_PATH = "/home/chris/Chris/placement_ws/src/data/"
+DIR_PATH = "/home/chris/Chris/placement_ws/src/gpd_data/"
 
 
 class TFSubscriber(Node):

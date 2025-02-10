@@ -37,7 +37,7 @@ simulation_app.update()
 
 GRIPPER_MAX = 0.04
 GRIPPER_SPEED = 0.005
-DIR_PATH = "/home/chris/Chris/placement_ws/src/data/"
+DIR_PATH = "/home/chris/Chris/placement_ws/src/random_data/"
 
 
 class TFSubscriber(Node):
@@ -73,17 +73,17 @@ class StartSimulation:
         self.placement_orientation = None  # Gripper orientation when the cube is about to be placed
         self.camera = None
         self.contact = None
-        self.panda_sensors = None
+        self.contact_sensors = None
 
         
         self.data_logger = None
 
-        self.grasp_counter = 33
+        self.grasp_counter = 36
         self.placement_counter = 0
 
         self.replay_finished = True
-
         self.grasping_failure = False
+        self.cube_contacted = False
 
 
 
@@ -113,24 +113,25 @@ class StartSimulation:
         self.world.reset()
 
         panda_prim_names = [
-            "panda_link0",
-            "panda_link1",
-            "panda_link2",
-            "panda_link3",
-            "panda_link4",
-            "panda_link5",
-            "panda_link6",
-            "panda_link7",
-            "panda_link8",
-            "panda_hand",
+            "Franka/panda_link0",
+            "Franka/panda_link1",
+            "Franka/panda_link2",
+            "Franka/panda_link3",
+            "Franka/panda_link4",
+            "Franka/panda_link5",
+            "Franka/panda_link6",
+            "Franka/panda_link7",
+            "Franka/panda_link8",
+            "Franka/panda_hand",
+            "Cube"
         ]
 
-        self.panda_sensors = []
+        self.contact_sensors = []
         for i, link_name in enumerate(panda_prim_names):
             sensor: ContactSensor = self.world.scene.add(
                 ContactSensor(
-                    prim_path=f"/World/Franka/{link_name}/contact_sensor",
-                    name=f"panda_contact_sensor_{i}",
+                    prim_path=f"/World/{link_name}/contact_sensor",
+                    name=f"contact_sensor_{i}",
                     min_threshold=0.0,
                     max_threshold=1e7,
                     radius=0.1,
@@ -138,12 +139,12 @@ class StartSimulation:
             )
             # Use raw contact data if desired
             sensor.add_raw_contact_data_to_frame()
-            self.panda_sensors.append(sensor)
+            self.contact_sensors.append(sensor)
 
         self.world.reset()
 
         # Contact report for links
-        self.world.add_physics_callback("contact_sensor_callback", partial(self.on_sensor_contact_report, sensors=self.panda_sensors))
+        self.world.add_physics_callback("contact_sensor_callback", partial(self.on_sensor_contact_report, sensors=self.contact_sensors))
 
         self.task_params = self.task.get_params()
         self.robot: Franka =  self.world.scene.get_object(self.task_params["robot_name"]["value"])
@@ -172,6 +173,7 @@ class StartSimulation:
     def on_sensor_contact_report(self, dt, sensors: List[ContactSensor]):
         """Physics-step callback: checks all sensors, sets self.contact accordingly."""
         any_contact = False  # track if at least one sensor had contact
+        self.cube_contacted = False
 
         for sensor in sensors:
             frame_data = sensor.get_current_frame()
@@ -180,11 +182,15 @@ class StartSimulation:
                 for c in frame_data["contacts"]:
                     body0 = c["body0"]
                     body1 = c["body1"]
-                    # Example: store the bodies in a single string
-                    if ("GroundPlane" in body0) or ("GroundPlane" in body1):
-                        print("Hits the ground, and it will be recorded")
+                    if "GroundPlane" in body0 + body1 and "Cube" in body0 + body1:
+                        # print("Cube in the ground")
+                        self.cube_contacted = True
+                    elif ("GroundPlane" in body0) or ("GroundPlane" in body1):
+                        print("Robot hits the ground, and it will be recorded")
                         any_contact = True
                         self.contact = f"{body0} | {body1} | Force: {frame_data['force']:.3f} | #Contacts: {frame_data['number_of_contacts']}"
+                        # self.contact = f"{body0} | {body1} | Force: {frame_data['force']:.3f} | #Contacts: {frame_data['number_of_contacts']}"
+        # print(f"cube is in the ground: {self.cube_contacted}, time is {self.world.current_time_step_index}, stage is {self.controller.get_current_event()}")
 
         # If, after checking all sensors, none had contact, reset self.contact to None
         if not any_contact:
@@ -209,7 +215,6 @@ class StartSimulation:
                 tf_data = None
             # A data logging function is called at every time step index if the data logger is started already.
             # We define the function here. The tasks and scene are passed to this function when called.
-
             def frame_logging_func(tasks, scene: Scene):
                 cube_position, cube_orientation =  scene.get_object(cube_name).get_world_pose()
                 ee_position, ee_orientation =  scene.get_object(robot_name).end_effector.get_world_pose()
@@ -230,7 +235,8 @@ class StartSimulation:
                     # "camera_position": camera_position.tolist(),
                     # "camera_orientation": camera_orientation.tolist(),
                     "tf": tf_data,
-                    "contact": self.contact
+                    "contact": self.contact,
+                    "cube_in_ground": self.cube_contacted
                 }
 
             self.data_logger.add_data_frame_logging_func(frame_logging_func) # adds the function to be called at each physics time step.
@@ -374,7 +380,7 @@ def main():
         except:
             print("Something wrong with hitting the floor in step")
             env.reset()
-            # env.world.add_physics_callback("contact_sensor_callback", partial(env.on_sensor_contact_report, sensors=env.panda_sensors))
+            # env.world.add_physics_callback("contact_sensor_callback", partial(env.on_sensor_contact_report, sensors=env.contact_sensors))
             if env.placement_counter < 1:
                 reset_needed = True
                 continue
@@ -423,7 +429,7 @@ def main():
                     if env.placement_counter < 1:
                         reset_needed = True
                         continue
-                    elif env.placement_counter > 1 and env.placement_counter < 200:
+                    elif env.placement_counter >= 1 and env.placement_counter < 200:
                         record_grasping(False, env)
                         env.reset()
                         replay = True

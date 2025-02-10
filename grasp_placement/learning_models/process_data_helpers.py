@@ -164,7 +164,9 @@ def process_file(file_path):
     cube_target_position = isaac_sim_data[0]["data"]["target_position"]
 
     if not grasp_unsuccessful: 
-        
+        ###############################
+        #### Double check this function
+        ###############################
         cube_target_orientation = projection(
             last_stage6["data"]["cube_orientation"],
             last_stage6["data"]["ee_orientation"],
@@ -223,13 +225,13 @@ def process_file(file_path):
             lowest_z_position = first_lowest_z_entry["data"]["cube_position"]
             lowest_z_orientation = first_lowest_z_entry["data"]["cube_orientation"]
 
-            pose_shift_position, pose_shift_orientation = pose_difference(
+            shift_position, shift_orientation = pose_difference(
                 cube_final_position, cube_final_orientation,
                 lowest_z_position, lowest_z_orientation
             )
 
         else:
-            pose_shift_position, pose_shift_orientation = None, None
+            shift_position, shift_orientation = None, None
         # Create a dictionary with inputs and outputs
 
         return {
@@ -252,8 +254,8 @@ def process_file(file_path):
                 "orientation_successful": bool(orientation_successful),
                 "position_differece": d_pos,
                 "orientation_differece": angle,
-                "pose_shift_position": pose_shift_position,
-                "pose_shift_orientation": pose_shift_orientation,
+                "shift_position": shift_position,
+                "shift_orientation": shift_orientation,
                 "contacts": contact_count_after_stage3
             }
         }
