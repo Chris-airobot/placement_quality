@@ -19,6 +19,10 @@ from omni.isaac.core.utils.string import find_unique_string_name
 from omni.isaac.sensor import Camera
 from pyquaternion import Quaternion
 from omni.isaac.franka import Franka
+from pxr import Usd, UsdGeom, UsdShade, Sdf, Gf
+import omni
+
+
 class MyPickPlace(ABC, BaseTask):
     """[summary]
 
@@ -39,6 +43,7 @@ class MyPickPlace(ABC, BaseTask):
         target_position: Optional[np.ndarray] = None,
         cube_size: Optional[np.ndarray] = None,
         offset: Optional[np.ndarray] = None,
+        set_camera: bool = True,
     ) -> None:
         BaseTask.__init__(self, name=name, offset=offset)
         self._robot = None
@@ -59,6 +64,9 @@ class MyPickPlace(ABC, BaseTask):
             self._target_position = np.array([-0.3, -0.3, 0]) / get_stage_units()
             self._target_position[2] = self._cube_size[2] / 2.0
         self._target_position = self._target_position + self._offset
+
+        self._set_camera = set_camera
+
         return
 
     def set_up_scene(self, scene: Scene) -> None:
@@ -84,14 +92,18 @@ class MyPickPlace(ABC, BaseTask):
                 color=np.array([0, 0, 1]),
             )
         )
+        self.attach_face_markers(cube_prim_path)
         self._task_objects[self._cube.name] = self._cube
-        camera_position = self._cube_initial_position + np.array([0.0, 0.0, 1.1])
-        # camera_orientation = np.array([1, 0, 0, 0])
-        camera_orientation = np.array([0.5, -0.5, 0.5, 0.5])
 
-        self._camera:Camera = self.set_camera(camera_position, camera_orientation)
-        scene.add(self._camera)
-        self._task_objects[self._camera.name] = self._camera
+        if self._set_camera:
+            camera_position = self._cube_initial_position + np.array([0.0, 0.0, 1.1])
+            # camera_orientation = np.array([1, 0, 0, 0])
+            camera_orientation = np.array([0.5, -0.5, 0.5, 0.5])
+
+            self._camera:Camera = self.set_camera(camera_position, camera_orientation)
+            scene.add(self._camera)
+            self._task_objects[self._camera.name] = self._camera
+
         self._robot: Franka = self.set_robot()
         self._robot.set_enabled_self_collisions(True)
         scene.add(self._robot)
@@ -106,6 +118,54 @@ class MyPickPlace(ABC, BaseTask):
     @abstractmethod
     def set_camera(self) -> Camera:
         raise NotImplementedError
+    
+
+    def attach_face_markers(self, cube_prim_path, cube_size=1.0, offset=0.05):
+        """
+        Attaches a small sphere marker (with a label in its name) to each face of the cube.
+        These markers are visual-only and will not be used for collisions.
+        
+        Args:
+            cube_prim_path (str): The prim path of the cube.
+            cube_size (float): The overall (uniform) size of the cube.
+            offset (float): Extra offset to push the marker outwards from the face.
+        """
+        stage = omni.usd.get_context().get_stage()
+        half = cube_size / 2.0
+
+        # Define for each face: a translation and a label.
+        markers = {
+            "front":  (Gf.Vec3d(half + offset, 0, 0),        "1"),
+            "back":   (Gf.Vec3d(-half - offset, 0, 0),       "2"),
+            "left":   (Gf.Vec3d(0, half + offset, 0),        "3"),
+            "right":  (Gf.Vec3d(0, -half - offset, 0),       "4"),
+            "top":    (Gf.Vec3d(0, 0, half + offset),        "5"),
+            "bottom": (Gf.Vec3d(0, 0, -half - offset),       "6")
+        }
+        
+        # Get the cube prim.
+        cube_prim = stage.GetPrimAtPath(cube_prim_path)
+        if not cube_prim:
+            print(f"Cube prim not found at {cube_prim_path}")
+            return
+
+        # Loop over each face.
+        for face, (translation, label) in markers.items():
+            # Create a marker Xform as a child of the cube.
+            marker_path = cube_prim.GetPath().AppendChild(f"marker_{face}")
+            marker = UsdGeom.Xform.Define(stage, marker_path)
+            marker.AddTranslateOp().Set(translation)
+            
+            # Under the marker, create a small sphere.
+            sphere_path = marker_path.AppendChild("sphere")
+            sphere = UsdGeom.Sphere.Define(stage, sphere_path)
+            sphere.GetRadiusAttr().Set(0.03)
+            
+            # (Optional) You could also set a custom attribute on the marker or sphere
+            # to indicate the face number, or name the prim accordingly.
+            print(f"Attached marker for face '{face}' with label {label} at {translation}")
+
+
 
     def set_params(
         self,
@@ -116,27 +176,32 @@ class MyPickPlace(ABC, BaseTask):
         if target_position is not None:
             self._target_position = target_position
         if cube_position is not None or cube_orientation is not None:
-            camera_position = cube_position + np.array([0, 0.0, 1.1])
-            # camera_orientation = self.camera_orientation(camera_position, cube_position)
-            camera_orientation = np.array([0.5, -0.5, 0.5, 0.5])
-            # camera_orientation = np.array([1, 0, 0, 0])
             self._cube.set_local_pose(translation=cube_position, orientation=cube_orientation)
-            self._camera.set_local_pose(translation=camera_position, orientation=camera_orientation)
+
+            if self._set_camera:
+                camera_position = cube_position + np.array([0, 0.0, 1.1])
+                camera_orientation = np.array([0.5, -0.5, 0.5, 0.5])
+                self._camera.set_local_pose(translation=camera_position, orientation=camera_orientation)
+
         return
 
     def get_params(self) -> dict:
         params_representation = dict()
         position, orientation = self._cube.get_local_pose()
-        camera_postion, camera_orientation = self._camera.get_local_pose()
 
         params_representation["cube_position"] = {"value": position, "modifiable": True}
         params_representation["cube_orientation"] = {"value": orientation, "modifiable": True}
-        params_representation["camera_position"] = {"value": camera_postion, "modifiable": True}
-        params_representation["camera_orientation"] = {"value": camera_orientation, "modifiable": True}
+
         params_representation["target_position"] = {"value": self._target_position, "modifiable": True}
-        params_representation["camera_name"] = {"value": self._camera.name, "modifiable": False}
         params_representation["cube_name"] = {"value": self._cube.name, "modifiable": False}
         params_representation["robot_name"] = {"value": self._robot.name, "modifiable": False}
+
+        if self._set_camera:
+            camera_postion, camera_orientation = self._camera.get_local_pose()
+            params_representation["camera_name"] = {"value": self._camera.name, "modifiable": False}
+            params_representation["camera_position"] = {"value": camera_postion, "modifiable": True}
+            params_representation["camera_orientation"] = {"value": camera_orientation, "modifiable": True}
+
         return params_representation
 
     def get_observations(self) -> dict:
@@ -147,10 +212,9 @@ class MyPickPlace(ABC, BaseTask):
         """
         joints_state = self._robot.get_joints_state()
         cube_position, cube_orientation = self._cube.get_local_pose()
-        camera_postion, camera_orientation = self._camera.get_local_pose()
         end_effector_position, _ = self._robot.end_effector.get_local_pose()
 
-        return {
+        observations = {
             self._cube.name: {
                 "position": cube_position,
                 "orientation": cube_orientation,
@@ -159,12 +223,21 @@ class MyPickPlace(ABC, BaseTask):
             self._robot.name: {
                 "joint_positions": joints_state.positions,
                 "end_effector_position": end_effector_position,
-            },
-            self._camera.name: {
-                "position": camera_postion,
-                "orientation": camera_orientation
             }
         }
+
+        if self._set_camera:
+            camera_position, camera_orientation = self._camera.get_local_pose()
+            
+            observations[self._camera.name] = {
+                "position": camera_position,
+                "orientation": camera_orientation,
+            }
+        return observations
+
+
+
+        
 
     def pre_step(self, time_step_index: int, simulation_time: float) -> None:
         """[summary]
@@ -191,34 +264,3 @@ class MyPickPlace(ABC, BaseTask):
         raise NotImplementedError
     
 
-    def camera_orientation(self, camera_position, target_position, up=np.array([0, 0, 1])):
-        camera_pos = np.array(camera_position, dtype=float)
-        target_pos = np.array(target_position, dtype=float)
-        up = np.array(up, dtype=float)
-
-        forward = target_pos - camera_pos
-        forward_norm = np.linalg.norm(forward)
-        if forward_norm < 1e-8:
-            # camera and target are nearly the same point
-            return Quaternion()  # identity rotation
-        forward /= forward_norm  # normalize
-        
-        # If forward is almost parallel to up, pick a different 'up'
-        dot_fu = np.abs(np.dot(forward, up))
-        if dot_fu > 0.99:
-            up = np.array([1, 0, 0])  # fallback 'up'
-        
-        # right = up x forward
-        right = np.cross(up, forward)
-        right /= np.linalg.norm(right)
-        
-        # corrected up = forward x right
-        up_corrected = np.cross(forward, right)
-        up_corrected /= np.linalg.norm(up_corrected)
-        
-        # Build rotation matrix: [ right | up | forward ]
-        R = np.column_stack((right, up_corrected, forward))
-        
-        # Convert to quaternion (pyquaternion can do this directly)
-        quat = Quaternion(matrix=R)
-        return np.array([quat.w, quat.x, quat.y, quat.z])

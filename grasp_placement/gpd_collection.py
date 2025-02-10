@@ -38,7 +38,7 @@ simulation_app.update()
 
 GRIPPER_MAX = 0.04
 GRIPPER_SPEED = 0.005
-DIR_PATH = "/home/chris/Chris/placement_ws/src/data/"
+DIR_PATH = "/home/chris/Chris/placement_ws/src/gpd_data/"
 
 
 class TFSubscriber(Node):
@@ -167,7 +167,7 @@ class StartSimulation:
 
         self.task.set_params(
             cube_position=np.array([x, y, 0]),
-            target_position=np.array([p, q, 0.05])
+            target_position=np.array([p, q, 0.075])
         )
 
         self.placement_orientation = euler_angles_to_quat(np.random.uniform(low=-np.pi, high=np.pi, size=3))
@@ -310,7 +310,7 @@ class StartSimulation:
         # Create the cube position with z fixed at 0
         self.task.set_params(
             cube_position=np.array([x, y, 0]),
-            target_position=np.array([p, q, 0.05])
+            target_position=np.array([p, q, 0.075])
         )
         print(f"cube_position is :{np.array([x, y, 0])}")
         self.placement_orientation = euler_angles_to_quat(np.random.uniform(low=-np.pi, high=np.pi, size=3))
@@ -353,8 +353,7 @@ def replay_grasping(env: StartSimulation):
     if not os.path.exists(file_path):
         file_pattern = os.path.join(DIR_PATH, f"Pcd_{env.pcd_counter}/Grasping_{env.grasp_counter}/Placement_*.json")
         file_list = glob.glob(file_pattern)
-        print(f"file_pattern: {file_pattern}")
-        print(f"file_list: {file_list}")
+
 
         extract_grasping(file_list[0])
     asyncio.ensure_future(env._on_replay_scene_event_async(file_path))

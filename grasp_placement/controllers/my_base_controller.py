@@ -173,8 +173,10 @@ class MyBaseController(BaseController):
             ### Orientation Section
 
             end_effector_orientation = grasping_orientation if self._event in [0, 1] else placement_orientation
+            if len(end_effector_orientation) == 3:
+                end_effector_orientation = euler_angles_to_quat(end_effector_orientation)
 
-
+            # print(f"Event: {self._event}, Position: {position_target}, Orientation: {end_effector_orientation}")
             target_joint_positions = self._cspace_controller.forward(
                 target_end_effector_position=position_target, 
                 target_end_effector_orientation=np.array(end_effector_orientation)
