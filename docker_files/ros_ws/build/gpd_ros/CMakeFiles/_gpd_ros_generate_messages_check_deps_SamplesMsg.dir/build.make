@@ -54,7 +54,7 @@ CMAKE_BINARY_DIR = /home/ros_ws/build
 include gpd_ros/CMakeFiles/_gpd_ros_generate_messages_check_deps_SamplesMsg.dir/progress.make
 
 gpd_ros/CMakeFiles/_gpd_ros_generate_messages_check_deps_SamplesMsg:
-	cd /home/ros_ws/build/gpd_ros && ../catkin_generated/env_cached.sh /usr/bin/python3 /opt/ros/noetic/share/genmsg/cmake/../../../lib/genmsg/genmsg_check_deps.py gpd_ros /home/ros_ws/src/gpd_ros/msg/SamplesMsg.msg geometry_msgs/Point:std_msgs/Header
+	cd /home/ros_ws/build/gpd_ros && ../catkin_generated/env_cached.sh /usr/bin/python3 /opt/ros/noetic/share/genmsg/cmake/../../../lib/genmsg/genmsg_check_deps.py gpd_ros /home/ros_ws/src/gpd_ros/msg/SamplesMsg.msg std_msgs/Header:geometry_msgs/Point
 
 _gpd_ros_generate_messages_check_deps_SamplesMsg: gpd_ros/CMakeFiles/_gpd_ros_generate_messages_check_deps_SamplesMsg
 _gpd_ros_generate_messages_check_deps_SamplesMsg: gpd_ros/CMakeFiles/_gpd_ros_generate_messages_check_deps_SamplesMsg.dir/build.make

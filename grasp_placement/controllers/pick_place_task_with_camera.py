@@ -41,6 +41,7 @@ class PickPlaceCamera(MyPickPlace):
         target_position: Optional[np.ndarray] = None,
         cube_size: Optional[np.ndarray] = None,
         offset: Optional[np.ndarray] = None,
+        set_camera: bool = True,
     ) -> None:
         MyPickPlace.__init__(
             self,
@@ -50,6 +51,7 @@ class PickPlaceCamera(MyPickPlace):
             target_position=target_position,
             cube_size=cube_size,
             offset=offset,
+            set_camera=set_camera,
         )
         return
 

@@ -54,15 +54,6 @@ class TFSubscriber(Node):
             10                   # QoS
         )
 
-        # self.pcd_subscription = self.create_subscription(
-        #     PointCloud2,           # Message type
-        #     "/pointcloud_for_grasper",               # Topic name
-        #     self.pcd_callback,    # Callback function
-        #     10                   # QoS
-        # )
-
-    # def pcd_callback(self, msg):
-    #     self.latest_pcd = msg
 
 
     def tf_callback(self, msg):
@@ -112,7 +103,7 @@ class StartSimulation:
         p, q = np.random.uniform(low=range_choice[0], high=range_choice[1]), np.random.uniform(low=range_choice[0], high=range_choice[1])
 
 
-        self.task = PickPlaceCamera()
+        self.task = PickPlaceCamera(set_camera=False)
         
 
         self.data_logger = self.world.get_data_logger() # a DataLogger object is defined in the World by default
@@ -167,25 +158,14 @@ class StartSimulation:
 
         self.task.set_params(
             cube_position=np.array([x, y, 0]),
-            target_position=np.array([p, q, 0.05])
+            target_position=np.array([p, q, 0.075])
         )
 
         self.placement_orientation = np.random.uniform(low=-np.pi, high=np.pi, size=3)
 
         tf_graph_generation()
-        start_camera(self.task._camera)
+        # start_camera(self.task._camera)
 
-        # self.test_cube = self.world.scene.add(
-        #     DynamicCuboid(
-        #         name="test",
-        #         position=[-0.04, 0, 0],
-        #         # orientation=self._cube_initial_orientation,
-        #         prim_path="/World/Franka/test_cube",
-        #         scale= [0.24, 0.2, 0.01],
-        #         size=1.0,
-        #         color=np.array([0, 0, 1]),
-        #     )
-        # )
 
 
 
@@ -222,7 +202,7 @@ class StartSimulation:
             robot_name = self.task_params["robot_name"]["value"]
             cube_name = self.task_params["cube_name"]["value"]
             target_position = self.task_params["target_position"]["value"]
-            camera_name = self.task_params["camera_name"]["value"]
+            # camera_name = self.task_params["camera_name"]["value"]
             if tf_node.latest_tf is not None:
                 tf_data = process_tf_message(tf_node.latest_tf)
             else:
@@ -234,7 +214,7 @@ class StartSimulation:
                 cube_position, cube_orientation =  scene.get_object(cube_name).get_world_pose()
                 ee_position, ee_orientation =  scene.get_object(robot_name).end_effector.get_world_pose()
                 surface = surface_detection(quat_to_euler_angles(cube_orientation))
-                camera_position, camera_orientation =  scene.get_object(camera_name).get_world_pose()
+                # camera_position, camera_orientation =  scene.get_object(camera_name).get_world_pose()
 
                 return {
                     "joint_positions": scene.get_object(robot_name).get_joint_positions().tolist(),# save data as lists since its a json file.
@@ -247,8 +227,8 @@ class StartSimulation:
                     "stage": self.controller.get_current_event(),
                     "surface": surface,
                     "ee_target_orientation":self.placement_orientation.tolist(),
-                    "camera_position": camera_position.tolist(),
-                    "camera_orientation": camera_orientation.tolist(),
+                    # "camera_position": camera_position.tolist(),
+                    # "camera_orientation": camera_orientation.tolist(),
                     "tf": tf_data,
                     "contact": self.contact
                 }
@@ -283,7 +263,6 @@ class StartSimulation:
     def _on_replay_scene_step(self, step_size):
         if self.world.current_time_step_index < self.data_logger.get_num_of_data_frames():
             cube_name = self.task_params["cube_name"]["value"]
-            camera_name = self.task_params["camera_name"]["value"]
             data_frame = self.data_logger.get_data_frame(data_frame_index=self.world.current_time_step_index)
             self.articulation_controller.apply_action(
                 ArticulationAction(joint_positions=data_frame.data["applied_joint_positions"])
@@ -292,11 +271,6 @@ class StartSimulation:
             self.world.scene.get_object(cube_name).set_world_pose(
                 position=np.array(data_frame.data["cube_position"]),
                 orientation=np.array(data_frame.data["cube_orientation"])
-            )
-            # Sets the world position of the goal camera to the same recoded position
-            self.world.scene.get_object(camera_name).set_world_pose(
-                position=np.array(data_frame.data["camera_position"]),
-                orientation=np.array(data_frame.data["camera_orientation"])
             )
 
 
@@ -311,7 +285,6 @@ class StartSimulation:
 
     def reset(self):
         self.world.reset()
-        self.task._camera.initialize()
         self.controller.reset()
         self.grasping_failure = False
 
@@ -343,7 +316,7 @@ def log_grasping(start_logging, env: StartSimulation, tf_node: TFSubscriber):
 def record_grasping(recorded, env: StartSimulation):
     # Recording section
     if not recorded:
-        file_path = DIR_PATH + f"Grasping_{env.grasp_counter}/placement_{env.placement_counter}_{env.grasping_failure}.json"
+        file_path = DIR_PATH + f"Grasping_{env.grasp_counter}/Placement_{env.placement_counter}_{env.grasping_failure}.json"
 
         # Ensure the parent directories exist
         directory = os.path.dirname(file_path)
@@ -362,11 +335,11 @@ def record_grasping(recorded, env: StartSimulation):
 def replay_grasping(env: StartSimulation):
     print(f"----------------- Replaying Grasping {env.grasp_counter} ----------------- \n")
 
-    file_path = DIR_PATH + f"Grasping_{env.grasp_counter}/grasping.json"
+    file_path = DIR_PATH + f"Grasping_{env.grasp_counter}/Grasping.json"
 
     # If the replay data does not exist, create one
     if not os.path.exists(file_path):
-        file_pattern = os.path.join(DIR_PATH, f"Grasping_{env.grasp_counter}/placement_*.json")
+        file_pattern = os.path.join(DIR_PATH, f"Grasping_{env.grasp_counter}/Placement_*.json")
         file_list = glob.glob(file_pattern)
 
         extract_grasping(file_list[0])
@@ -406,14 +379,11 @@ def main():
                 reset_needed = True
                 continue
             elif env.placement_counter >= 1 and env.placement_counter < 200:
+                record_grasping(False, env)
                 env.reset()
                 replay = True
                 continue
             
-        # prim_path = "/World/Cube"
-        # prim = env.world.stage.GetPrimAtPath(prim_path)
-        # parent_prim = prim.GetParent()
-        # print("Parent prim:", parent_prim.GetPath())
         # 2) Spin ROS for a short time so callbacks are processed
         executor.spin_once(timeout_sec=0.01)
         # Technically only pcd ready should be sufficient because it seems pcd takes longer to be prepared
@@ -442,8 +412,6 @@ def main():
                 replay = False
                 start_logging = True
                 recorded = False
-
-                
             elif env.replay_finished:
 
                 # Recording Session
@@ -452,10 +420,11 @@ def main():
                     observations = env.world.get_observations()
                 except:
                     print("Something wrong with hitting the floor in observation")
-                    if env.placement_counter <= 1:
+                    if env.placement_counter < 1:
                         reset_needed = True
                         continue
                     elif env.placement_counter > 1 and env.placement_counter < 200:
+                        record_grasping(False, env)
                         env.reset()
                         replay = True
                         continue
@@ -470,8 +439,6 @@ def main():
                     end_effector_offset=None,
                     placement_orientation=placement_orientation,  
                     grasping_orientation=env.grasping_orientation[env.grasp_counter],    
-                    # grasping_orientation=np.array([0, np.pi, 0]),           
-                    # placement_orientation=np.array([0, np.pi, 0]),  
                 )
                 
 
@@ -482,7 +449,7 @@ def main():
                         recorded = record_grasping(recorded, env)
                         reset_needed = True
 
-                # env.articulation_controller.apply_action(actions)
+                env.articulation_controller.apply_action(actions)
 
             if env.controller.is_done():
                 print("----------------- done picking and placing ----------------- \n\n")

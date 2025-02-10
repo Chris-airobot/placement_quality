@@ -54,7 +54,7 @@ CMAKE_BINARY_DIR = /home/ros_ws/build
 include gpd_ros/CMakeFiles/_gpd_ros_generate_messages_check_deps_GraspConfig.dir/progress.make
 
 gpd_ros/CMakeFiles/_gpd_ros_generate_messages_check_deps_GraspConfig:
-	cd /home/ros_ws/build/gpd_ros && ../catkin_generated/env_cached.sh /usr/bin/python3 /opt/ros/noetic/share/genmsg/cmake/../../../lib/genmsg/genmsg_check_deps.py gpd_ros /home/ros_ws/src/gpd_ros/msg/GraspConfig.msg geometry_msgs/Point:geometry_msgs/Vector3:std_msgs/Float32
+	cd /home/ros_ws/build/gpd_ros && ../catkin_generated/env_cached.sh /usr/bin/python3 /opt/ros/noetic/share/genmsg/cmake/../../../lib/genmsg/genmsg_check_deps.py gpd_ros /home/ros_ws/src/gpd_ros/msg/GraspConfig.msg std_msgs/Float32:geometry_msgs/Vector3:geometry_msgs/Point
 
 _gpd_ros_generate_messages_check_deps_GraspConfig: gpd_ros/CMakeFiles/_gpd_ros_generate_messages_check_deps_GraspConfig
 _gpd_ros_generate_messages_check_deps_GraspConfig: gpd_ros/CMakeFiles/_gpd_ros_generate_messages_check_deps_GraspConfig.dir/build.make

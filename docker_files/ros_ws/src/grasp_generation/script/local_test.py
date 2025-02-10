@@ -18,7 +18,7 @@ import numpy as np
 import pyquaternion
  
 HOST = ''        # Typically bind to all interfaces inside the container
-PORT = 12341     # Choose any free port
+PORT = 12345     # Choose any free port
  
 # For gpd_ros, the topic that outputs the grasp poses are "clustered_grasps"
  
