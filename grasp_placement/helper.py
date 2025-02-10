@@ -13,6 +13,8 @@ from tf2_msgs.msg import TFMessage
 from sensor_msgs.msg import PointCloud2
 from geometry_msgs.msg import TransformStamped
 import omni.graph.core as og
+from pxr import UsdGeom, Gf, Usd
+import omni
 DIR_PATH = "/home/chris/Chris/placement_ws/src/data/"
 
 def surface_detection(rpy):
@@ -542,6 +544,58 @@ def transform_pointcloud_to_frame(
     cloud_out.data = bytes(out_data)
 
     return cloud_out
+
+
+
+
+
+
+def get_upward_facing_marker(cube_prim_path):
+    """
+    Determines which marker (attached to a cube) is the highest in world space.
+    This marker indicates which face of the cube is currently facing upward.
+    
+    Args:
+        cube_prim_path (str): The prim path of the cube.
+    
+    Returns:
+        A tuple (marker_name, world_position) for the marker with the highest Z.
+    """
+    stage = omni.usd.get_context().get_stage()
+    cube_prim = stage.GetPrimAtPath(cube_prim_path)
+    if not cube_prim:
+        print(f"Cube prim not found at {cube_prim_path}")
+        return None
+
+
+    upward_marker = None
+    max_z = -float('inf')
+    
+    # Assume the markers are children of the cube with names starting with "marker_"
+    for child in cube_prim.GetChildren():
+        if not child.GetName().startswith("marker_"):
+            continue
+
+        # Use XformCommonAPI to get the marker's world translation.
+        world_trans = get_world_translation(child)
+        if world_trans[2] > max_z:
+            max_z = world_trans[2]
+            upward_marker = (child.GetName(), world_trans)
+
+    
+    return upward_marker
+
+
+def get_world_translation(prim, time=Usd.TimeCode(0)):
+    """
+    Computes the world translation of a prim by computing its local-to-world
+    transformation matrix and extracting its translation.
+    """
+    xformable = UsdGeom.Xformable(prim)
+    # Compute the local-to-world transform matrix at the default time.
+    world_matrix = xformable.ComputeLocalToWorldTransform(time)
+    return world_matrix.ExtractTranslation()
+
 
 
 def obtain_grasps(file_path):

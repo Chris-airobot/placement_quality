@@ -163,7 +163,7 @@ class MyPickPlace(ABC, BaseTask):
             
             # (Optional) You could also set a custom attribute on the marker or sphere
             # to indicate the face number, or name the prim accordingly.
-            print(f"Attached marker for face '{face}' with label {label} at {translation}")
+            # print(f"Attached marker for face '{face}' with label {label} at {translation}")
 
 
 

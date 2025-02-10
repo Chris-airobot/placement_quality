@@ -73,6 +73,7 @@ class StartSimulation:
         self.placement_orientation = None  # Gripper orientation when the cube is about to be placed
         self.camera = None
         self.contact = None
+        self.cube_grasped = None
         self.contact_sensors = None
 
         
@@ -84,7 +85,6 @@ class StartSimulation:
         self.replay_finished = True
         self.grasping_failure = False
         self.cube_contacted = False
-
 
 
     def start(self):
@@ -174,6 +174,7 @@ class StartSimulation:
         """Physics-step callback: checks all sensors, sets self.contact accordingly."""
         any_contact = False  # track if at least one sensor had contact
         self.cube_contacted = False
+        self.cube_grasped = None
 
         for sensor in sensors:
             frame_data = sensor.get_current_frame()
@@ -182,6 +183,10 @@ class StartSimulation:
                 for c in frame_data["contacts"]:
                     body0 = c["body0"]
                     body1 = c["body1"]
+                    if "panda" in body0 + body1 and "Cube" in body0 + body1:
+                        # print("Cube in the ground")
+                        self.cube_grasped = f"{body0} | {body1} | Force: {frame_data['force']:.3f} | #Contacts: {frame_data['number_of_contacts']}"
+
                     if "GroundPlane" in body0 + body1 and "Cube" in body0 + body1:
                         # print("Cube in the ground")
                         self.cube_contacted = True
@@ -218,7 +223,8 @@ class StartSimulation:
             def frame_logging_func(tasks, scene: Scene):
                 cube_position, cube_orientation =  scene.get_object(cube_name).get_world_pose()
                 ee_position, ee_orientation =  scene.get_object(robot_name).end_effector.get_world_pose()
-                surface = surface_detection(quat_to_euler_angles(cube_orientation))
+                # surface = surface_detection(quat_to_euler_angles(cube_orientation))
+                surface, _ = get_upward_facing_marker("/World/Cube")
                 # camera_position, camera_orientation =  scene.get_object(camera_name).get_world_pose()
 
                 return {
@@ -236,7 +242,8 @@ class StartSimulation:
                     # "camera_orientation": camera_orientation.tolist(),
                     "tf": tf_data,
                     "contact": self.contact,
-                    "cube_in_ground": self.cube_contacted
+                    "cube_in_ground": self.cube_contacted,
+                    "cube_grasped": self.cube_grasped
                 }
 
             self.data_logger.add_data_frame_logging_func(frame_logging_func) # adds the function to be called at each physics time step.
@@ -419,7 +426,6 @@ def main():
                 start_logging = True
                 recorded = False
             elif env.replay_finished:
-
                 # Recording Session
                 start_logging = log_grasping(start_logging, env, tf_node)
                 try:
