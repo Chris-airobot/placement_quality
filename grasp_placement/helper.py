@@ -12,9 +12,7 @@ from transforms3d.axangles import axangle2mat
 from tf2_msgs.msg import TFMessage
 from sensor_msgs.msg import PointCloud2
 from geometry_msgs.msg import TransformStamped
-import omni.graph.core as og
-from pxr import UsdGeom, Gf, Usd
-import omni
+
 DIR_PATH = "/home/chris/Chris/placement_ws/src/data/"
 
 def surface_detection(rpy):
@@ -176,6 +174,8 @@ def projection(q_current_cube, q_current_ee, q_desired_ee):
 
 
 def tf_graph_generation():
+    import omni.graph.core as og
+
     keys = og.Controller.Keys
 
     robot_frame_path= "/World/Franka"
@@ -551,6 +551,7 @@ def transform_pointcloud_to_frame(
 
 
 def get_upward_facing_marker(cube_prim_path):
+    import omni
     """
     Determines which marker (attached to a cube) is the highest in world space.
     This marker indicates which face of the cube is currently facing upward.
@@ -586,11 +587,14 @@ def get_upward_facing_marker(cube_prim_path):
     return upward_marker
 
 
-def get_world_translation(prim, time=Usd.TimeCode(0)):
+def get_world_translation(prim):
     """
     Computes the world translation of a prim by computing its local-to-world
     transformation matrix and extracting its translation.
     """
+    from pxr import UsdGeom, Gf, Usd
+
+    time=Usd.TimeCode(0)
     xformable = UsdGeom.Xformable(prim)
     # Compute the local-to-world transform matrix at the default time.
     world_matrix = xformable.ComputeLocalToWorldTransform(time)
@@ -624,9 +628,9 @@ def view_pcd(file_path):
 
 if __name__ == "__main__":
     # # # Example Usage
-    file_path = "/home/chris/Chris/placement_ws/src/data/pcd_0/pointcloud.pcd"
-    view_pcd(file_path)
-
+    # file_path = "/home/chris/Chris/placement_ws/src/data/pcd_0/pointcloud.pcd"
+    # view_pcd(file_path)   
+    count_files_in_subfolders("/home/chris/Chris/placement_ws/src/random_data")
     
     # Suppose you have an Nx3 cloud (world frame), e.g.:
     # cloud_world = np.random.rand(1000, 3) - 0.5  # random points in [-0.5, 0.5]^3

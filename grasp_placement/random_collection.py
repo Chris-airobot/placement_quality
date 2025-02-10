@@ -79,7 +79,7 @@ class StartSimulation:
         
         self.data_logger = None
 
-        self.grasp_counter = 36
+        self.grasp_counter = 76
         self.placement_counter = 0
 
         self.replay_finished = True
@@ -388,11 +388,11 @@ def main():
             print("Something wrong with hitting the floor in step")
             env.reset()
             # env.world.add_physics_callback("contact_sensor_callback", partial(env.on_sensor_contact_report, sensors=env.contact_sensors))
-            if env.placement_counter < 1:
+            if env.placement_counter <= 1:
                 reset_needed = True
                 continue
-            elif env.placement_counter >= 1 and env.placement_counter < 200:
-                record_grasping(False, env)
+            elif env.placement_counter > 1 and env.placement_counter < 200:
+                # record_grasping(False, env)
                 env.reset()
                 replay = True
                 continue
@@ -432,11 +432,11 @@ def main():
                     observations = env.world.get_observations()
                 except:
                     print("Something wrong with hitting the floor in observation")
-                    if env.placement_counter < 1:
+                    if env.placement_counter <= 1:
                         reset_needed = True
                         continue
-                    elif env.placement_counter >= 1 and env.placement_counter < 200:
-                        record_grasping(False, env)
+                    elif env.placement_counter > 1 and env.placement_counter < 200:
+                        # record_grasping(False, env)
                         env.reset()
                         replay = True
                         continue
