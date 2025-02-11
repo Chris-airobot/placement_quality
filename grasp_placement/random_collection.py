@@ -79,7 +79,7 @@ class StartSimulation:
         
         self.data_logger = None
 
-        self.grasp_counter = 76
+        self.grasp_counter = 80
         self.placement_counter = 0
 
         self.replay_finished = True

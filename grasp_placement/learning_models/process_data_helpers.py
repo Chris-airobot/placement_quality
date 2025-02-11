@@ -5,7 +5,8 @@ import numpy as np
 from transforms3d.euler import euler2quat
 from transforms3d.quaternions import quat2mat, mat2quat, qmult, qinverse
 from transforms3d.axangles import axangle2mat
-
+import numpy as np
+from scipy.spatial.transform import Rotation as R
 
 def reformat_json(file_path): 
     # Parse the JSON string into a Python dictionary
@@ -25,60 +26,33 @@ def reformat_json(file_path):
     with open(output_path, "w") as pretty_file:
         pretty_file.write(pretty_json)
     
+def convert_wxyz_to_xyzw(q_wxyz):
+    """Convert a quaternion from [w, x, y, z] format to [x, y, z, w] format."""
+    return [q_wxyz[1], q_wxyz[2], q_wxyz[3], q_wxyz[0]]
 
-def projection(q_current_cube, q_current_ee, q_desired_ee):
-    """
-    Args:
-        q_current_cube: orientation of current cube
-        q_current_ee: orientation of current end effector
-        q_desired_ee: orientation of desired end effector
+
+
+
+def projection(grasp_before_release):
+
+
+    ee_target_quat = convert_wxyz_to_xyzw(grasp_before_release['data']['ee_orientation'])
+    ee_quat = convert_wxyz_to_xyzw(grasp_before_release['data']['ee_orientation'])
+    cube_quat = convert_wxyz_to_xyzw(grasp_before_release['data']['cube_orientation'])
+
+
+    r_offset = R.from_quat(ee_quat).inv() * R.from_quat(cube_quat)
+
+    # Convert the offset rotation back to a quaternion.
+    ee_rot = R.from_quat(ee_target_quat)
+    offset_rot = R.from_quat(r_offset.as_quat())
+
+
+
+    cube_target_rot = (ee_rot * offset_rot).as_quat()
  
-        all in w,x,y,z format
-    """
-    # --- Step 1: Compute the relative rotation from EE to cube ---
-    q_rel = qmult(qinverse(q_current_ee), q_current_cube)
- 
-    # --- Step 2: Compute the initial desired cube orientation based on desired EE ---
-    q_desired_cube = qmult(q_desired_ee, q_rel)
- 
-    # Convert this quaternion to a rotation matrix for projection
-    R_cube = quat2mat(q_desired_cube)
- 
-    # --- Step 3: Project the orientation so the cube's designated face is up ---
-    # Define world up direction
-    u = np.array([0, 0, 1])
- 
-    # Assuming the cube's local z-axis should point up:
-    v = R_cube[:, 2]  # Current "up" direction of the cube according to its orientation
- 
-    # Compute rotation axis and angle to align v with u
-    axis = np.cross(v, u)
-    axis_norm = np.linalg.norm(axis)
- 
-    # Handle special cases: if axis is nearly zero, v is aligned or anti-aligned with u
-    if axis_norm < 1e-6:
-        # If anti-aligned, choose an arbitrary perpendicular axis
-        if np.dot(v, u) < 0:
-            axis = np.cross(v, np.array([1, 0, 0]))
-            if np.linalg.norm(axis) < 1e-6:
-                axis = np.cross(v, np.array([0, 1, 0]))
-        else:
-            # v is already aligned with u
-            axis = np.array([0, 0, 1])
-        axis_norm = np.linalg.norm(axis)
- 
-    axis = axis / axis_norm  # Normalize the axis
-    angle = np.arccos(np.clip(np.dot(v, u), -1.0, 1.0))  # Angle between v and u
- 
-    # Compute corrective rotation matrix
-    R_align = axangle2mat(axis, angle)
- 
-    # Apply the corrective rotation to project the cube's orientation
-    R_cube_projected = np.dot(R_align, R_cube)
-    # Convert the projected rotation matrix back to quaternion form
-    q_cube_projected = mat2quat(R_cube_projected)
- 
-    return q_cube_projected
+    # Return the quaternion in [x, y, z, w] format.
+    return [cube_target_rot[3], cube_target_rot[0], cube_target_rot[1], cube_target_rot[2]]
 
 
 def pose_difference(final_pos, final_quat, target_pos, target_quat):
@@ -113,40 +87,22 @@ def process_file(file_path):
         raise ValueError(f"No data entries found under 'Isaac Sim Data' in {file_path}")
 
     # Initialize variables
-    last_stage3 = None
-    last_stage6 = None
     contact_count_after_stage3 = 0
     # earliest_stage7 = None
     # found_earliest_stage7 = False
-
-    lowest_z_value = float("inf")
-    first_lowest_z_entry = None
-
+    
+    grasp_position = None
+    grasp_orientation = None
+    grasp_before_release = None
     last_entry = isaac_sim_data[-1]
 
-    # Iterate through the data
-    for entry in isaac_sim_data:
-        stage = entry["data"]["stage"]
-        current_time = entry["current_time"]
-        contact = entry["data"].get("contact")
 
-        # Last stage=3
-        if stage == 3:
-            if (last_stage3 is None) or (current_time > last_stage3["current_time"]):
-                last_stage3 = entry
 
-        # Last stage=6
-        if stage == 6:
-            if (last_stage6 is None) or (current_time > last_stage6["current_time"]):
-                last_stage6 = entry
 
-        if last_stage3 is not None and current_time > last_stage3["current_time"]:
-            if contact is not None:
-                contact_count_after_stage3 += 1
 
 
     # Match the first boolean after "placement_XX_"
-    match = re.search(r"placement_\d+_(False|True)", file_path)
+    match = re.search(r"Placement_\d+_(False|True)", file_path)
     grasp_unsuccessful = match.group(1) == "True" if match else None
     # Extract required information
     # if not last_stage3:
@@ -155,79 +111,86 @@ def process_file(file_path):
     #     raise ValueError(f"No stage=6 found in {file_path}")
 
     
+    ###############################
+    ####### Inputs
+    ###############################
+    # grasp pose calculation
+    stage3_entries = [d for d in isaac_sim_data if d["data"]["stage"] == 3]
+    if stage3_entries:
+        # Find the entry with the maximum current_time
+        first_stage3 = min(stage3_entries, key=lambda x: x["current_time"])
 
-    # Inputs
-    Grasp_position = last_stage3["data"]["ee_position"]
-    Grasp_orientation = last_stage3["data"]["ee_orientation"]
+    # Step 2: Filter entries starting from the first stage 3
+    start_time = first_stage3["current_time"]
+    data_after_stage3 = [entry for entry in isaac_sim_data if entry["current_time"] >= start_time]
+    for i in range(len(data_after_stage3)):
+        if data_after_stage3[i]["data"]["cube_grasped"]:
+            if data_after_stage3[i+1]["data"]["cube_grasped"] and data_after_stage3[i+2]["data"]["cube_grasped"]:
+                grasp_position = data_after_stage3[i]["data"]["ee_position"]
+                grasp_orientation = data_after_stage3[i]["data"]["ee_orientation"]
+                break
+
+    for data in data_after_stage3:
+        if data["data"]["contact"]:
+            contact_count_after_stage3 += 1
+
     cube_initial_position = isaac_sim_data[0]["data"]["cube_position"]
     cube_initial_orientation = isaac_sim_data[0]["data"]["cube_orientation"]
     cube_target_position = isaac_sim_data[0]["data"]["target_position"]
 
-    if not grasp_unsuccessful: 
-        ###############################
-        #### Double check this function
-        ###############################
-        cube_target_orientation = projection(
-            last_stage6["data"]["cube_orientation"],
-            last_stage6["data"]["ee_orientation"],
-            euler2quat(*last_stage6["data"]["ee_target_orientation"])
-        )
-        cube_target_surface = last_stage6["data"]["surface"]
 
-        # Outputs
+    # Find the grasp data right before release
+    for data in reversed(isaac_sim_data):
+        if data["data"]["cube_grasped"]:
+            grasp_before_release = data
+            break
+
+    
+    
+    if not grasp_unsuccessful: 
+        # Calculate the target orientation
+        cube_target_orientation = projection(grasp_before_release)
+        # Pose difference between the final cube pose and the target pose
+        
+        
+        cube_target_surface = grasp_before_release["data"]["surface"]
+
+
+
+        ###############################
+        ####### Outputs
+        ###############################
         cube_final_position = last_entry["data"]["cube_position"]
         cube_final_orientation = last_entry["data"]["cube_orientation"]
         cube_final_surface = last_entry["data"]["surface"]
-
-        
 
         d_pos, angle = pose_difference(
             cube_final_position, cube_final_orientation,
             cube_target_position, cube_target_orientation
         )
-        d_threshold = 0.01
-        angle_threshold = 0.1
 
-        position_successful = d_pos < d_threshold
-        orientation_successful = angle < angle_threshold
-
-        
+        delta_pose_initial = None
+        first_stage7 = None
         stage7_entries = [d for d in isaac_sim_data if d["data"]["stage"] == 7]
         if stage7_entries:
             # Find the entry with the maximum current_time
             first_stage7 = min(stage7_entries, key=lambda x: x["current_time"])
 
         # Step 2: Filter entries starting from the first stage 7
-        start_time = first_stage7["current_time"]
-        filtered_data = [entry for entry in isaac_sim_data if entry["current_time"] >= start_time]
+        if first_stage7:
+            start_time = first_stage7["current_time"]
+            filtered_data = [entry for entry in isaac_sim_data if entry["current_time"] >= start_time]
 
-        # Step 3: Track the lowest z value and find the first time it hits
-        lowest_z_value = float("inf")
-        first_lowest_z_entry = None
-
-        for entry in filtered_data:
-            cube_z = entry["data"]["cube_position"][2]
-            if cube_z < lowest_z_value:
-                # if cube_z < 0.05: # It hits the ground
-                # Update the lowest z and store the first time it hits
-                lowest_z_value = cube_z
-                first_lowest_z_entry = entry
-                # else:
-                    
-            elif cube_z > lowest_z_value:
-                # If the z starts increasing, stop searching
-                break
+            for entry in filtered_data:
+                if entry["data"]["cube_in_ground"]:
+                    delta_pose_initial = entry
 
         # Step 4: Find the last entry in the data
-        if first_lowest_z_entry is not None:
-            last_entry = isaac_sim_data[-1]
+        if delta_pose_initial is not None:
             # Step 5: Compute the pose difference (cube_position difference)
-            lowest_z_position = first_lowest_z_entry["data"]["cube_position"]
-            lowest_z_orientation = first_lowest_z_entry["data"]["cube_orientation"]
-
             shift_position, shift_orientation = pose_difference(
                 cube_final_position, cube_final_orientation,
-                lowest_z_position, lowest_z_orientation
+                delta_pose_initial["data"]["cube_position"], delta_pose_initial["data"]["cube_orientation"]
             )
 
         else:
@@ -237,8 +200,8 @@ def process_file(file_path):
         return {
             "file_path": file_path,
             "inputs": {
-                "Grasp_position": Grasp_position,
-                "Grasp_orientation": Grasp_orientation,
+                "grasp_position": grasp_position,
+                "grasp_orientation": grasp_orientation,
                 "cube_initial_position": cube_initial_position,
                 "cube_initial_orientation": cube_initial_orientation,
                 "cube_target_position": cube_target_position,
@@ -250,8 +213,6 @@ def process_file(file_path):
                 "cube_final_orientation": cube_final_orientation,
                 "cube_final_surface": cube_final_surface,
                 "grasp_unsuccessful": grasp_unsuccessful,
-                "position_successful": bool(position_successful),
-                "orientation_successful": bool(orientation_successful),
                 "position_differece": d_pos,
                 "orientation_differece": angle,
                 "shift_position": shift_position,
@@ -263,8 +224,8 @@ def process_file(file_path):
         return {
             "file_path": file_path,
             "inputs": {
-                "Grasp_position": Grasp_position,
-                "Grasp_orientation": Grasp_orientation,
+                "grasp_position": grasp_position,
+                "grasp_orientation": grasp_orientation,
                 "cube_initial_position": cube_initial_position,
                 "cube_initial_orientation": cube_initial_orientation,
                 "cube_target_position": cube_target_position,
@@ -278,8 +239,6 @@ def process_file(file_path):
                 "position_differece": None,
                 "orientation_differece": None,
                 "grasp_unsuccessful": grasp_unsuccessful,
-                "position_successful": None,
-                "orientation_successful": None,
                 "pose_shift_position": None,
                 "pose_shift_orientation": None,
                 "contacts": None
@@ -302,6 +261,9 @@ def process_folder(root_folder, output_file):
                     results.append(data)
                 except Exception as e:
                     print(f"Error processing {file_path}: {e}")
+                    if 'quat' in str(e):
+                        os.remove(file_path)
+                        print(f"Removed {file_path}")
 
     # Save results to an output file (JSON format)
     with open(output_file, "w") as out_file:
@@ -312,7 +274,8 @@ def process_folder(root_folder, output_file):
 
 
 if __name__ == "__main__":
-    reformat_json("/home/chris/Sim/data/placement_1_False.json")
+    process_folder("//home/chris/Chris/placement_ws/src/random_data", "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
+    # reformat_json("/home/chris/Sim/data/placement_1_False.json")
     # root_folder = "/home/chris/Downloads/python/data"  # Root folder containing subfolders and JSON files
     # output_file = "processed_data.json"  # Output dataset file
     # process_folder(root_folder, output_file)
