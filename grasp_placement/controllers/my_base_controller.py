@@ -148,9 +148,9 @@ class MyBaseController(BaseController):
             target_joint_positions = ArticulationAction(joint_positions=[None] * current_joint_positions.shape[0])
         elif self._event == 3:
             target_joint_positions = self._gripper.forward(action="close")
-            self.pause()
-            print("Simulation paused.")
-            print(f"The placement orientation is: {grasping_orientation}")
+            # self.pause()
+            # print("Simulation paused.")
+            # print(f"The placement orientation is: {grasping_orientation}")
         elif self._event == 7:
             target_joint_positions = self._gripper.forward(action="open")
         else:

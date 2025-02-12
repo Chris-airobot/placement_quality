@@ -8,25 +8,119 @@ from transforms3d.axangles import axangle2mat
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import tf_transformations as tft 
+import matplotlib.pyplot as plt
 
-def reformat_json(file_path): 
-    # Parse the JSON string into a Python dictionary
-    
+
+def rough_analysis(file_path):
+    # Load your JSON file
     with open(file_path, "r") as file:
-        raw_data = json.load(file)  # Parse JSON into a Python dictionary
+        trajectories = json.load(file)
     
+    # Count trajectories with at least one null (None) value in the outputs
+    null_trajectory_count = sum(
+        1 for traj in trajectories 
+        if any(value is None for value in traj.get("outputs", {}).values())
+    )
+    print(f"Total number of trajectories: {len(trajectories)}")
+    print("Number of trajectories with null outputs:", null_trajectory_count)
+
+
+def data_analysis():
+    file_path = "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json"
+    with open(file_path, "r") as file:
+        all_entries = json.load(file)
+
+        
+    pos_diffs   = [x["outputs"]["position_difference"] for x in all_entries if x["outputs"]["position_difference"] is not None]
+    ori_diffs   = [x["outputs"]["orientation_difference"] for x in all_entries if x["outputs"]["orientation_difference"] is not None]
+    shift_poss  = [x["outputs"]["shift_position"]       for x in all_entries if x["outputs"]["shift_position"] is not None]
+    shift_oris  = [x["outputs"]["shift_orientation"]    for x in all_entries if x["outputs"]["shift_orientation"] is not None]
+    contacts_ls = [x["outputs"]["contacts"]            for x in all_entries if x["outputs"]["contacts"] is not None]
+
+    # Convert to np arrays to avoid the ValueError
+    pos_diffs   = np.array(pos_diffs,   dtype=float)
+    ori_diffs   = np.array(ori_diffs,   dtype=float)
+    shift_poss  = np.array(shift_poss,  dtype=float)
+    shift_oris  = np.array(shift_oris,  dtype=float)
+    contacts_ls = np.array(contacts_ls, dtype=float)
+
+    pos_diff_95p      = np.percentile(pos_diffs, 90)
+    ori_diff_95p      = np.percentile(ori_diffs, 90)
+    shift_pos_95p     = np.percentile(shift_poss, 90)
+    shift_ori_95p     = np.percentile(shift_oris, 90)
+    contacts_95p      = np.percentile(contacts_ls, 90)
     
-    
-    # Pretty-print the JSON
-    pretty_json = json.dumps(raw_data, indent=4)
-    
-    directory, base_name = os.path.split(file_path)
-    pretty_name = "pretty_" + base_name
-    output_path = os.path.join(directory, pretty_name)
-    
-    with open(output_path, "w") as pretty_file:
-        pretty_file.write(pretty_json)
-    
+    # Filter out outliers (remove any values above the 95th percentile)
+    pos_diffs_f   = pos_diffs[pos_diffs <= np.percentile(pos_diffs, 95)]
+    ori_diffs_f   = ori_diffs[ori_diffs <= np.percentile(ori_diffs, 95)]
+    shift_poss_f  = shift_poss[shift_poss <= np.percentile(shift_poss, 95)]
+    shift_oris_f  = shift_oris[shift_oris <= np.percentile(shift_oris, 95)]
+    contacts_ls_f = contacts_ls[contacts_ls <= np.percentile(contacts_ls, 95)]
+
+
+
+    print(f"values are:pose_diffs: {pos_diff_95p}, ori_diffs: {ori_diff_95p}, shift_poss: {shift_pos_95p}, shift_oris: {shift_ori_95p}, contacts: {contacts_95p}")
+    # Create a figure with 2 rows x 3 columns (6 subplots)
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    axes = axes.ravel()  # Flatten the axes array for easier indexing
+
+    # Plot 1: Position Difference (Filtered)
+    x_idx = np.arange(len(pos_diffs_f))
+    # axes[0].scatter(x_idx, pos_diffs_f, color='skyblue')
+    axes[0].hist(pos_diffs_f, bins=20, color='skyblue', edgecolor='k')
+    axes[0].axhline(pos_diff_95p, color='red', linestyle='--', label='95th Percentile')
+    axes[0].set_title("Position Difference (Filtered)")
+    axes[0].set_xlabel("Sample Index")
+    axes[0].set_ylabel("pos_diff (meters)")
+    axes[0].legend()
+
+    # Plot 2: Orientation Difference (Filtered)
+    x_idx = np.arange(len(ori_diffs_f))
+    axes[1].hist(ori_diffs_f, bins=20, color='skyblue', edgecolor='k')
+    axes[1].axhline(ori_diff_95p, color='red', linestyle='--', label='95th Percentile')
+    axes[1].set_title("Orientation Difference (Filtered)")
+    axes[1].set_xlabel("Sample Index")
+    axes[1].set_ylabel("ori_diff (radians)")
+    axes[1].legend()
+
+    # Plot 3: Shift Position (Filtered)
+    x_idx = np.arange(len(shift_poss_f))
+    axes[2].hist(shift_poss_f, bins=20, color='skyblue', edgecolor='k')
+    axes[2].axhline(shift_pos_95p, color='red', linestyle='--', label='95th Percentile')
+    axes[2].set_title("Shift Position (Filtered)")
+    axes[2].set_xlabel("Sample Index")
+    axes[2].set_ylabel("shift_pos (meters)")
+    axes[2].legend()
+
+    # Plot 4: Shift Orientation (Filtered)
+    x_idx = np.arange(len(shift_oris_f))
+    axes[3].hist(shift_oris_f, bins=20, color='skyblue', edgecolor='k')
+    axes[3].axhline(shift_ori_95p, color='red', linestyle='--', label='95th Percentile')
+    axes[3].set_title("Shift Orientation (Filtered)")
+    axes[3].set_xlabel("Sample Index")
+    axes[3].set_ylabel("shift_ori (radians)")
+    axes[3].legend()
+
+    # Plot 5: Contacts (Filtered)
+    x_idx = np.arange(len(contacts_ls_f))
+    axes[4].hist(contacts_ls_f, bins=20, color='skyblue', edgecolor='k')
+
+    axes[4].axhline(contacts_95p, color='red', linestyle='--', label='95th Percentile')
+    axes[4].set_title("Contacts (Filtered)")
+    axes[4].set_xlabel("Sample Index")
+    axes[4].set_ylabel("Contacts")
+    axes[4].legend()
+
+    # Hide the 6th subplot (or use it for a summary)
+    axes[5].axis("off")
+
+    plt.tight_layout()
+    plt.show()
+
+
+
+
+
 def convert_wxyz_to_xyzw(q_wxyz):
     """Convert a quaternion from [w, x, y, z] format to [x, y, z, w] format."""
     return [q_wxyz[1], q_wxyz[2], q_wxyz[3], q_wxyz[0]]
@@ -369,18 +463,8 @@ def process_file(file_path):
         "outputs": outputs
     }
 
-def data_analysis(file_path):
-    # Load your JSON file
-    with open(file_path, "r") as file:
-        trajectories = json.load(file)
-    
-    # Count trajectories with at least one null (None) value in the outputs
-    null_trajectory_count = sum(
-        1 for traj in trajectories 
-        if any(value is None for value in traj.get("outputs", {}).values())
-    )
-    print(f"Total number of trajectories: {len(trajectories)}")
-    print("Number of trajectories with null outputs:", null_trajectory_count)
+
+
 
 def process_folder(root_folder, output_file):
     """
@@ -414,8 +498,11 @@ def process_folder(root_folder, output_file):
 # Usage Example
 
 
+
+
 if __name__ == "__main__":
     # process_folder("/home/chris/Chris/placement_ws/src/random_data", "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
     # process_file("/home/chris/Chris/placement_ws/src/random_data/Grasping_159/Placement_68_False.json")
     # reformat_json("/home/chris/Chris/placement_ws/src/random_data/Grasping_159/Placement_68_False.json")
-    data_analysis("/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
+    # rough_analysis("/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
+    data_analysis()

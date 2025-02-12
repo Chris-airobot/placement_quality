@@ -630,7 +630,7 @@ if __name__ == "__main__":
     # file_path = "/home/chris/Chris/placement_ws/src/data/pcd_0/pointcloud.pcd"
     # view_pcd(file_path)   
     # data_analysis("/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
-    pass
+    print(len(orientation_creation()))
     
     # Suppose you have an Nx3 cloud (world frame), e.g.:
     # cloud_world = np.random.rand(1000, 3) - 0.5  # random points in [-0.5, 0.5]^3
