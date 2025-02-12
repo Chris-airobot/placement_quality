@@ -15,7 +15,6 @@ from omni.isaac.core.utils.stage import get_stage_units
 from omni.isaac.core.utils.types import ArticulationAction
 from omni.isaac.manipulators.grippers.gripper import Gripper
 
-
 class MyBaseController(BaseController):
     """
     A simple pick and place state machine for tutorials
@@ -149,6 +148,9 @@ class MyBaseController(BaseController):
             target_joint_positions = ArticulationAction(joint_positions=[None] * current_joint_positions.shape[0])
         elif self._event == 3:
             target_joint_positions = self._gripper.forward(action="close")
+            self.pause()
+            print("Simulation paused.")
+            print(f"The placement orientation is: {grasping_orientation}")
         elif self._event == 7:
             target_joint_positions = self._gripper.forward(action="open")
         else:

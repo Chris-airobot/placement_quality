@@ -617,18 +617,7 @@ def obtain_grasps(file_path):
     return grasps
 
 
-def data_analysis(file_path):
-    # Load your JSON file
-    with open(file_path, "r") as file:
-        trajectories = json.load(file)
-    
-    # Count trajectories with at least one null (None) value in the outputs
-    null_trajectory_count = sum(
-        1 for traj in trajectories 
-        if any(value is None for value in traj.get("outputs", {}).values())
-    )
-    print(f"Total number of trajectories: {len(trajectories)}")
-    print("Number of trajectories with null outputs:", null_trajectory_count)
+
 
 
 def view_pcd(file_path):
@@ -640,7 +629,8 @@ if __name__ == "__main__":
     # # # Example Usage
     # file_path = "/home/chris/Chris/placement_ws/src/data/pcd_0/pointcloud.pcd"
     # view_pcd(file_path)   
-    data_analysis("/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
+    # data_analysis("/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
+    pass
     
     # Suppose you have an Nx3 cloud (world frame), e.g.:
     # cloud_world = np.random.rand(1000, 3) - 0.5  # random points in [-0.5, 0.5]^3
