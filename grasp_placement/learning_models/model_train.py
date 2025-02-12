@@ -9,6 +9,7 @@ import random
 from torch.utils.data import DataLoader
 import time
 import os
+import numpy as np
 
 class StabilityNet(nn.Module):
     """
@@ -167,6 +168,21 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
     valid_loader = DataLoader(valid_dataset, batch_size=32, shuffle=False)
     test_loader  = DataLoader(test_dataset,  batch_size=32, shuffle=False)
+
+    stability_scores = [sample[-1] for sample in train_dataset.samples]  # sample[2] is your reg_lbl
+    print("Stability score stats:")
+    print("Min:", np.min(stability_scores))
+    print("Max:", np.max(stability_scores))
+    print("Mean:", np.mean(stability_scores))
+    print("Std:", np.std(stability_scores))
+    
+    plt.figure(figsize=(8, 6))
+    plt.hist(stability_scores, bins=20, edgecolor='black', alpha=0.7)
+    plt.xlabel('Stability Score')
+    plt.ylabel('Frequency')
+    plt.title('Histogram of Stability Scores in Train Dataset')
+    plt.grid(True)
+    plt.show()
 
     # Build model
     model = StabilityNet(input_dim=21, hidden_dim=128).to(device)
