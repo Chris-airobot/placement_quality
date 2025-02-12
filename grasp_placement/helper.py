@@ -62,54 +62,36 @@ def extract_grasping(input_file_path):
 
 def orientation_creation():
 
-    # Define the range and step in radians
-    start = -np.pi
-    end = np.pi
-    step = np.deg2rad(36)  # Convert 36 degrees to radians
+    # # Define the range and step in radians
+    # start = -np.pi
+    # end = np.pi
+    # step = np.deg2rad(36)  # Convert 36 degrees to radians
 
-    # Create the list using nested loops
-    result = []
-    for i in np.arange(start, end + step, step):
-        for j in np.arange(start, end + step, step):
-            for k in np.arange(start, end + step, step):
-                result.append(np.array([i, j, k]))
+    # # Create the list using nested loops
+    # result = []
+    # for i in np.arange(start, end + step, step):
+    #     for j in np.arange(start, end + step, step):
+    #         for k in np.arange(start, end + step, step):
+    #             result.append(np.array([i, j, k]))
+    """
+    Generate a list of random orientations for the grasping pose.
+    Each orientation is represented as an array of three random angles (Euler angles)
+    in the range [-pi, pi].
     
+    Parameters:
+        num_orientations (int): Number of random orientations to generate.
+        
+    Returns:
+        List[np.ndarray]: A list containing `num_orientations` arrays, each with 3 random angles.
+    """
+    result = []
+    for _ in range(1000):
+        # Generate three random angles in the range [-pi, pi]
+        orientation = np.random.uniform(-np.pi, np.pi, size=3)
+        result.append(orientation)
+
     return result
 
-
-
-def count_files_in_subfolders(directory):
-    """
-    Count the number of files within all subfolders of a directory.
-
-    Args:
-        directory (str): Path to the main directory.
-
-    Returns:
-        dict: A dictionary where keys are subfolder paths and values are the file counts.
-        int: Total number of files across all subfolders.
-    """
-    file_count_per_subfolder = {}
-    total_file_count = 0
-
-    for root, dirs, files in os.walk(directory):
-        # Only consider subfolders (not the main folder)
-        if root != directory:
-            file_count = len(files)
-            file_count_per_subfolder[root] = file_count
-            total_file_count += file_count
-
-
-    sorted_subfolders = sorted(
-        ((subfolder, count) for subfolder, count in file_count_per_subfolder.items() if count > 1 
-        and os.path.basename(subfolder).startswith("Grasping_")),
-        key=lambda item: int(os.path.basename(item[0]).split('_')[-1])
-    )
-
-    for subfolder, count in sorted_subfolders:
-        print(f"{subfolder}: {count} files")
-
-    print(f"Total files across all subfolders: {total_file_count}")
 
 
 

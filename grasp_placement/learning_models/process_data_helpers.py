@@ -10,6 +10,39 @@ from scipy.spatial.transform import Rotation as R
 import tf_transformations as tft 
 import matplotlib.pyplot as plt
 
+def count_files_in_subfolders(directory):
+    """
+    Count the number of files within all subfolders of a directory.
+
+    Args:
+        directory (str): Path to the main directory.
+
+    Returns:
+        dict: A dictionary where keys are subfolder paths and values are the file counts.
+        int: Total number of files across all subfolders.
+    """
+    file_count_per_subfolder = {}
+    total_file_count = 0
+
+    for root, dirs, files in os.walk(directory):
+        # Only consider subfolders (not the main folder)
+        if root != directory:
+            file_count = len(files)
+            file_count_per_subfolder[root] = file_count
+            total_file_count += file_count
+
+
+    sorted_subfolders = sorted(
+        ((subfolder, count) for subfolder, count in file_count_per_subfolder.items() if count > 1 
+        and os.path.basename(subfolder).startswith("Grasping_")),
+        key=lambda item: int(os.path.basename(item[0]).split('_')[-1])
+    )
+
+    for subfolder, count in sorted_subfolders:
+        print(f"{subfolder}: {count} files")
+
+    print(f"Total files across all subfolders: {total_file_count}")
+
 
 def rough_analysis(file_path):
     # Load your JSON file
@@ -505,4 +538,4 @@ if __name__ == "__main__":
     # process_file("/home/chris/Chris/placement_ws/src/random_data/Grasping_159/Placement_68_False.json")
     # reformat_json("/home/chris/Chris/placement_ws/src/random_data/Grasping_159/Placement_68_False.json")
     # rough_analysis("/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
-    data_analysis()
+    count_files_in_subfolders("/home/chris/Chris/placement_ws/src/random_data")

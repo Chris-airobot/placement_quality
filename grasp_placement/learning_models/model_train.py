@@ -183,6 +183,7 @@ def main():
     plt.title('Histogram of Stability Scores in Train Dataset')
     plt.grid(True)
     plt.show()
+    
 
     # Build model
     model = StabilityNet(input_dim=21, hidden_dim=128).to(device)
