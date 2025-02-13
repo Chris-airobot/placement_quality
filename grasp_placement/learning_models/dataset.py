@@ -10,7 +10,7 @@ def compute_stability_score(pos_diff, ori_diff, shift_pos, shift_ori, contacts,
                             ori_max=0.0, 
                             shift_pos_max=0.0, 
                             shift_ori_max=0.0, 
-                            contacts_max=0.0):
+                            contacts_max=0.0, params=None):
     """
     Computes a stability score in [0,1] by first normalizing each metric to [0,1]
     using the provided upper bounds, then combining them with weighted penalties.
@@ -38,12 +38,22 @@ def compute_stability_score(pos_diff, ori_diff, shift_pos, shift_ori, contacts,
     shift_ori_norm = min(shift_ori / shift_ori_max, 1.0)
     contacts_norm  = min(contacts / contacts_max, 1.0)
 
+    # For each metric, choose a weight based on whether it exceeds its threshold
+    pos_weight = params['h_diff_weight'] if pos_diff > 0.1 else params['pos_weight']
+    ori_weight = params['h_diff_weight'] if ori_diff > ori_threshold else params['pos_weight']
+    shift_pos_weight = params['h_shift_weight'] if shift_pos > shift_pos_threshold else params['shift_weight']
+    shift_ori_weight = params['h_shift_weight'] if shift_ori > shift_ori_threshold else params['shift_weight']
+    contacts_weight = params['h_contact_weight'] if contacts > contacts_threshold else params['conatct_weight']
+
+
+
+
     # Combine the normalized errors using chosen weights.
-    penalty = (0.3 * pos_norm + 
-               0.3 * ori_norm + 
-               0.1 * shift_pos_norm + 
-               0.1 * shift_ori_norm + 
-               0.2 * contacts_norm)
+    penalty = (pos_weight * pos_norm + 
+               ori_weight * ori_norm + 
+               shift_pos_weight * shift_pos_norm + 
+               shift_ori_weight * shift_ori_norm + 
+               contacts_weight * contacts_norm)
     
     # Subtract the penalty from a perfect score (1.0)
     stability = 1.0 - penalty
@@ -149,9 +159,19 @@ class MyStabilityDataset(Dataset):
         shift_ori_max = 1.6673673523277988
         contacts_max = 5.0
 
+        params = {
+            'h_diff_weight': 0.6,
+            'pos_weight': 0.3,
+            'h_shift_weight': 0.2,
+            'shift_weight': 0.1,
+            'h_contact_weight': 0.8,
+            'conatct_weight': 0.4
+        }
+
         stability_label = compute_stability_score(
             pos_diff, ori_diff, shift_pos, shift_ori, contacts,
-            pos_diff_max, ori_diff_max, shift_pos_max, shift_ori_max, contacts_max
+            pos_diff_max, ori_diff_max, shift_pos_max, shift_ori_max, contacts_max,
+            params=params
         )
         return feasibility_label, stability_label
 

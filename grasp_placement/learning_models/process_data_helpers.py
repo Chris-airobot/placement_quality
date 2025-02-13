@@ -54,8 +54,14 @@ def rough_analysis(file_path):
         1 for traj in trajectories 
         if any(value is None for value in traj.get("outputs", {}).values())
     )
+
+    unsuccessful_count = sum(
+        1 for traj in trajectories 
+        if traj.get("outputs", {}).get("grasp_unsuccessful") is True
+    )
     print(f"Total number of trajectories: {len(trajectories)}")
     print("Number of trajectories with null outputs:", null_trajectory_count)
+    print("Number of trajectories with unsuccessful grasp:", unsuccessful_count)
 
 
 def data_analysis():
@@ -351,10 +357,9 @@ def process_file(file_path):
     data_after_stage3 = [entry for entry in isaac_sim_data if entry["current_time"] >= first_stage3["current_time"]]
 
     # Loop safely over indices (i, i+1, i+2) to find consecutive entries with cube_grasped==True.
-    for i in range(len(data_after_stage3) - 2):
+    for i in range(len(data_after_stage3) - 1):
         if data_after_stage3[i]["data"]["cube_grasped"] and \
-           data_after_stage3[i+1]["data"]["cube_grasped"] and \
-           data_after_stage3[i+2]["data"]["cube_grasped"]:
+           data_after_stage3[i+1]["data"]["cube_grasped"]:
             inputs["grasp_position"] = data_after_stage3[i]["data"]["ee_position"]
             inputs["grasp_orientation"] = data_after_stage3[i]["data"]["ee_orientation"]
             # --- Determine cube target orientation  ---
@@ -537,5 +542,5 @@ if __name__ == "__main__":
     # process_folder("/home/chris/Chris/placement_ws/src/random_data", "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
     # process_file("/home/chris/Chris/placement_ws/src/random_data/Grasping_159/Placement_68_False.json")
     # reformat_json("/home/chris/Chris/placement_ws/src/random_data/Grasping_159/Placement_68_False.json")
-    # rough_analysis("/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
-    count_files_in_subfolders("/home/chris/Chris/placement_ws/src/random_data")
+    rough_analysis("/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
+    # count_files_in_subfolders("/home/chris/Chris/placement_ws/src/random_data")
