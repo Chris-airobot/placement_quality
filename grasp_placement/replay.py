@@ -56,18 +56,25 @@ def encode_outputs(outputs: dict):
     shift_ori = outputs.get("shift_orientation", None)
     contacts = outputs.get("contacts", None)
 
+    # "values are:pose_diffs: 2.0033138697629886, ori_diffs: 2.9932579711083727, shift_poss: 0.13525934849764623, shift_oris: 1.6673673523277988, contacts: 5.0"
+    pos_diff_max = 2.0033138697629886
+    ori_diff_max = 2.9932579711083727
+    shift_pos_max = 0.13525934849764623
+    shift_ori_max = 1.6673673523277988
+    contacts_max = 5.0
+
     # Convert Nones to 0.0 or some default
     # (Alternatively, you could skip these samples)
     if pos_diff is None: 
-        pos_diff = 0.0
+        pos_diff = pos_diff_max
     if ori_diff is None:
-        ori_diff = 0.0
+        ori_diff = ori_diff_max
     if shift_pos is None:
-        shift_pos = 0.0
+        shift_pos = shift_pos_max
     if shift_ori is None:
-        shift_ori = 0.0
+        shift_ori = shift_ori_max
     if contacts is None:
-        contacts = 0
+        contacts = contacts_max
 
 
     # Make them floats
@@ -77,20 +84,14 @@ def encode_outputs(outputs: dict):
     shift_ori = float(shift_ori)
     contacts  = float(contacts)
 
-    # "values are:pose_diffs: 2.0033138697629886, ori_diffs: 2.9932579711083727, shift_poss: 0.13525934849764623, shift_oris: 1.6673673523277988, contacts: 5.0"
-    pos_diff_max = 2.0033138697629886
-    ori_diff_max = 2.9932579711083727
-    shift_pos_max = 0.13525934849764623
-    shift_ori_max = 1.6673673523277988
-    contacts_max = 5.0
-
+    
     params = {
         'h_diff_weight': 0.6,
         'pos_weight': 0.3,
         'h_shift_weight': 0.2,
         'shift_weight': 0.1,
         'h_contact_weight': 0.8,
-        'conatct_weight': 0.4
+        'conatct_weight': 0.3
     }
 
     stability_label = compute_stability_score(
@@ -124,6 +125,8 @@ class ReplayGrasping:
         self.task = None
         self.articulation_controller = None
         self.task_params = None
+
+        self.inputs = None
 
 
     def start(self):
@@ -161,7 +164,6 @@ class ReplayGrasping:
 
     # This is for replying the whole scene
     async def _on_replay_scene_event_async(self, data_file):
-            print("are we here")
             self.data_logger.load(log_path=data_file)
 
             await self.world.play_async()
@@ -169,6 +171,7 @@ class ReplayGrasping:
             return 
 
     def _on_replay_scene_step(self, step_size):
+
         if self.world.current_time_step_index < self.data_logger.get_num_of_data_frames():
             
 
@@ -182,12 +185,28 @@ class ReplayGrasping:
                 position=np.array(data_frame.data["cube_position"]),
                 orientation=np.array(data_frame.data["cube_orientation"])
             )
-
+        
+        if data_frame.data["stage"] == 4:
+            target_position = self.inputs["cube_target_position"]
+            target_orientation = self.inputs["cube_target_orientation"]
+            cube = self.world.scene.add(
+                    DynamicCuboid(
+                        name="goal",
+                        position=target_position,
+                        orientation=target_orientation,
+                        prim_path="/World/Cube_final",
+                        scale=[0.05, 0.05, 0.05],
+                        size=1.0,
+                        color=np.array([1, 0, 0]),
+                    )
+                )
+            self.replay_finished = True
+            return 
 
         elif self.world.current_time_step_index == self.data_logger.get_num_of_data_frames():
             print("----------------- Replay Finished -----------------\n")
             self.replay_finished = True
-            # self.controller._event = 4
+            
             self.world.remove_physics_callback("replay_scene")
         
         
@@ -197,14 +216,21 @@ class ReplayGrasping:
 
 
 def main():
-    file_path = "/home/chris/Chris/placement_ws/src/random_data/Grasping_33/Placement_14_False.json"
+    file_path = "/home/chris/Chris/placement_ws/src/random_data/Grasping_874/Placement_0_False.json"
     replay_agent = ReplayGrasping(file_path)
     replay_agent.start()
     starting_replay = False
+    data = process_file(file_path)
+    inputs = data["inputs"]
+    replay_agent.inputs = inputs
+    cls, reg = encode_outputs(data["outputs"])
+    print(f"Your classification label is: {cls}, and your regression label is: {reg}")
+
+
     while simulation_app.is_running():
         
         replay_agent.world.step(render=True)
-            
+        # print(f"Current time step: {replay_agent.world.current_time_step_index}")
         if replay_agent.world.is_playing():  
             # This function should only be played once
             if not starting_replay:
@@ -212,14 +238,12 @@ def main():
                 replay_agent.replay_grasping()
                 
             if replay_agent.replay_finished:
+                replay_agent.world.pause()
+
                 starting_replay = False
                 replay_agent.replay_finished = False
-                replay_agent.world.reset()
-                replay_agent.controller.reset()
-                data = process_file(file_path)
-                cls, reg = encode_outputs(data["outputs"])
-                print(f"Your classification label is: {cls}, and your regression label is: {reg}")
-
+                # replay_agent.world.reset()
+                # replay_agent.controller.reset()
     simulation_app.close()
 
 

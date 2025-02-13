@@ -79,7 +79,7 @@ class StartSimulation:
         
         self.data_logger = None
 
-        self.grasp_counter = 0
+        self.grasp_counter = 874
         self.placement_counter = 0
 
         self.replay_finished = True
@@ -207,9 +207,9 @@ class StartSimulation:
 
     def _on_logging_event(self, val, tf_node: TFSubscriber):
         print(f"----------------- Grasping {self.grasp_counter} Placement {self.placement_counter} Start -----------------")
-        print(f'Cube position is: {self.task.get_params()["cube_position"]["value"]}\n')
 
         if not self.world.get_data_logger().is_started():
+            self.task_params = self.task.get_params()
             robot_name = self.task_params["robot_name"]["value"]
             cube_name = self.task_params["cube_name"]["value"]
             target_position = self.task_params["target_position"]["value"]

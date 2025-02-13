@@ -39,21 +39,21 @@ def compute_stability_score(pos_diff, ori_diff, shift_pos, shift_ori, contacts,
     contacts_norm  = min(contacts / contacts_max, 1.0)
 
     # For each metric, choose a weight based on whether it exceeds its threshold
-    pos_weight = params['h_diff_weight'] if pos_diff > 0.1 else params['pos_weight']
-    ori_weight = params['h_diff_weight'] if ori_diff > ori_threshold else params['pos_weight']
-    shift_pos_weight = params['h_shift_weight'] if shift_pos > shift_pos_threshold else params['shift_weight']
-    shift_ori_weight = params['h_shift_weight'] if shift_ori > shift_ori_threshold else params['shift_weight']
-    contacts_weight = params['h_contact_weight'] if contacts > contacts_threshold else params['conatct_weight']
+    # pos_weight = params['h_diff_weight'] if pos_diff > 0.1 else params['pos_weight']
+    # ori_weight = params['h_diff_weight'] if ori_diff > ori_threshold else params['pos_weight']
+    # shift_pos_weight = params['h_shift_weight'] if shift_pos > shift_pos_threshold else params['shift_weight']
+    # shift_ori_weight = params['h_shift_weight'] if shift_ori > shift_ori_threshold else params['shift_weight']
+    # contacts_weight = params['h_contact_weight'] if contacts > contacts_threshold else params['conatct_weight']
 
 
 
 
     # Combine the normalized errors using chosen weights.
-    penalty = (pos_weight * pos_norm + 
-               ori_weight * ori_norm + 
-               shift_pos_weight * shift_pos_norm + 
-               shift_ori_weight * shift_ori_norm + 
-               contacts_weight * contacts_norm)
+    penalty = (params['pos_weight'] * pos_norm + 
+               params['pos_weight'] * ori_norm + 
+               params['shift_weight'] * shift_pos_norm + 
+               params['shift_weight'] * shift_ori_norm + 
+               params['conatct_weight'] * contacts_norm)
     
     # Subtract the penalty from a perfect score (1.0)
     stability = 1.0 - penalty

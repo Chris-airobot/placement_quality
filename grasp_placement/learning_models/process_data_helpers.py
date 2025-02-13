@@ -289,9 +289,9 @@ def compute_cube_target_orientation(data):
     return [cube_target_quat[3], cube_target_quat[0], cube_target_quat[1], cube_target_quat[2]]
 
 
-def pose_difference(final_pos, final_quat, target_pos, target_quat):
+def pose_difference(final_pos, final_quat, target_pos, target_quat, exclude_z = False):
     # 1. Position difference
-    d_pos = np.linalg.norm(np.array(final_pos) - np.array(target_pos))
+    d_pos = np.linalg.norm(np.array(final_pos) - np.array(target_pos)) if not exclude_z else np.linalg.norm(np.array(final_pos)[:2] - np.array(target_pos)[:2])
 
     # 2. Orientation difference
     # relative_quat = target_quat * inverse(final_quat)
@@ -347,58 +347,36 @@ def process_file(file_path):
         "cube_target_rel_orientation": None,        # Relative to the gripper frame when the robot just grasped the cube.
     }
 
-    # --- Extract grasp pose from stage 3 entries (look for consecutive cube_grasped=True) ---
-    stage3 = [d for d in isaac_sim_data if d["data"]["stage"] == 3]
-    if not stage3:
-        raise ValueError(f"No stage=3 entries found in {file_path}")
+    # # --- Extract grasp pose from stage 3 entries (look for consecutive cube_grasped=True) ---
+    # stage3 = [d for d in isaac_sim_data if d["data"]["stage"] == 3]
+    # if not stage3:
+    #     raise ValueError(f"No stage=3 entries found in {file_path}")
+    
+    # # Find the entry with the maximum current_time
+    # first_stage3 = min(stage3, key=lambda x: x["current_time"])
+    # data_after_stage3 = [entry for entry in isaac_sim_data if entry["current_time"] >= first_stage3["current_time"]]
+
+    stage4 = [d for d in isaac_sim_data if d["data"]["stage"] == 4]
+    first_stage4 = min(stage4, key=lambda x: x["current_time"])
+    data_after_stage4 = [entry for entry in isaac_sim_data if entry["current_time"] >= first_stage4["current_time"]]
     
     # Find the entry with the maximum current_time
-    first_stage3 = min(stage3, key=lambda x: x["current_time"])
-    data_after_stage3 = [entry for entry in isaac_sim_data if entry["current_time"] >= first_stage3["current_time"]]
-
-    # Loop safely over indices (i, i+1, i+2) to find consecutive entries with cube_grasped==True.
-    for i in range(len(data_after_stage3) - 1):
-        if data_after_stage3[i]["data"]["cube_grasped"] and \
-           data_after_stage3[i+1]["data"]["cube_grasped"]:
-            inputs["grasp_position"] = data_after_stage3[i]["data"]["ee_position"]
-            inputs["grasp_orientation"] = data_after_stage3[i]["data"]["ee_orientation"]
-            # --- Determine cube target orientation  ---
-            if not grasp_unsuccessful:
-                # Use your projection function (assumed defined elsewhere)
-                inputs["cube_target_orientation"] = compute_cube_target_orientation(data_after_stage3[i]["data"])
-                inputs["cube_initial_position"] = data_after_stage3[i]["data"]["cube_position"]
-                inputs["cube_initial_orientation"] = data_after_stage3[i]["data"]["cube_orientation"]
-                inputs["cube_target_position"] = data_after_stage3[i]["data"]["target_position"]
-                T_grasp = get_relative_transform(data_after_stage3[i]["data"]["tf"], "panda_hand", "world")
-                # T_grasp = None
-                # if grasp_before_release and "tf" in grasp_before_release["data"]:
-                #     T_grasp = get_relative_transform(grasp_before_release["data"]["tf"], "panda_hand", "world")
-                    
-                # if T_grasp is None:
-                #     T_grasp = pose_to_homogeneous(inputs["grasp_position"], inputs["grasp_orientation"])
-            break
-        else:
-            grasp_unsuccessful = True
+    if not grasp_unsuccessful:
+        inputs["grasp_position"] = first_stage4["data"]["ee_position"]
+        inputs["grasp_orientation"] = first_stage4["data"]["ee_orientation"]
+        inputs["cube_target_orientation"] = compute_cube_target_orientation(first_stage4["data"])
+        inputs["cube_initial_position"] = first_stage4["data"]["cube_position"]
+        inputs["cube_initial_orientation"] = first_stage4["data"]["cube_orientation"]
+        inputs["cube_target_position"] = first_stage4["data"]["target_position"]
+        T_grasp = get_relative_transform(first_stage4["data"]["tf"], "panda_hand", "world")
+    if T_grasp is None:
+        grasp_unsuccessful = True
 
     # Count contacts after stage 3.
-    for d in data_after_stage3:
+    for d in data_after_stage4:
         if d["data"]["contact"]:
             contact_count += 1
 
-
-    # --- Extract cube initial and target (world frame) ---
-    # inputs["cube_initial_position"] = isaac_sim_data[0]["data"]["cube_position"]
-    # inputs["cube_initial_orientation"] = isaac_sim_data[0]["data"]["cube_orientation"]
-    # inputs["cube_target_position"] = isaac_sim_data[0]["data"]["target_position"]
-
-
-    # --- Find the grasp data right before release ---
-    # for d in reversed(isaac_sim_data):
-    #     if d["data"]["cube_grasped"]:
-    #         grasp_before_release = d
-    #         break
-
-    # --- Compute the grasp (end-effector) transform ---
     
     if not grasp_unsuccessful:
         T_grasp_inv = np.linalg.inv(T_grasp)
@@ -408,12 +386,6 @@ def process_file(file_path):
                                                                                                             inputs["cube_initial_orientation"],
                                                                                                             T_grasp_inv)
         
-
-
-        
-            # inputs["cube_target_surface"] = grasp_before_release["data"]["surface"]
-
-        # Transform cube target pose into the grasp frame.
         inputs["cube_target_rel_position"], inputs["cube_target_rel_orientation"] = transform_pose_to_frame(inputs["cube_target_position"],
                                                                                                             inputs["cube_target_orientation"],
                                                                                                             T_grasp_inv)
@@ -449,17 +421,17 @@ def process_file(file_path):
         final_pose = None
         stage7 = [d for d in isaac_sim_data if d["data"]["stage"] == 7]
         if stage7:
-            first_stage7 = min(stage7, key=lambda x: x["current_time"])
-            for i in range(len(isaac_sim_data)-2):
-                if isaac_sim_data[i]["current_time"] >= first_stage7["current_time"]:
-                    if isaac_sim_data[i]["data"]["cube_in_ground"] and (delta_pose is None):
-                        delta_pose = isaac_sim_data[i]
-
-                    if np.allclose(np.array(isaac_sim_data[i]["data"]["cube_position"]), 
-                                   np.array(isaac_sim_data[i+2]["data"]["cube_position"]), 
-                                   atol=1e-6):
+            delta_pose = min(stage7, key=lambda x: x["current_time"])
+            for i in range(len(isaac_sim_data)-1):
+                if isaac_sim_data[i]["current_time"] >= delta_pose["current_time"]:
+                    if isaac_sim_data[i]["data"]["cube_in_ground"] and isaac_sim_data[i+1]["data"]["cube_in_ground"]:
                         final_pose = isaac_sim_data[i]
-                        break
+
+                    # if (delta_pose is not None) and np.allclose(np.array(isaac_sim_data[i]["data"]["cube_position"]), 
+                    #                np.array(isaac_sim_data[i+2]["data"]["cube_position"]), 
+                    #                atol=1e-6):
+                    #     final_pose = isaac_sim_data[i]
+                    #     break
                     
         if final_pose is None:
             final_pose = isaac_sim_data[-1]
@@ -481,11 +453,11 @@ def process_file(file_path):
 
         # Determine the delta pose from when the cube has settled (after stage 7).
         
-
         if delta_pose is not None:
             outputs["shift_position"], outputs["shift_orientation"] = pose_difference(
                 outputs["cube_final_position"], outputs["cube_final_orientation"],
-                delta_pose["data"]["cube_position"], delta_pose["data"]["cube_orientation"]
+                delta_pose["data"]["cube_position"], delta_pose["data"]["cube_orientation"],
+                exclude_z=True
             )
 
 
