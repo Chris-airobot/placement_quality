@@ -3,9 +3,6 @@ from isaacsim import SimulationApp
 CONFIG = {"headless": True}
 simulation_app = SimulationApp(CONFIG)
 
-# import carb
-import omni
-import math
 import numpy as np
 import asyncio
 import json
@@ -14,7 +11,6 @@ import glob
 import rclpy
 from rclpy.node import Node
 from tf2_msgs.msg import TFMessage
-from sensor_msgs.msg import PointCloud2
 
 from omni.isaac.core import World
 from omni.isaac.core.utils import extensions
@@ -25,20 +21,16 @@ from controllers.data_collection_controller import DataCollectionController
 from omni.isaac.core.utils.types import ArticulationAction
 from helper import *
 from utilies.camera_utility import *
-from omni.isaac.core.utils.rotations import euler_angles_to_quat, quat_to_euler_angles
 from omni.isaac.sensor import ContactSensor
 from functools import partial
 from typing import List
-from omni.isaac.core.objects import DynamicCuboid
+
 import datetime
-# from graph_initialization import joint_graph_generation, gripper_graph_generation
+
 # Enable ROS2 bridge extension
 extensions.enable_extension("omni.isaac.ros2_bridge")
 simulation_app.update()
 
-GRIPPER_MAX = 0.04
-GRIPPER_SPEED = 0.005
-GRIPPER_SPEED = 0.005
 base_dir = "/home/chris/Chris/placement_ws/src/random_data/"
 time_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 DIR_PATH = os.path.join(base_dir, f"run_{time_str}/")

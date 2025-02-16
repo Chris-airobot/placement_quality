@@ -85,6 +85,8 @@ class StartSimulation:
         self.placement_orientation = None  # Gripper orientation when the cube is about to be placed
         self.camera = None
         self.contact = None
+        self.cube_grasped = None
+        self.contact_sensors = None
         self.current_grasp_pose = None # Should be in a format of [np.array[x,y,z], np.array[x,y,z]]
         self.grasp_poses = []
         
@@ -97,6 +99,7 @@ class StartSimulation:
 
         self.replay_finished = True
         self.grasping_failure = False
+        self.cube_contacted = False
 
 
 
@@ -132,14 +135,15 @@ class StartSimulation:
             "panda_link7",
             "panda_link8",
             "panda_hand",
+            "Cube"
         ]
 
-        panda_sensors = []
+        self.contact_sensors = []
         for i, link_name in enumerate(panda_prim_names):
             sensor: ContactSensor = self.world.scene.add(
                 ContactSensor(
-                    prim_path=f"/World/Franka/{link_name}/contact_sensor",
-                    name=f"panda_contact_sensor_{i}",
+                    prim_path=f"/World/{link_name}/contact_sensor",
+                    name=f"contact_sensor_{i}",
                     min_threshold=0.0,
                     max_threshold=1e7,
                     radius=0.1,
@@ -147,12 +151,12 @@ class StartSimulation:
             )
             # Use raw contact data if desired
             sensor.add_raw_contact_data_to_frame()
-            panda_sensors.append(sensor)
+            self.contact_sensors.append(sensor)
 
         self.world.reset()
 
         # Contact report for links
-        self.world.add_physics_callback("contact_sensor_callback", partial(self.on_sensor_contact_report, sensors=panda_sensors))
+        self.world.add_physics_callback("contact_sensor_callback", partial(self.on_sensor_contact_report, sensors=self.contact_sensors))
 
         self.task_params = self.task.get_params()
         self.robot: Franka =  self.world.scene.get_object(self.task_params["robot_name"]["value"])
@@ -179,6 +183,8 @@ class StartSimulation:
     def on_sensor_contact_report(self, dt, sensors: List[ContactSensor]):
         """Physics-step callback: checks all sensors, sets self.contact accordingly."""
         any_contact = False  # track if at least one sensor had contact
+        self.cube_contacted = False
+        self.cube_grasped = None
 
         for sensor in sensors:
             frame_data = sensor.get_current_frame()
@@ -187,11 +193,19 @@ class StartSimulation:
                 for c in frame_data["contacts"]:
                     body0 = c["body0"]
                     body1 = c["body1"]
-                    # Example: store the bodies in a single string
-                    if ("GroundPlane" in body0) or ("GroundPlane" in body1):
-                        print("Hits the ground, and it will be recorded")
+                    if "panda" in body0 + body1 and "Cube" in body0 + body1:
+                        # print("Cube in the ground")
+                        self.cube_grasped = f"{body0} | {body1} | Force: {frame_data['force']:.3f} | #Contacts: {frame_data['number_of_contacts']}"
+
+                    if "GroundPlane" in body0 + body1 and "Cube" in body0 + body1:
+                        # print("Cube in the ground")
+                        self.cube_contacted = True
+                    elif ("GroundPlane" in body0) or ("GroundPlane" in body1):
+                        print("Robot hits the ground, and it will be recorded")
                         any_contact = True
-                        self.contact = f"{body0} | {body1}"
+                        self.contact = f"{body0} | {body1} | Force: {frame_data['force']:.3f} | #Contacts: {frame_data['number_of_contacts']}"
+                        # self.contact = f"{body0} | {body1} | Force: {frame_data['force']:.3f} | #Contacts: {frame_data['number_of_contacts']}"
+        # print(f"cube is in the ground: {self.cube_contacted}, time is {self.world.current_time_step_index}, stage is {self.controller.get_current_event()}")
 
         # If, after checking all sensors, none had contact, reset self.contact to None
         if not any_contact:
@@ -206,6 +220,7 @@ class StartSimulation:
         print(f'Cube position is: {self.task.get_params()["cube_position"]["value"]}\n')
 
         if not self.world.get_data_logger().is_started():
+            self.task_params = self.task.get_params()
             robot_name = self.task_params["robot_name"]["value"]
             cube_name = self.task_params["cube_name"]["value"]
             target_position = self.task_params["target_position"]["value"]
@@ -218,10 +233,11 @@ class StartSimulation:
             # We define the function here. The tasks and scene are passed to this function when called.
 
             def frame_logging_func(tasks, scene: Scene):
-                cube_position, cube_orientation =  scene.get_object(cube_name).get_local_pose()
-                ee_position, ee_orientation =  scene.get_object(robot_name).end_effector.get_local_pose()
-                surface = surface_detection(quat_to_euler_angles(cube_orientation))
-                camera_position, camera_orientation =  scene.get_object(camera_name).get_local_pose()
+                cube_position, cube_orientation =  scene.get_object(cube_name).get_world_pose()
+                ee_position, ee_orientation =  scene.get_object(robot_name).end_effector.get_world_pose()
+                # surface = surface_detection(quat_to_euler_angles(cube_orientation))
+                camera_position, camera_orientation =  scene.get_object(camera_name).get_world_pose()
+                surface, _ = get_upward_facing_marker("/World/Cube")
 
                 return {
                     "joint_positions": scene.get_object(robot_name).get_joint_positions().tolist(),# save data as lists since its a json file.
@@ -237,7 +253,9 @@ class StartSimulation:
                     "camera_position": camera_position.tolist(),
                     "camera_orientation": camera_orientation.tolist(),
                     "tf": tf_data,
-                    "contact": self.contact
+                    "contact": self.contact,
+                    "cube_in_ground": self.cube_contacted,
+                    "cube_grasped": self.cube_grasped
                 }
 
             self.data_logger.add_data_frame_logging_func(frame_logging_func) # adds the function to be called at each physics time step.
@@ -377,7 +395,7 @@ def main():
     start_logging = True           # Used for start logging
     recorded = False               # Used to check if the data has been recorded
     replay = False                 # Used for replay data     
-    # tf_started = False             # Topic has initianiated
+    grasp_collected = False     # Use when the grasping is done
 
 
     while simulation_app.is_running():
@@ -406,6 +424,7 @@ def main():
                 start_logging = True
                 recorded = False
                 replay = False
+                grasp_collected = False
                 if env.grasp_poses: # There are saved existing poses 
                     env.current_grasp_pose = env.grasp_poses.pop(0)
                     env.grasp_counter += 1
@@ -449,7 +468,7 @@ def main():
                         replay = True
                         continue
                 
-
+                placement_orientation = env.placement_orientation if grasp_collected else env.current_grasp_pose[1]
                 actions = env.controller.forward(
                     picking_position=observations[env.task_params["cube_name"]["value"]]["position"],
                     # picking_position=env.current_grasp_pose[0], # This is wrong, grasp position is off

@@ -62,17 +62,6 @@ def extract_grasping(input_file_path):
 
 def orientation_creation():
 
-    # # Define the range and step in radians
-    # start = -np.pi
-    # end = np.pi
-    # step = np.deg2rad(36)  # Convert 36 degrees to radians
-
-    # # Create the list using nested loops
-    # result = []
-    # for i in np.arange(start, end + step, step):
-    #     for j in np.arange(start, end + step, step):
-    #         for k in np.arange(start, end + step, step):
-    #             result.append(np.array([i, j, k]))
     """
     Generate a list of random orientations for the grasping pose.
     Each orientation is represented as an array of three random angles (Euler angles)

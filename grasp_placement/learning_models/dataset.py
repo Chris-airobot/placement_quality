@@ -47,7 +47,7 @@ def compute_stability_score(pos_diff, ori_diff, shift_pos, shift_ori, contacts,
 
 
 
-
+    # print(f"pos_norm: {pos_norm}, ori_norm: {ori_norm}, shift_pos_norm: {shift_pos_norm}, shift_ori_norm: {shift_ori_norm}, contacts_norm: {contacts_norm}")
     # Combine the normalized errors using chosen weights.
     penalty = (params['pos_weight'] * pos_norm + 
                params['pos_weight'] * ori_norm + 
@@ -153,11 +153,11 @@ class MyStabilityDataset(Dataset):
         contacts  = float(contacts)
 
         # "values are:pose_diffs: 2.0033138697629886, ori_diffs: 2.9932579711083727, shift_poss: 0.13525934849764623, shift_oris: 1.6673673523277988, contacts: 5.0"
-        pos_diff_max = 2.0033138697629886
-        ori_diff_max = 2.9932579711083727
-        shift_pos_max = 0.13525934849764623
-        shift_ori_max = 1.6673673523277988
-        contacts_max = 5.0
+        pos_diff_max = 0.6081497916935493
+        ori_diff_max = 2.848595486712802
+        shift_pos_max = 0.0794796857415393
+        shift_ori_max = 2.1095218360699306
+        contacts_max = 4.0
 
         params = {
             'h_diff_weight': 0.6,

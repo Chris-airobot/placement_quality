@@ -166,15 +166,6 @@ def convert_wxyz_to_xyzw(q_wxyz):
     return [q_wxyz[1], q_wxyz[2], q_wxyz[3], q_wxyz[0]]
 
 
-def pose_to_homogeneous(position, quaternion_wxyz):
-    """
-    Convert a pose (position and quaternion as [x, y, z] and [x, y, z, w])
-    into a 4x4 homogeneous transformation matrix.
-    """
-    quat_xyzw = convert_wxyz_to_xyzw(quaternion_wxyz)
-    T = tft.quaternion_matrix(quat_xyzw)  # Returns a 4x4 transformation matrix
-    T[0:3, 3] = position
-    return T
 
 
 
@@ -345,27 +336,29 @@ def process_file(file_path):
         "cube_target_rel_orientation": None,        # Relative to the gripper frame when the robot just grasped the cube.
     }
 
-    stage4 = [d for d in isaac_sim_data if d["data"]["stage"] == 4]
-    first_stage4 = min(stage4, key=lambda x: x["current_time"])
-    data_after_stage4 = [entry for entry in isaac_sim_data if entry["current_time"] >= first_stage4["current_time"]]
     
+    T_grasp = None
     # Find the entry with the maximum current_time
     if not grasp_unsuccessful:
+        stage4 = [d for d in isaac_sim_data if d["data"]["stage"] == 4]
+        first_stage4 = min(stage4, key=lambda x: x["current_time"])
+        data_after_stage4 = [entry for entry in isaac_sim_data if entry["current_time"] >= first_stage4["current_time"]]
         inputs["grasp_position"] = first_stage4["data"]["ee_position"]
         inputs["grasp_orientation"] = first_stage4["data"]["ee_orientation"]
         inputs["cube_initial_position"] = first_stage4["data"]["cube_position"]
         inputs["cube_initial_orientation"] = first_stage4["data"]["cube_orientation"]
         inputs["cube_target_position"] = first_stage4["data"]["target_position"]
         T_grasp = get_relative_transform(first_stage4["data"]["tf"], "panda_hand", "world")
+    
+
+        # Count contacts after stage 3.
+        for d in data_after_stage4:
+            if d["data"]["contact"]:
+                contact_count += 1
+
     if T_grasp is None:
         grasp_unsuccessful = True
 
-    # Count contacts after stage 3.
-    for d in data_after_stage4:
-        if d["data"]["contact"]:
-            contact_count += 1
-
-    
     if not grasp_unsuccessful:
         T_grasp_inv = np.linalg.inv(T_grasp)
 
@@ -423,7 +416,7 @@ def process_file(file_path):
         
         T_release = get_relative_transform(final_pose["data"]["tf"], "panda_hand", "world")
         T_release_inv = np.linalg.inv(T_release)
-        inputs["cube_target_orientation"] = compute_feasible_cube_pose(delta_pose["data"])
+        inputs["cube_target_orientation"] = compute_feasible_cube_pose(delta_pose["data"]).tolist()
         inputs["cube_target_rel_position"], inputs["cube_target_rel_orientation"] = transform_pose_to_frame(inputs["cube_target_position"],
                                                                                                             inputs["cube_target_orientation"],
                                                                                                             T_release_inv)
@@ -455,7 +448,29 @@ def process_file(file_path):
         outputs["cube_final_rel_position"], outputs["cube_final_rel_orientation"] = transform_pose_to_frame(outputs["cube_final_position"],
                                                                                                             outputs["cube_final_orientation"],
                                                                                                             T_release_inv)
-        
+    
+    # print(f"grasp position:{inputs['grasp_position'].__class__.__name__}")
+    # print(f"grasp orientation:{inputs['grasp_orientation'].__class__.__name__}")
+    # print(f"cube initial position:{inputs['cube_initial_position'].__class__.__name__}")
+    # print(f"cube initial orientation:{inputs['cube_initial_orientation'].__class__.__name__}")
+    # print(f"cube target position:{inputs['cube_target_position'].__class__.__name__}")
+    # print(f"cube target orientation:{inputs['cube_target_orientation'].__class__.__name__}")
+    # print(f"cube initial rel position:{inputs['cube_initial_rel_position'].__class__.__name__}")
+    # print(f"cube initial rel orientation:{inputs['cube_initial_rel_orientation'].__class__.__name__}")
+    # print(f"cube target rel position:{inputs['cube_target_rel_position'].__class__.__name__}")
+    # print(f"cube target rel orientation:{inputs['cube_target_rel_orientation'].__class__.__name__}")
+    # print(f"cube final position:{outputs['cube_final_position'].__class__.__name__}")
+    # print(f"cube final orientation:{outputs['cube_final_orientation'].__class__.__name__}")
+    # print(f"cube final surface:{outputs['cube_final_surface'].__class__.__name__}")
+    # print(f"position difference:{outputs['position_difference'].__class__.__name__}")
+    # print(f"orientation difference:{outputs['orientation_difference'].__class__.__name__}")
+    # print(f"shift position:{outputs['shift_position'].__class__.__name__}")
+    # print(f"shift orientation:{outputs['shift_orientation'].__class__.__name__}")
+    # print(f"cube final rel position:{outputs['cube_final_rel_position'].__class__.__name__}")
+    # print(f"cube final rel orientation:{outputs['cube_final_rel_orientation'].__class__.__name__}")
+    # print(f"contacts:{outputs['contacts'].__class__.__name__}")
+    # print(f"grasp unsuccessful:{outputs['grasp_unsuccessful'].__class__.__name__}")
+    # print(f"bad:{outputs['bad'].__class__.__name__}")
  
     return {
         "file_path": file_path,
@@ -471,26 +486,32 @@ def process_folder(root_folder, output_file):
     Process all JSON files in a folder and its subfolders, and save the extracted data.
     """
     results = []
+    file_list = []
 
+    # Collect all JSON file paths
     for subdir, _, files in os.walk(root_folder):
         for file_name in files:
             if file_name.endswith(".json") and file_name != "Grasping.json":
-                file_path = os.path.join(subdir, file_name)
-                try:
-                    print(f"Starting to process {file_path}")
-                    data = process_file(file_path)
-                    results.append(data)
-                    print(f"Successfully processed {file_path}")
-                except Exception as e:
-                    print(f"Error processing {file_path}: {e}")
-                    if 'quat' in str(e):
-                        os.remove(file_path)
-                        print(f"Removed {file_path}")
-                    if 'Eigenvalues' in str(e):
-                        os.remove(file_path)
-                        print(f"Removed {file_path}")
+                file_list.append(os.path.join(subdir, file_name))
 
-    # Save results to an output file (JSON format)
+    total_files = len(file_list)
+    print(f"Total files to process: {total_files}")
+
+    # Process each file while printing progress
+    for idx, file_path in enumerate(file_list):
+        files_left = total_files - idx - 1
+        print(f"Processing file {idx+1}/{total_files}. Files left: {files_left}")
+        try:
+            data = process_file(file_path)
+            results.append(data)
+            print(f"Successfully processed {file_path}")
+        except Exception as e:
+            print(f"Error processing {file_path}: {e}")
+            if 'quat' in str(e) or 'Eigenvalues' in str(e):
+                os.remove(file_path)
+                print(f"Removed {file_path}")
+
+    # Save results to the output file (JSON format)
     with open(output_file, "w") as out_file:
         json.dump(results, out_file, indent=4)
     print(f"Processed data saved to {output_file}")
@@ -507,7 +528,7 @@ LOCAL_FACE_AXES = {
     "marker_back":  np.array([ 90.0,  0.0, -90.0]),     # back face up y diff
 }
 
-def compute_feasible_cube_pose(data, cube_size=0.05):
+def compute_feasible_cube_pose(data):
     # ------------------------------------------------------------
     # (A) Extract relevant data
     # ------------------------------------------------------------
@@ -595,7 +616,8 @@ def quaternion_distance(q1_xyzw, q2_xyzw):
 
 if __name__ == "__main__":
     # process_folder("/home/chris/Chris/placement_ws/src/random_data", "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
-    # process_file("/home/chris/Chris/placement_ws/src/random_data/Grasping_159/Placement_68_False.json")
+    # x = process_file("/home/chris/Chris/placement_ws/src/random_data/run_20250215_172420/Grasping_3/Placement_0_True.json")
     # reformat_json("/home/chris/Chris/placement_ws/src/random_data/Grasping_159/Placement_68_False.json")
     # rough_analysis("/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
-    count_files_in_subfolders("/home/chris/Chris/placement_ws/src/random_data")
+    # count_files_in_subfolders("/home/chris/Chris/placement_ws/src/random_data")
+    data_analysis()

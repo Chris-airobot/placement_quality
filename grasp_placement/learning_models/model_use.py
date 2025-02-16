@@ -1,3 +1,4 @@
+import json
 import torch
 from dataset import MyStabilityDataset
 from model_train import StabilityNet  # Same model definition
@@ -29,9 +30,19 @@ def predict_single_sample(model, sample):
         pred = model(x)  # shape [1, 1]
     return pred.item()
 
+
+def read_inference_file(file_path):
+    """
+    Read a JSON file with a single data sample.
+    """
+    with open(file_path, "r") as f:
+        data = json.load(f)
+    return data
+
+
 if __name__ == "__main__":
     # Suppose you know your input_dim from training
-    input_dim = 22  # e.g., if your dataset had 10 features
+    input_dim = 21  # e.g., if your dataset had 10 features
     model_path = "/home/chris/Downloads/python/stability_model_back.pth"
 
     # Load the model
@@ -39,29 +50,14 @@ if __name__ == "__main__":
     print("Model loaded successfully.")
 
 
-    new_data_sample = {
-        "inputs": {
-            "Grasp_position": [0.1, 0.2, 0.3],
-            "Grasp_orientation": [0.0, 0.0, 0.0, 1.0],
-            "cube_initial_position": [0.0, 0.0, 0.0],
-            "cube_initial_orientation": [1.0, 0.0, 0.0, 0.0],
-            "cube_target_position": [0.1, -0.1, 0.05],
-            "cube_target_orientation": [0.5, 0.5, 0.5, 0.5],
-            "cube_target_surface": 1
-        },
-        "outputs": {
-            # if your dataset uses compute_label inside __getitem__, 
-            # we might not need actual label. But to keep shape consistent:
-            "grasp_unsuccessful": False,
-            "pose_shift_position": 0.02,
-            "pose_shift_orientation": 0.1,
-            "position_differece":0.01,
-            "orientation_differece":2.1,
-            "position_successful":False,
-            "orientation_successful":True
-        }
-    }
+
+    new_data_sample = read_inference_file("/home/chris/Downloads/python/inference_sample.json")
 
     # Do inference
     pred_score = predict_single_sample(model, new_data_sample)
     print(f"Predicted score for new sample: {pred_score:.4f}")
+
+    
+
+
+

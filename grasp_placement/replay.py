@@ -104,15 +104,6 @@ def encode_outputs(outputs: dict):
 
 
 
-
-
-
-
-
-
-
-
-
 class ReplayGrasping:
     def __init__(self, file_path):
 
@@ -216,10 +207,11 @@ class ReplayGrasping:
 
 
 def main():
-    file_path = "/home/chris/Chris/placement_ws/src/random_data/Grasping_115/Placement_27_False.json" # Readlly bad placement
+    # file_path = "/home/chris/Chris/placement_ws/src/random_data/Grasping_115/Placement_27_False.json" # Readlly bad placement
     # file_path = "/home/chris/Chris/placement_ws/src/random_data/Grasping_115/Placement_70_False.json" # Readlly bad placement
     # file_path = "/home/chris/Chris/placement_ws/src/random_data/Grasping_115/Placement_103_False.json" # Readlly bad placement
     # file_path = "/home/chris/Chris/placement_ws/src/random_data/Grasping_115/Placement_22_False.json" # Readlly bad placement
+    file_path = "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/Placement_27_False.json" # 
     replay_agent = ReplayGrasping(file_path)
     replay_agent.start()
     starting_replay = False
