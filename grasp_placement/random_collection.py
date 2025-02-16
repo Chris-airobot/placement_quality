@@ -1,6 +1,6 @@
 # import carb
 from isaacsim import SimulationApp
-CONFIG = {"headless": False}
+CONFIG = {"headless": True}
 simulation_app = SimulationApp(CONFIG)
 
 # import carb
@@ -30,6 +30,7 @@ from omni.isaac.sensor import ContactSensor
 from functools import partial
 from typing import List
 from omni.isaac.core.objects import DynamicCuboid
+import datetime
 # from graph_initialization import joint_graph_generation, gripper_graph_generation
 # Enable ROS2 bridge extension
 extensions.enable_extension("omni.isaac.ros2_bridge")
@@ -37,7 +38,11 @@ simulation_app.update()
 
 GRIPPER_MAX = 0.04
 GRIPPER_SPEED = 0.005
-DIR_PATH = "/home/chris/Chris/placement_ws/src/random_data/"
+GRIPPER_SPEED = 0.005
+base_dir = "/home/chris/Chris/placement_ws/src/random_data/"
+time_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+DIR_PATH = os.path.join(base_dir, f"run_{time_str}/")
+
 
 
 class TFSubscriber(Node):
@@ -79,7 +84,7 @@ class StartSimulation:
         
         self.data_logger = None
 
-        self.grasp_counter = 874
+        self.grasp_counter = 0
         self.placement_counter = 0
 
         self.replay_finished = True

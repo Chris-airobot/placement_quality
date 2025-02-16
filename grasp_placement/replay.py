@@ -186,7 +186,7 @@ class ReplayGrasping:
                 orientation=np.array(data_frame.data["cube_orientation"])
             )
         
-        if data_frame.data["stage"] == 4:
+        if data_frame.data["stage"] == 7:
             target_position = self.inputs["cube_target_position"]
             target_orientation = self.inputs["cube_target_orientation"]
             cube = self.world.scene.add(
@@ -216,7 +216,10 @@ class ReplayGrasping:
 
 
 def main():
-    file_path = "/home/chris/Chris/placement_ws/src/random_data/Grasping_874/Placement_0_False.json"
+    file_path = "/home/chris/Chris/placement_ws/src/random_data/Grasping_115/Placement_27_False.json" # Readlly bad placement
+    # file_path = "/home/chris/Chris/placement_ws/src/random_data/Grasping_115/Placement_70_False.json" # Readlly bad placement
+    # file_path = "/home/chris/Chris/placement_ws/src/random_data/Grasping_115/Placement_103_False.json" # Readlly bad placement
+    # file_path = "/home/chris/Chris/placement_ws/src/random_data/Grasping_115/Placement_22_False.json" # Readlly bad placement
     replay_agent = ReplayGrasping(file_path)
     replay_agent.start()
     starting_replay = False

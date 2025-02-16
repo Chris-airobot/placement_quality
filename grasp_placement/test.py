@@ -1,108 +1,186 @@
-
-from learning_models.process_data_helpers import *
-
-tf = [{"parent_frame": "world", "child_frame": "panda_link0", "translation": {"x": -2.38418573772492e-09, "y": 2.98023217215615e-10, "z": 2.384185648907078e-08}, "rotation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}}, {"parent_frame": "panda_link0", "child_frame": "panda_link1", "translation": {"x": 0.0, "y": -1.7763568394002505e-15, "z": 0.33299991488456726}, "rotation": {"x": 6.409251085415235e-08, "y": 0.0, "z": 0.537647008895874, "w": 0.8431699872016907}}, {"parent_frame": "panda_link1", "child_frame": "panda_link2", "translation": {"x": 0.0, "y": 0.0, "z": 0.0}, "rotation": {"x": -0.6772404313087463, "y": 0.20333564281463623, "z": 0.20333567261695862, "w": 0.6772404909133911}}, {"parent_frame": "panda_link2", "child_frame": "panda_link3", "translation": {"x": 2.2351741790771484e-08, "y": -0.3160000443458557, "z": -3.725290298461914e-08}, "rotation": {"x": 0.6846010684967041, "y": -0.17697840929031372, "z": 0.17697837948799133, "w": 0.6846010684967041}}, {"parent_frame": "panda_link3", "child_frame": "panda_link4", "translation": {"x": 0.08249995112419128, "y": 1.4901161193847656e-08, "z": 8.381903171539307e-09}, "rotation": {"x": 0.1680595576763153, "y": 0.6868448853492737, "z": -0.6868449449539185, "w": 0.16805973649024963}}, {"parent_frame": "panda_link4", "child_frame": "panda_link5", "translation": {"x": -0.08249993622303009, "y": 0.38399988412857056, "z": -2.9802322387695312e-08}, "rotation": {"x": -0.4988028109073639, "y": -0.501194417476654, "z": -0.501194417476654, "w": 0.4988027811050415}}, {"parent_frame": "panda_link5", "child_frame": "panda_link6", "translation": {"x": 0.0, "y": 0.0, "z": -0.0}, "rotation": {"x": 0.48890674114227295, "y": -0.510852575302124, "z": 0.5108525156974792, "w": 0.4889066517353058}}, {"parent_frame": "panda_link6", "child_frame": "panda_link7", "translation": {"x": 0.08799996227025986, "y": 3.725290298461914e-09, "z": -3.3527612686157227e-08}, "rotation": {"x": 0.6473238468170166, "y": -0.2845557928085327, "z": 0.2845558524131775, "w": 0.6473236680030823}}, {"parent_frame": "panda_link7", "child_frame": "panda_link8", "translation": {"x": -4.6566128730773926e-09, "y": -3.725290298461914e-09, "z": 0.10699998587369919}, "rotation": {"x": 0.0, "y": 7.450580596923828e-09, "z": 0.0, "w": 1.0000001192092896}}, {"parent_frame": "panda_link8", "child_frame": "panda_hand", "translation": {"x": 0.0, "y": 0.0, "z": 0.0}, "rotation": {"x": 0.0, "y": 2.7430360205471516e-09, "z": -0.3826834559440613, "w": 0.9238795042037964}}, {"parent_frame": "panda_hand", "child_frame": "panda_leftfinger", "translation": {"x": -4.172761691734195e-09, "y": 0.03234317526221275, "z": 0.05839996039867401}, "rotation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 0.9999999403953552}}, {"parent_frame": "panda_hand", "child_frame": "panda_rightfinger", "translation": {"x": 7.025846571195871e-09, "y": -0.032340649515390396, "z": 0.05839996412396431}, "rotation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 0.9999999403953552}}, {"parent_frame": "world", "child_frame": "Cube", "translation": {"x": 0.1289782077074051, "y": 0.2918505370616913, "z": 0.02574998140335083}, "rotation": {"x": -7.305934701662409e-08, "y": 5.024838500844453e-08, "z": -2.6920994855572644e-07, "w": 1.0}}]
-
 import numpy as np
+import math
 import tf_transformations as tft
 
+# These are the "base" orientations in Euler angles [roll, pitch, yaw] (degrees) you said:
+LOCAL_FACE_AXES = {
+    "+z":  np.array([  0.0,   0.0,   0.0]),     # top face up  z diff
+    "-z":  np.array([-180.0, 0.0,   0.0]),     # bottom face up z diff
+    "+y":  np.array([ 90.0,  0.0,   0.0]),     # left face up y diff
+    "-y":  np.array([-90.0,  0.0,   0.0]),     # right face up y diff
+    "+x":  np.array([ 90.0,  0.0,  90.0]),     # front face up y diff
+    "-x":  np.array([ 90.0,  0.0, -90.0]),     # back face up y diff
+}
 
-def get_transform_to_world(tf_list, target_frame):
+def compute_feasible_cube_pose(data, cube_size=0.05):
     """
-    Recursively computes the transform from the 'world' frame to target_frame.
-    
-    Each TF entry in tf_list is assumed to have:
-      - "parent_frame": The parent frame name.
-      - "child_frame": The child frame name.
-      - "translation": A dict with keys "x", "y", "z".
-      - "rotation": A dict with keys "x", "y", "z", "w" (in wxyz order in the data).
-    
-    Returns a 4x4 homogeneous transformation matrix representing the pose of 
-    target_frame in the world coordinate system, or None if no chain can be built.
+    1) Compute the predicted final cube orientation from:
+         T_pred = T_ee_target * (inv(T_ee_current) * T_cube_current)
+    2) Convert that orientation to Euler angles (degrees).
+    3) Among the 6 base orientations in LOCAL_FACE_AXES, pick whichever is
+       closest in quaternion distance to q_pred.
+    4) Compute the orientation difference q_diff = q_pred * inv(q_base).
+       Convert to Euler, keep only one axis of that difference (e.g. pitch),
+       zero out the other two. Then recompose the difference.
+    5) Final orientation q_final = q_diff_modified * q_base.
+    6) Overwrite (x,y) with data["cube_target_position"], set z = cube_size/2,
+       then return as {"position": [...], "orientation": [w,x,y,z]}.
     """
-    if target_frame == "world":
-        return np.eye(4)
-    
-    # Look for an entry whose child_frame is the target_frame.
-    for tf_entry in tf_list:
-        if tf_entry.get("child_frame") == target_frame:
-            # Get the transform from its parent to this target_frame.
-            translation = tf_entry["translation"]
-            rotation = tf_entry["rotation"]
-            pos = np.array([translation["x"], translation["y"], translation["z"]])
-            # Convert quaternion from the tf data order (wxyz) to (x,y,z,w) order.
-            quat_wxyz = np.array([rotation["w"], rotation["x"], rotation["y"], rotation["z"]])
-            T_target_given_parent = pose_to_homogeneous(pos, quat_wxyz)
-            
-            parent_frame = tf_entry["parent_frame"]
-            # Recursively get the transform from world to the parent_frame.
-            T_parent = get_transform_to_world(tf_list, parent_frame)
-            if T_parent is None:
-                # Could not resolve parent transform.
-                return None
-            # The complete transform is the chain: T_world->target = T_world->parent * T_parent->target.
-            return np.dot(T_parent, T_target_given_parent)
-    # If no entry is found for the target_frame, return None.
-    return None
+    # ------------------------------------------------------------
+    # (A) Extract relevant data
+    # ------------------------------------------------------------
+    ee_pos_current = data["ee_position"]            # [x,y,z]
+    ee_quat_current_wxyz = data["ee_orientation"]   # [w,x,y,z]
 
-def get_relative_transform(tf_list, source_frame, target_frame):
+    cube_pos_current = data["cube_position"]        # [x,y,z]
+    cube_quat_current_wxyz = data["cube_orientation"]   # [w,x,y,z]
+
+    # Suppose the target EE orientation is given as Euler angles:
+    ee_target_euler = data["ee_target_orientation"]   # [roll, pitch, yaw] in radians
+    q_ee_target_xyzw = tft.quaternion_from_euler(
+        ee_target_euler[0],
+        ee_target_euler[1],
+        ee_target_euler[2],
+        axes='sxyz'
+    )  # [x,y,z,w]
+
+    # The final desired x,y position of the cube
+    cube_target_pos = data["cube_target_position"]   # [x, y, z], ignoring z
+
+    # ------------------------------------------------------------
+    # (B) Build transforms
+    # ------------------------------------------------------------
+    q_ee_current_xyzw   = convert_wxyz_to_xyzw(ee_quat_current_wxyz)
+    q_cube_current_xyzw = convert_wxyz_to_xyzw(cube_quat_current_wxyz)
+
+    T_ee_current   = build_transform(ee_pos_current,   q_ee_current_xyzw)
+    T_cube_current = build_transform(cube_pos_current, q_cube_current_xyzw)
+
+    # Relative transform:  T_relative = inv(T_ee_current) * T_cube_current
+    T_relative = np.linalg.inv(T_ee_current) @ T_cube_current
+
+    # Build T_ee_target: ignoring any target EE position, only orientation
+    T_ee_target = build_transform([0,0,0], q_ee_target_xyzw)
+
+    # Predicted cube transform in world
+    T_pred = T_ee_target @ T_relative
+
+    # ------------------------------------------------------------
+    # (C) Convert T_pred to a quaternion and Euler angles (degrees)
+    # ------------------------------------------------------------
+    q_pred_xyzw = tft.quaternion_from_matrix(T_pred)   # [x,y,z,w]
+    r_pred, p_pred, y_pred = tft.euler_from_quaternion(q_pred_xyzw, axes='sxyz')
+    r_pred_deg = math.degrees(r_pred)
+    p_pred_deg = math.degrees(p_pred)
+    y_pred_deg = math.degrees(y_pred)
+
+    # ------------------------------------------------------------
+    # (D) Find the "base orientation" among LOCAL_FACE_AXES that is
+    #     closest to q_pred in quaternion space
+    # ------------------------------------------------------------
+    best_key = None
+    best_dist = 1e9
+    best_q_base_xyzw = None
+
+    for key, euler_deg in LOCAL_FACE_AXES.items():
+        # 1) Convert the euler_deg -> radians -> quaternion base
+        r_base_rad = math.radians(euler_deg[0])
+        p_base_rad = math.radians(euler_deg[1])
+        y_base_rad = math.radians(euler_deg[2])
+        q_base_xyzw = tft.quaternion_from_euler(r_base_rad, p_base_rad, y_base_rad, axes='sxyz')
+        
+        # 2) measure distance
+        dist = quaternion_distance(q_pred_xyzw, q_base_xyzw)
+        if dist < best_dist:
+            best_dist = dist
+            best_key = key
+            best_q_base_xyzw = q_base_xyzw
+
+    # ------------------------------------------------------------
+    # (E) Compute orientation difference: q_diff = q_pred * inv(q_base)
+    #     Then convert to Euler, keep only one axis (e.g. pitch), zero out the others
+    # ------------------------------------------------------------
+    # By definition, if q_pred = q_diff * q_base, then q_diff = q_pred * q_base^-1
+    q_base_inv = tft.quaternion_inverse(best_q_base_xyzw)
+    q_diff_xyzw = tft.quaternion_multiply(q_pred_xyzw, q_base_inv)
+
+    # Convert that difference to Euler angles
+    r_diff, p_diff, y_diff = tft.euler_from_quaternion(q_diff_xyzw, axes='sxyz')
+    r_diff_deg = math.degrees(r_diff)
+    p_diff_deg = math.degrees(p_diff)
+    y_diff_deg = math.degrees(y_diff)
+
+    # Suppose we only preserve pitch difference, zero out roll & yaw
+    # (You can choose whichever axis you want to keep or partially keep)
+    if best_key in ["+z", "-z"]:
+        # Preserve yaw -> zero out roll & pitch
+        r_diff_deg_mod = 0.0
+        p_diff_deg_mod = 0.0
+        y_diff_deg_mod = y_diff_deg
+    else:
+        # Preserve pitch -> zero out roll & yaw
+        r_diff_deg_mod = 0.0
+        p_diff_deg_mod = p_diff_deg
+        y_diff_deg_mod = 0.0
+
+    # Recompose q_diff_modified
+    q_diff_modified_xyzw = tft.quaternion_from_euler(
+        math.radians(r_diff_deg_mod),
+        math.radians(p_diff_deg_mod),
+        math.radians(y_diff_deg_mod),
+        axes='sxyz'
+    )
+
+    # Final orientation q_final = q_diff_modified * q_base
+    q_final_xyzw = tft.quaternion_multiply(q_diff_modified_xyzw, best_q_base_xyzw)
+
+    # ------------------------------------------------------------
+    # (F) Build final transform, override x,y, set z => ground
+    # ------------------------------------------------------------
+    T_final = tft.quaternion_matrix(q_final_xyzw)
+    # Use T_pred translation as a base
+    T_final[:3, 3] = T_pred[:3, 3].copy()
+
+    # Overwrite x,y with target, place the cube on the ground
+    T_final[0, 3] = cube_target_pos[0]
+    T_final[1, 3] = cube_target_pos[1]
+    T_final[2, 3] = cube_size / 2.0
+
+    # ------------------------------------------------------------
+    # (G) Convert to [x,y,z] + quaternion [w,x,y,z]
+    # ------------------------------------------------------------
+    final_pos, final_quat_wxyz = transform_to_pose(T_final)
+
+    return final_quat_wxyz
+
+
+# ------------------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------------------
+def build_transform(pos_xyz, quat_xyzw):
     """
-    Computes the relative transform from source_frame to target_frame.
-    
-    The transformation is computed as:
-       T_target_in_source = (T_source_in_world)^{-1} * T_target_in_world
-       
-    Returns the 4x4 homogeneous transformation matrix representing the pose 
-    of target_frame in the coordinate system of source_frame.
+    Build 4x4 from position [x,y,z] and quaternion [x,y,z,w].
     """
-    T_source = get_transform_to_world(tf_list, source_frame)
-    T_target = get_transform_to_world(tf_list, target_frame)
-    
-    if T_source is None:
-        print(f"Transform chain to source frame '{source_frame}' could not be resolved.")
-        return None
-    if T_target is None:
-        print(f"Transform chain to target frame '{target_frame}' could not be resolved.")
-        return None
-    
-    # Compute the relative transform.
-    T_relative = np.dot(np.linalg.inv(T_source), T_target)
-    return T_relative
+    T = tft.quaternion_matrix(quat_xyzw)
+    T[:3, 3] = pos_xyz
+    return T
 
-# --- Example Usage ---
+def transform_to_pose(T):
+    """
+    Convert 4x4 -> (position, orientation [w,x,y,z])
+    """
+    pos = T[:3, 3].tolist()
+    q_xyzw = tft.quaternion_from_matrix(T)  # [x,y,z,w]
+    return pos, [q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]]
 
+def convert_wxyz_to_xyzw(q_wxyz):
+    """[w,x,y,z] -> [x,y,z,w]."""
+    return [q_wxyz[1], q_wxyz[2], q_wxyz[3], q_wxyz[0]]
 
-# For example, to get the transform from world to 'panda_hand':
-T_panda_hand = get_transform_to_world(tf, "panda_hand")
-print("Transform from world to panda_hand:")
-print(T_panda_hand)
-
-# And to compute the relative transform between, say, 'panda_hand' (source) and 'Cube' (target):
-T_relative = get_relative_transform(tf, "panda_link8", "panda_hand")
-if T_relative is not None:
-    print("\nRelative transform from panda_hand to Cube:")
-    print(T_relative)
-
-
-
-
-# Your given 4x4 homogeneous transformation matrix.
-T = np.array([
-    [ 7.07106735e-01,  7.07106827e-01,  5.06846976e-09,  0.00000000e+00],
-    [-7.07106827e-01,  7.07106735e-01, -2.09942910e-09,  0.00000000e+00],
-    [-5.06846981e-09, -2.09942903e-09,  1.00000000e+00,  3.46944695e-18],
-    [ 0.00000000e+00,  0.00000000e+00,  0.00000000e+00,  1.00000000e+00]
-])
-
-# Extract the translation vector (x, y, z)
-translation = T[0:3, 3]
-
-# Extract the quaternion from the rotation part.
-# Note: tf.transformations.quaternion_from_matrix returns [x, y, z, w]
-quat_xyzw = tft.quaternion_from_matrix(T)
-
-# Rearrange the quaternion to [w, x, y, z]
-quat_wxyz = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]])
-
-print("Translation (x, y, z):", translation)
-print("Quaternion (w, x, y, z):", quat_wxyz)
+def quaternion_distance(q1_xyzw, q2_xyzw):
+    """
+    Simple measure: 1 - |dot(q1,q2)| for unit quaternions q1,q2 in [x,y,z,w] form.
+    Ranges [0..2].
+    """
+    dot_val = abs(np.dot(q1_xyzw, q2_xyzw))
+    return 1.0 - dot_val

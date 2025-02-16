@@ -9,6 +9,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 import tf_transformations as tft 
 import matplotlib.pyplot as plt
+import math
 
 def count_files_in_subfolders(directory):
     """
@@ -253,40 +254,37 @@ def transform_pose_to_frame(world_position, world_orientation, T_frame_inv):
 
 
 
-def compute_cube_target_orientation(data):
+
+
+def homogeneous_to_pose(T):
     """
-    Compute the target orientation for the cube given:
-      - the EE pose at the moment of grasp,
-      - the cube pose at the moment of grasp, and
-      - the target EE pose (which provides the target orientation for the EE).
-
-    Parameters:
-      data: data of the important time steps
-
-    Returns:
-      cube_target_orientation: Quaternion (as [w, x, y, z]) representing the predicted target orientation of the cube.
+    Convert a 4x4 transform to (position, orientation).
+    Orientation is [w, x, y, z].
     """
-    ee_position_at_grasp = data["ee_position"]
-    ee_orientation_at_grasp = convert_wxyz_to_xyzw(data["ee_orientation"])
-    cube_position_at_grasp = data["cube_position"]
-    cube_orientation_at_grasp = convert_wxyz_to_xyzw(data["cube_orientation"])
-    ee_target_orientation = euler2quat(data["ee_target_orientation"][0],
-                                       data["ee_target_orientation"][1],
-                                       data["ee_target_orientation"][2],)
+    # position
+    position = T[:3, 3].tolist()
 
-    ee_target_orientation_xyzw = [ee_target_orientation[1], ee_target_orientation[2], ee_target_orientation[3], ee_target_orientation[0]]
-    # Compute the homogeneous transforms at grasp time
-    T_ee = pose_to_homogeneous(ee_position_at_grasp, ee_orientation_at_grasp)
-    T_cube = pose_to_homogeneous(cube_position_at_grasp, cube_orientation_at_grasp)
-    
-    # Compute the relative transform (which is assumed fixed during the grasp)
-    T_relative = np.linalg.inv(T_ee) @ T_cube
-    relative_quat = tft.quaternion_from_matrix(T_relative)
-    
-    # Compose the target EE orientation with the relative rotation to predict the cube's target orientation.
-    cube_target_quat = tft.quaternion_multiply(ee_target_orientation_xyzw, relative_quat)
-    
-    return [cube_target_quat[3], cube_target_quat[0], cube_target_quat[1], cube_target_quat[2]]
+    # tf.transformations.quaternion_from_matrix returns [x,y,z,w].
+    q_xyzw = tft.quaternion_from_matrix(T)  # x,y,z,w
+
+    # Reorder to [w, x, y, z]
+    orientation = [q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]]
+    return position, orientation
+
+
+def pose_to_homogeneous(position_xyz, orientation_xyzw):
+    """
+    Convert a pose to a 4x4 transform.
+      position_xyz: [x,y,z]
+      orientation_xyzw: quaternion in [x,y,z,w]
+    """
+    T = np.eye(4)
+    T[:3, 3] = position_xyz
+    R = tft.quaternion_matrix(orientation_xyzw)  # returns 4×4
+    T[:3, :3] = R[:3, :3]
+    return T
+
+
 
 
 def pose_difference(final_pos, final_quat, target_pos, target_quat, exclude_z = False):
@@ -347,15 +345,6 @@ def process_file(file_path):
         "cube_target_rel_orientation": None,        # Relative to the gripper frame when the robot just grasped the cube.
     }
 
-    # # --- Extract grasp pose from stage 3 entries (look for consecutive cube_grasped=True) ---
-    # stage3 = [d for d in isaac_sim_data if d["data"]["stage"] == 3]
-    # if not stage3:
-    #     raise ValueError(f"No stage=3 entries found in {file_path}")
-    
-    # # Find the entry with the maximum current_time
-    # first_stage3 = min(stage3, key=lambda x: x["current_time"])
-    # data_after_stage3 = [entry for entry in isaac_sim_data if entry["current_time"] >= first_stage3["current_time"]]
-
     stage4 = [d for d in isaac_sim_data if d["data"]["stage"] == 4]
     first_stage4 = min(stage4, key=lambda x: x["current_time"])
     data_after_stage4 = [entry for entry in isaac_sim_data if entry["current_time"] >= first_stage4["current_time"]]
@@ -364,7 +353,6 @@ def process_file(file_path):
     if not grasp_unsuccessful:
         inputs["grasp_position"] = first_stage4["data"]["ee_position"]
         inputs["grasp_orientation"] = first_stage4["data"]["ee_orientation"]
-        inputs["cube_target_orientation"] = compute_cube_target_orientation(first_stage4["data"])
         inputs["cube_initial_position"] = first_stage4["data"]["cube_position"]
         inputs["cube_initial_orientation"] = first_stage4["data"]["cube_orientation"]
         inputs["cube_target_position"] = first_stage4["data"]["target_position"]
@@ -386,14 +374,8 @@ def process_file(file_path):
                                                                                                             inputs["cube_initial_orientation"],
                                                                                                             T_grasp_inv)
         
-        inputs["cube_target_rel_position"], inputs["cube_target_rel_orientation"] = transform_pose_to_frame(inputs["cube_target_position"],
-                                                                                                            inputs["cube_target_orientation"],
-                                                                                                            T_grasp_inv)
+        
     
-
-
-
-
 
 
     ###############################
@@ -437,8 +419,16 @@ def process_file(file_path):
             final_pose = isaac_sim_data[-1]
             outputs["bad"] = True
 
+
+        
         T_release = get_relative_transform(final_pose["data"]["tf"], "panda_hand", "world")
         T_release_inv = np.linalg.inv(T_release)
+        inputs["cube_target_orientation"] = compute_feasible_cube_pose(delta_pose["data"])
+        inputs["cube_target_rel_position"], inputs["cube_target_rel_orientation"] = transform_pose_to_frame(inputs["cube_target_position"],
+                                                                                                            inputs["cube_target_orientation"],
+                                                                                                            T_release_inv)
+
+
 
         # --- Cube final pose (world frame) ---
         outputs["cube_final_position"] = final_pose["data"]["cube_position"]
@@ -504,9 +494,102 @@ def process_folder(root_folder, output_file):
     with open(output_file, "w") as out_file:
         json.dump(results, out_file, indent=4)
     print(f"Processed data saved to {output_file}")
-
+    
 # Usage Example
 
+# These are the "base" orientations in Euler angles [roll, pitch, yaw] (degrees) you said:
+LOCAL_FACE_AXES = {
+    "marker_top":  np.array([  0.0,   0.0,   0.0]),     # top face up  z diff
+    "marker_bottom":  np.array([-180.0, 0.0,   0.0]),     # bottom face up z diff
+    "marker_left":  np.array([ 90.0,  0.0,   0.0]),     # left face up y diff
+    "marker_right":  np.array([-90.0,  0.0,   0.0]),     # right face up y diff
+    "marker_front":  np.array([ 90.0,  0.0,  90.0]),     # front face up y diff
+    "marker_back":  np.array([ 90.0,  0.0, -90.0]),     # back face up y diff
+}
+
+def compute_feasible_cube_pose(data, cube_size=0.05):
+    # ------------------------------------------------------------
+    # (A) Extract relevant data
+    # ------------------------------------------------------------
+    cube_quat_current_wxyz = data["cube_orientation"]   # [w,x,y,z]
+    current_marker = data["surface"]
+    cube_quat_current_xyzw = convert_wxyz_to_xyzw(cube_quat_current_wxyz)
+
+    # r_cube, p_cube, y_cube = tft.euler_from_quaternion(cube_quat_current_xyzw, axes='sxyz')
+
+
+    best_q_base_xyzw = None
+
+    for key, euler_deg in LOCAL_FACE_AXES.items():
+        if key == current_marker:
+            # 1) Convert the euler_deg -> radians -> quaternion base
+            r_base_rad = math.radians(euler_deg[0])
+            p_base_rad = math.radians(euler_deg[1])
+            y_base_rad = math.radians(euler_deg[2])
+            best_q_base_xyzw = tft.quaternion_from_euler(r_base_rad, p_base_rad, y_base_rad, axes='sxyz')
+        
+    # print(f"Your best key is: {current_marker}")
+    # ------------------------------------------------------------
+    # (E) Compute orientation difference: q_diff = q_pred * inv(q_base)
+    #     Then convert to Euler, keep only one axis (e.g. pitch), zero out the others
+    # ------------------------------------------------------------
+    # By definition, if q_pred = q_diff * q_base, then q_diff = q_pred * q_base^-1
+    q_base_inv = tft.quaternion_inverse(best_q_base_xyzw)
+    q_diff_xyzw = tft.quaternion_multiply(cube_quat_current_xyzw, q_base_inv)
+
+    # Convert that difference to Euler angles
+    r_diff, p_diff, y_diff = tft.euler_from_quaternion(q_diff_xyzw, axes='sxyz')
+    r_diff_deg = math.degrees(r_diff)
+    p_diff_deg = math.degrees(p_diff)
+    y_diff_deg = math.degrees(y_diff)
+
+    # Suppose we only preserve pitch difference, zero out roll & yaw
+    # (You can choose whichever axis you want to keep or partially keep)
+    if current_marker in ["marker_top", "marker_bottom"]:
+        # Preserve yaw -> zero out roll & pitch
+        r_diff_deg_mod = 0.0
+        p_diff_deg_mod = 0.0
+        y_diff_deg_mod = y_diff_deg
+    else:
+        # Preserve pitch -> zero out roll & yaw
+        r_diff_deg_mod = 0.0
+        p_diff_deg_mod = p_diff_deg
+        y_diff_deg_mod = 0.0
+
+    rpy_final = LOCAL_FACE_AXES[current_marker] + np.array([r_diff_deg_mod, p_diff_deg_mod, y_diff_deg_mod])
+    # print(f"Your final rpy is: {rpy_final}")
+    cube_quat = euler2quat(math.radians(rpy_final[0]), math.radians(rpy_final[1]), math.radians(rpy_final[2]), axes='sxyz') # [w,x,y,z]
+
+    return cube_quat
+
+
+# ------------------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------------------
+def build_transform(pos_xyz, quat_xyzw):
+    """
+    Build 4x4 from position [x,y,z] and quaternion [x,y,z,w].
+    """
+    T = tft.quaternion_matrix(quat_xyzw)
+    T[:3, 3] = pos_xyz
+    return T
+
+def transform_to_pose(T):
+    """
+    Convert 4x4 -> (position, orientation [w,x,y,z])
+    """
+    pos = T[:3, 3].tolist()
+    q_xyzw = tft.quaternion_from_matrix(T)  # [x,y,z,w]
+    return pos, [q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]]
+
+
+def quaternion_distance(q1_xyzw, q2_xyzw):
+    """
+    Simple measure: 1 - |dot(q1,q2)| for unit quaternions q1,q2 in [x,y,z,w] form.
+    Ranges [0..2].
+    """
+    dot_val = abs(np.dot(q1_xyzw, q2_xyzw))
+    return 1.0 - dot_val
 
 
 
@@ -514,5 +597,5 @@ if __name__ == "__main__":
     # process_folder("/home/chris/Chris/placement_ws/src/random_data", "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
     # process_file("/home/chris/Chris/placement_ws/src/random_data/Grasping_159/Placement_68_False.json")
     # reformat_json("/home/chris/Chris/placement_ws/src/random_data/Grasping_159/Placement_68_False.json")
-    rough_analysis("/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
-    # count_files_in_subfolders("/home/chris/Chris/placement_ws/src/random_data")
+    # rough_analysis("/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
+    count_files_in_subfolders("/home/chris/Chris/placement_ws/src/random_data")
