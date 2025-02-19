@@ -1,0 +1,18 @@
+2025-02-16 22:04:46,941 INFO    MainThread:659919 [wandb_init.py:setup_run_log_directory():637] Logging user logs to /home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/wandb/run-20250216_220446-uck6yzqq/logs/debug.log
+2025-02-16 22:04:46,941 INFO    MainThread:659919 [wandb_init.py:setup_run_log_directory():638] Logging internal logs to /home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/wandb/run-20250216_220446-uck6yzqq/logs/debug-internal.log
+2025-02-16 22:04:46,941 INFO    MainThread:659919 [wandb_init.py:init():756] calling init triggers
+2025-02-16 22:04:46,941 INFO    MainThread:659919 [wandb_init.py:init():761] wandb.init called with sweep_config: {}
+config: {'input_dim': 21, 'hidden_dim': 64, 'batch_size': 32, 'num_epochs': 50, 'learning_rate': 4.505730212799428e-05, 'optimizer': 'adam', 'scheduler_factor': 0.6, 'scheduler_patience': 4, 'train_split': 0.8469468120464237, 'valid_split': 0.053053187953576275, 'seed': 3605, '_wandb': {}}
+2025-02-16 22:04:46,941 INFO    MainThread:659919 [wandb_init.py:init():789] starting backend
+2025-02-16 22:04:46,941 INFO    MainThread:659919 [wandb_init.py:init():793] sending inform_init request
+2025-02-16 22:04:46,941 INFO    MainThread:659919 [backend.py:_multiprocessing_setup():97] multiprocessing start_methods=fork,spawn,forkserver, using: spawn
+2025-02-16 22:04:46,941 INFO    MainThread:659919 [wandb_init.py:init():808] backend started and connected
+2025-02-16 22:04:46,942 INFO    MainThread:659919 [wandb_init.py:init():901] updated telemetry
+2025-02-16 22:04:46,945 INFO    MainThread:659919 [wandb_init.py:init():936] communicating run to backend with 90.0 second timeout
+2025-02-16 22:04:47,554 INFO    MainThread:659919 [wandb_init.py:init():994] starting run threads in backend
+2025-02-16 22:04:47,715 INFO    MainThread:659919 [wandb_run.py:_console_start():2385] atexit reg
+2025-02-16 22:04:47,715 INFO    MainThread:659919 [wandb_run.py:_redirect():2235] redirect: wrap_raw
+2025-02-16 22:04:47,715 INFO    MainThread:659919 [wandb_run.py:_redirect():2300] Wrapping output streams.
+2025-02-16 22:04:47,715 INFO    MainThread:659919 [wandb_run.py:_redirect():2325] Redirects installed.
+2025-02-16 22:04:47,716 INFO    MainThread:659919 [wandb_init.py:init():1036] run started, returning control to user process
+2025-02-16 22:04:48,188 WARNING MsgRouterThr:659919 [router.py:message_loop():75] message_loop has been closed

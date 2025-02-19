@@ -1,0 +1,16 @@
+{"time":"2025-02-16T23:37:43.81420125+11:00","level":"INFO","msg":"stream: starting","core version":"0.19.6","symlink path":"/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/wandb/run-20250216_233743-sa2y32kw/logs/debug-core.log"}
+{"time":"2025-02-16T23:37:43.9171814+11:00","level":"INFO","msg":"created new stream","id":"sa2y32kw"}
+{"time":"2025-02-16T23:37:43.917203483+11:00","level":"INFO","msg":"stream: started","id":"sa2y32kw"}
+{"time":"2025-02-16T23:37:43.917251442+11:00","level":"INFO","msg":"sender: started","stream_id":"sa2y32kw"}
+{"time":"2025-02-16T23:37:43.917247565+11:00","level":"INFO","msg":"writer: Do: started","stream_id":"sa2y32kw"}
+{"time":"2025-02-16T23:37:43.917268081+11:00","level":"INFO","msg":"handler: started","stream_id":"sa2y32kw"}
+{"time":"2025-02-16T23:37:44.249513011+11:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-02-16T23:38:23.578682579+11:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-02-16T23:38:23.579054027+11:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-02-16T23:38:24.579005506+11:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading output.log","runtime_seconds":0.346479734,"progress":"2.0KB/2.0KB"},{"desc":"uploading config.yaml","runtime_seconds":0.039511758,"progress":"838B/838B"}],"total_operations":2}}
+{"time":"2025-02-16T23:38:24.948911019+11:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-02-16T23:38:26.259309784+11:00","level":"INFO","msg":"stream: closing","id":"sa2y32kw"}
+{"time":"2025-02-16T23:38:26.25932024+11:00","level":"INFO","msg":"handler: closed","stream_id":"sa2y32kw"}
+{"time":"2025-02-16T23:38:26.259325406+11:00","level":"INFO","msg":"writer: Close: closed","stream_id":"sa2y32kw"}
+{"time":"2025-02-16T23:38:26.259369487+11:00","level":"INFO","msg":"sender: closed","stream_id":"sa2y32kw"}
+{"time":"2025-02-16T23:38:26.259388707+11:00","level":"INFO","msg":"stream: closed","id":"sa2y32kw"}

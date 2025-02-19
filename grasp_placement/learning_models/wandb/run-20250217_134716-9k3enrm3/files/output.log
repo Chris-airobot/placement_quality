@@ -1,0 +1,144 @@
+Using device: cuda, seed=4471
+Epoch 1/70
+  Train Loss: 0.0701 | Val Loss: 0.0503
+Epoch 2/70
+  Train Loss: 0.0476 | Val Loss: 0.0452
+Epoch 3/70
+  Train Loss: 0.0432 | Val Loss: 0.0432
+Epoch 4/70
+  Train Loss: 0.0411 | Val Loss: 0.0422
+Epoch 5/70
+  Train Loss: 0.0400 | Val Loss: 0.0417
+Epoch 6/70
+  Train Loss: 0.0389 | Val Loss: 0.0414
+Epoch 7/70
+  Train Loss: 0.0382 | Val Loss: 0.0408
+Epoch 8/70
+  Train Loss: 0.0377 | Val Loss: 0.0402
+Epoch 9/70
+  Train Loss: 0.0372 | Val Loss: 0.0407
+Epoch 10/70
+  Train Loss: 0.0368 | Val Loss: 0.0399
+Epoch 11/70
+  Train Loss: 0.0365 | Val Loss: 0.0395
+Epoch 12/70
+  Train Loss: 0.0361 | Val Loss: 0.0393
+Epoch 13/70
+  Train Loss: 0.0359 | Val Loss: 0.0396
+Epoch 14/70
+  Train Loss: 0.0357 | Val Loss: 0.0396
+Epoch 15/70
+  Train Loss: 0.0356 | Val Loss: 0.0393
+Epoch 16/70
+  Train Loss: 0.0352 | Val Loss: 0.0393
+Epoch 17/70
+  Train Loss: 0.0350 | Val Loss: 0.0397
+Epoch 18/70
+  Train Loss: 0.0349 | Val Loss: 0.0393
+Epoch 19/70
+  Train Loss: 0.0343 | Val Loss: 0.0387
+Epoch 20/70
+  Train Loss: 0.0342 | Val Loss: 0.0385
+Epoch 21/70
+  Train Loss: 0.0340 | Val Loss: 0.0384
+Epoch 22/70
+  Train Loss: 0.0340 | Val Loss: 0.0385
+Epoch 23/70
+  Train Loss: 0.0339 | Val Loss: 0.0400
+Epoch 24/70
+  Train Loss: 0.0338 | Val Loss: 0.0386
+Epoch 25/70
+  Train Loss: 0.0338 | Val Loss: 0.0386
+Epoch 26/70
+  Train Loss: 0.0337 | Val Loss: 0.0386
+Epoch 27/70
+  Train Loss: 0.0336 | Val Loss: 0.0383
+Epoch 28/70
+  Train Loss: 0.0335 | Val Loss: 0.0387
+Epoch 29/70
+  Train Loss: 0.0334 | Val Loss: 0.0386
+Epoch 30/70
+  Train Loss: 0.0334 | Val Loss: 0.0385
+Epoch 31/70
+  Train Loss: 0.0333 | Val Loss: 0.0384
+Epoch 32/70
+  Train Loss: 0.0332 | Val Loss: 0.0388
+Epoch 33/70
+  Train Loss: 0.0332 | Val Loss: 0.0382
+Epoch 34/70
+  Train Loss: 0.0331 | Val Loss: 0.0386
+Epoch 35/70
+  Train Loss: 0.0331 | Val Loss: 0.0384
+Epoch 36/70
+  Train Loss: 0.0330 | Val Loss: 0.0383
+Epoch 37/70
+  Train Loss: 0.0329 | Val Loss: 0.0394
+Epoch 38/70
+  Train Loss: 0.0329 | Val Loss: 0.0382
+Epoch 39/70
+  Train Loss: 0.0327 | Val Loss: 0.0382
+Epoch 40/70
+  Train Loss: 0.0328 | Val Loss: 0.0382
+Epoch 41/70
+  Train Loss: 0.0327 | Val Loss: 0.0381
+Epoch 42/70
+  Train Loss: 0.0326 | Val Loss: 0.0380
+Epoch 43/70
+  Train Loss: 0.0326 | Val Loss: 0.0384
+Epoch 44/70
+  Train Loss: 0.0325 | Val Loss: 0.0381
+Epoch 45/70
+  Train Loss: 0.0325 | Val Loss: 0.0386
+Epoch 46/70
+  Train Loss: 0.0324 | Val Loss: 0.0379
+Epoch 47/70
+  Train Loss: 0.0323 | Val Loss: 0.0379
+Epoch 48/70
+  Train Loss: 0.0323 | Val Loss: 0.0380
+Epoch 49/70
+  Train Loss: 0.0322 | Val Loss: 0.0381
+Epoch 50/70
+  Train Loss: 0.0323 | Val Loss: 0.0386
+Epoch 51/70
+  Train Loss: 0.0322 | Val Loss: 0.0384
+Epoch 52/70
+  Train Loss: 0.0321 | Val Loss: 0.0383
+Epoch 53/70
+  Train Loss: 0.0318 | Val Loss: 0.0379
+Epoch 54/70
+  Train Loss: 0.0318 | Val Loss: 0.0383
+Epoch 55/70
+  Train Loss: 0.0318 | Val Loss: 0.0379
+Epoch 56/70
+  Train Loss: 0.0317 | Val Loss: 0.0380
+Epoch 57/70
+  Train Loss: 0.0317 | Val Loss: 0.0379
+Epoch 58/70
+  Train Loss: 0.0317 | Val Loss: 0.0377
+Epoch 59/70
+  Train Loss: 0.0316 | Val Loss: 0.0380
+Epoch 60/70
+  Train Loss: 0.0316 | Val Loss: 0.0381
+Epoch 61/70
+  Train Loss: 0.0316 | Val Loss: 0.0380
+Epoch 62/70
+  Train Loss: 0.0315 | Val Loss: 0.0379
+Epoch 63/70
+  Train Loss: 0.0315 | Val Loss: 0.0382
+Epoch 64/70
+  Train Loss: 0.0316 | Val Loss: 0.0380
+Epoch 65/70
+  Train Loss: 0.0313 | Val Loss: 0.0380
+Epoch 66/70
+  Train Loss: 0.0313 | Val Loss: 0.0385
+Epoch 67/70
+  Train Loss: 0.0313 | Val Loss: 0.0379
+Epoch 68/70
+  Train Loss: 0.0313 | Val Loss: 0.0380
+Epoch 69/70
+  Train Loss: 0.0313 | Val Loss: 0.0381
+Epoch 70/70
+  Train Loss: 0.0312 | Val Loss: 0.0380
+Test Loss: 0.0388
+Model saved to /home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/models/run_seed_4471/stability_net.pth
+Train/Val loss figure saved to /home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/models/run_seed_4471/train_val_loss.png

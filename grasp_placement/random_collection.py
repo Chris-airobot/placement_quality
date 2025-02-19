@@ -11,6 +11,7 @@ import glob
 import rclpy
 from rclpy.node import Node
 from tf2_msgs.msg import TFMessage
+from carb import Float3
 
 from omni.isaac.core import World
 from omni.isaac.core.utils import extensions
@@ -24,9 +25,8 @@ from utilies.camera_utility import *
 from omni.isaac.sensor import ContactSensor
 from functools import partial
 from typing import List
-
+from omni.isaac.dynamic_control import _dynamic_control
 import datetime
-
 # Enable ROS2 bridge extension
 extensions.enable_extension("omni.isaac.ros2_bridge")
 simulation_app.update()
@@ -72,6 +72,8 @@ class StartSimulation:
         self.contact = None
         self.cube_grasped = None
         self.contact_sensors = None
+        # self.dc = None
+        # self.ee_body_handle = None
 
         
         self.data_logger = None
@@ -160,6 +162,14 @@ class StartSimulation:
         )
 
         self.placement_orientation = np.random.uniform(low=-np.pi, high=np.pi, size=3)
+        
+        # external force set up
+        # self.dc = _dynamic_control.acquire_dynamic_control_interface()
+        # robot_prim_path = "/World/Franka"    
+        # robot_art = self.dc.get_articulation(robot_prim_path)
+        # ee_body_name = "panda_leftfinger"  # <-- The link name in your URDF / USD
+        # self.ee_body_handle = self.dc.find_articulation_body(robot_art, ee_body_name)
+
 
         tf_graph_generation()
         # start_camera(self.task._camera)
@@ -375,7 +385,8 @@ def main():
     recorded = False            # Used to check if the data has been recorded
     replay = False              # Used for replay data     
     grasp_collected = False     # Use when the grasping is done
-
+    force_vec = Float3(10, 10, 10)
+    
 
     while simulation_app.is_running():
         try:
@@ -449,7 +460,9 @@ def main():
                     placement_orientation=placement_orientation,  
                     grasping_orientation=env.grasping_orientation[env.grasp_counter],    
                 )
-                
+                # if env.controller.get_current_event() > 4 and env.controller.get_current_event() < 7:
+                #     position_vec = Float3(np.random.uniform(0, 5, 3))
+                #     env.dc.apply_body_force(env.ee_body_handle, force_vec, position_vec, False)
 
                 # Gripper fully closed, did not grasp the object
                 if env.controller.get_current_event() == 4 and env.placement_counter <= 1:

@@ -540,7 +540,6 @@ def compute_feasible_cube_pose(data):
 
 
     best_q_base_xyzw = None
-
     for key, euler_deg in LOCAL_FACE_AXES.items():
         if key == current_marker:
             # 1) Convert the euler_deg -> radians -> quaternion base
@@ -549,7 +548,7 @@ def compute_feasible_cube_pose(data):
             y_base_rad = math.radians(euler_deg[2])
             best_q_base_xyzw = tft.quaternion_from_euler(r_base_rad, p_base_rad, y_base_rad, axes='sxyz')
         
-    # print(f"Your best key is: {current_marker}")
+    print(f"Your best key is: {current_marker}")
     # ------------------------------------------------------------
     # (E) Compute orientation difference: q_diff = q_pred * inv(q_base)
     #     Then convert to Euler, keep only one axis (e.g. pitch), zero out the others
@@ -578,9 +577,10 @@ def compute_feasible_cube_pose(data):
         y_diff_deg_mod = 0.0
 
     rpy_final = LOCAL_FACE_AXES[current_marker] + np.array([r_diff_deg_mod, p_diff_deg_mod, y_diff_deg_mod])
+    print(f"Your final rpy is: {rpy_final}")
     # print(f"Your final rpy is: {rpy_final}")
     cube_quat = euler2quat(math.radians(rpy_final[0]), math.radians(rpy_final[1]), math.radians(rpy_final[2]), axes='sxyz') # [w,x,y,z]
-
+    print(f"ANd your final quat is: {cube_quat}")
     return cube_quat
 
 
@@ -615,9 +615,9 @@ def quaternion_distance(q1_xyzw, q2_xyzw):
 
 
 if __name__ == "__main__":
-    # process_folder("/home/chris/Chris/placement_ws/src/random_data", "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
+    # process_folder("/home/chris/Chris/placement_ws/src/random_data", "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data_laptop.json")
     # x = process_file("/home/chris/Chris/placement_ws/src/random_data/run_20250215_172420/Grasping_3/Placement_0_True.json")
     # reformat_json("/home/chris/Chris/placement_ws/src/random_data/Grasping_159/Placement_68_False.json")
     # rough_analysis("/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
-    # count_files_in_subfolders("/home/chris/Chris/placement_ws/src/random_data")
-    data_analysis()
+    count_files_in_subfolders("/home/chris/Chris/placement_ws/src/random_data")
+    # data_analysis()

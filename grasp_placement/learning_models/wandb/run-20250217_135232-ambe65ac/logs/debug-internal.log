@@ -1,0 +1,16 @@
+{"time":"2025-02-17T13:52:32.180646454+11:00","level":"INFO","msg":"stream: starting","core version":"0.19.6","symlink path":"/home/chris/Chris/placement_ws/src/wandb/run-20250217_135232-ambe65ac/logs/debug-core.log"}
+{"time":"2025-02-17T13:52:32.283673179+11:00","level":"INFO","msg":"created new stream","id":"ambe65ac"}
+{"time":"2025-02-17T13:52:32.28368779+11:00","level":"INFO","msg":"stream: started","id":"ambe65ac"}
+{"time":"2025-02-17T13:52:32.283708483+11:00","level":"INFO","msg":"writer: Do: started","stream_id":"ambe65ac"}
+{"time":"2025-02-17T13:52:32.283722348+11:00","level":"INFO","msg":"sender: started","stream_id":"ambe65ac"}
+{"time":"2025-02-17T13:52:32.283731784+11:00","level":"INFO","msg":"handler: started","stream_id":"ambe65ac"}
+{"time":"2025-02-17T13:52:32.673383936+11:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-02-17T13:52:47.247383264+11:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-02-17T13:52:47.247896479+11:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-02-17T13:52:48.244043769+11:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-02-17T13:52:48.247704642+11:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading history steps 0-30, summary, console lines 1-63","runtime_seconds":0.003491864}],"total_operations":1}}
+{"time":"2025-02-17T13:52:49.650456026+11:00","level":"INFO","msg":"stream: closing","id":"ambe65ac"}
+{"time":"2025-02-17T13:52:49.650489759+11:00","level":"INFO","msg":"handler: closed","stream_id":"ambe65ac"}
+{"time":"2025-02-17T13:52:49.650494115+11:00","level":"INFO","msg":"writer: Close: closed","stream_id":"ambe65ac"}
+{"time":"2025-02-17T13:52:49.650541617+11:00","level":"INFO","msg":"sender: closed","stream_id":"ambe65ac"}
+{"time":"2025-02-17T13:52:49.650543847+11:00","level":"INFO","msg":"stream: closed","id":"ambe65ac"}

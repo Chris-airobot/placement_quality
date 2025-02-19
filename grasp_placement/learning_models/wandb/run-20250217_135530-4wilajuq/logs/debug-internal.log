@@ -1,0 +1,16 @@
+{"time":"2025-02-17T13:55:30.818496009+11:00","level":"INFO","msg":"stream: starting","core version":"0.19.6","symlink path":"/home/chris/Chris/placement_ws/src/wandb/run-20250217_135530-4wilajuq/logs/debug-core.log"}
+{"time":"2025-02-17T13:55:30.920446559+11:00","level":"INFO","msg":"created new stream","id":"4wilajuq"}
+{"time":"2025-02-17T13:55:30.920459216+11:00","level":"INFO","msg":"stream: started","id":"4wilajuq"}
+{"time":"2025-02-17T13:55:30.920510991+11:00","level":"INFO","msg":"handler: started","stream_id":"4wilajuq"}
+{"time":"2025-02-17T13:55:30.920516081+11:00","level":"INFO","msg":"sender: started","stream_id":"4wilajuq"}
+{"time":"2025-02-17T13:55:30.92052169+11:00","level":"INFO","msg":"writer: Do: started","stream_id":"4wilajuq"}
+{"time":"2025-02-17T13:55:31.362931107+11:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-02-17T13:56:05.294999596+11:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-02-17T13:56:05.295449906+11:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-02-17T13:56:06.295520661+11:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading output.log","runtime_seconds":0.371905554,"progress":"2.8KB/2.8KB"},{"desc":"uploading config.yaml","runtime_seconds":0.117751044,"progress":"865B/865B"}],"total_operations":2}}
+{"time":"2025-02-17T13:56:06.919148355+11:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-02-17T13:56:08.307776262+11:00","level":"INFO","msg":"stream: closing","id":"4wilajuq"}
+{"time":"2025-02-17T13:56:08.30778593+11:00","level":"INFO","msg":"handler: closed","stream_id":"4wilajuq"}
+{"time":"2025-02-17T13:56:08.307791377+11:00","level":"INFO","msg":"writer: Close: closed","stream_id":"4wilajuq"}
+{"time":"2025-02-17T13:56:08.307824425+11:00","level":"INFO","msg":"sender: closed","stream_id":"4wilajuq"}
+{"time":"2025-02-17T13:56:08.307827126+11:00","level":"INFO","msg":"stream: closed","id":"4wilajuq"}

@@ -1,0 +1,48 @@
+_wandb:
+    value:
+        cli_version: 0.19.6
+        m: []
+        python_version: 3.10.12
+        t:
+            "1":
+                - 1
+                - 55
+            "2":
+                - 1
+                - 55
+            "3":
+                - 2
+                - 13
+                - 16
+                - 23
+                - 55
+            "4": 3.10.12
+            "5": 0.19.6
+            "8":
+                - 5
+            "12": 0.19.6
+            "13": linux-x86_64
+batch_size:
+    value: 32
+hidden_dim:
+    value: 512
+hidden_layers:
+    value: 4
+input_dim:
+    value: 21
+learning_rate:
+    value: 2.4060136403997513e-05
+num_epochs:
+    value: 30
+optimizer:
+    value: adam
+scheduler_factor:
+    value: 0.6
+scheduler_patience:
+    value: 5
+seed:
+    value: 4283
+train_split:
+    value: 0.7185475374573335
+valid_split:
+    value: 0.13476143003318589

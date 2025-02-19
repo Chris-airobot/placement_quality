@@ -10,7 +10,7 @@ import sys
 BACKGROUND_STAGE_PATH = "/background"
 BACKGROUND_USD_PATH = "/home/chris/Chris/placement_ws/src/grasp_placement/panda.usd"
 
-CONFIG = {"renderer": "RayTracedLighting", "headless": False}
+CONFIG = {"renderer": "RayTracedLighting", "headless": True}
 
 # Example ROS2 bridge sample demonstrating the manual loading of stages and manual publishing of images
 simulation_app = SimulationApp(CONFIG)
@@ -19,10 +19,10 @@ import omni.graph.core as og
 import omni.replicator.core as rep
 import omni.syntheticdata as sd
 import sys
-
+import carb
 
 modules = [
-    "omni.replicator.core",
+    "carb",
     "omni.syntheticdata",
     "omni.isaac.core_nodes"
 ]

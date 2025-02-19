@@ -1,0 +1,42 @@
+{
+  "os":  "Linux-6.8.0-52-generic-x86_64-with-glibc2.35",
+  "python":  "CPython 3.10.12",
+  "startedAt":  "2025-02-16T12:15:42.316969Z",
+  "program":  "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/model_train.py",
+  "codePath":  "grasp_placement/learning_models/model_train.py",
+  "git":  {
+    "remote":  "https://github.com/Chris-airobot/placement_quality.git",
+    "commit":  "d3292072bf8eff9a98ff6754d47af9bed83d86bd"
+  },
+  "email":  "tianyuli19981009@gmail.com",
+  "root":  "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models",
+  "host":  "chris-Alienware-m18-R1",
+  "executable":  "/usr/bin/python3",
+  "codePathLocal":  "model_train.py",
+  "cpu_count":  24,
+  "cpu_count_logical":  32,
+  "gpu":  "NVIDIA GeForce RTX 4090 Laptop GPU",
+  "gpu_count":  1,
+  "disk":  {
+    "/":  {
+      "total":  "722782461952",
+      "used":  "332029067264"
+    }
+  },
+  "memory":  {
+    "total":  "67095531520"
+  },
+  "cpu":  {
+    "count":  24,
+    "countLogical":  32
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA GeForce RTX 4090 Laptop GPU",
+      "memoryTotal":  "17171480576",
+      "cudaCores":  9728,
+      "architecture":  "Ada"
+    }
+  ],
+  "cudaVersion":  "12.2"
+}

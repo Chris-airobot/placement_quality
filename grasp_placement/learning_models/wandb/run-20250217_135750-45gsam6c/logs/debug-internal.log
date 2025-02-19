@@ -1,0 +1,16 @@
+{"time":"2025-02-17T13:57:50.647475985+11:00","level":"INFO","msg":"stream: starting","core version":"0.19.6","symlink path":"/home/chris/Chris/placement_ws/src/wandb/run-20250217_135750-45gsam6c/logs/debug-core.log"}
+{"time":"2025-02-17T13:57:50.749664927+11:00","level":"INFO","msg":"created new stream","id":"45gsam6c"}
+{"time":"2025-02-17T13:57:50.749677649+11:00","level":"INFO","msg":"stream: started","id":"45gsam6c"}
+{"time":"2025-02-17T13:57:50.749707799+11:00","level":"INFO","msg":"handler: started","stream_id":"45gsam6c"}
+{"time":"2025-02-17T13:57:50.749718347+11:00","level":"INFO","msg":"writer: Do: started","stream_id":"45gsam6c"}
+{"time":"2025-02-17T13:57:50.749724651+11:00","level":"INFO","msg":"sender: started","stream_id":"45gsam6c"}
+{"time":"2025-02-17T13:57:51.140458538+11:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-02-17T13:58:05.983119983+11:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-02-17T13:58:05.983422857+11:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-02-17T13:58:06.983646836+11:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading config.yaml","runtime_seconds":0.32365469,"progress":"864B/864B"},{"desc":"uploading history steps 0-50, summary, console lines 1-103","runtime_seconds":0.157194666}],"total_operations":2}}
+{"time":"2025-02-17T13:58:07.018450052+11:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-02-17T13:58:08.528345026+11:00","level":"INFO","msg":"stream: closing","id":"45gsam6c"}
+{"time":"2025-02-17T13:58:08.528353949+11:00","level":"INFO","msg":"handler: closed","stream_id":"45gsam6c"}
+{"time":"2025-02-17T13:58:08.528365261+11:00","level":"INFO","msg":"writer: Close: closed","stream_id":"45gsam6c"}
+{"time":"2025-02-17T13:58:08.528391942+11:00","level":"INFO","msg":"sender: closed","stream_id":"45gsam6c"}
+{"time":"2025-02-17T13:58:08.528393955+11:00","level":"INFO","msg":"stream: closed","id":"45gsam6c"}

@@ -1,0 +1,16 @@
+{"time":"2025-02-16T23:20:56.247642442+11:00","level":"INFO","msg":"stream: starting","core version":"0.19.6","symlink path":"/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/wandb/run-20250216_232056-7szc0v9t/logs/debug-core.log"}
+{"time":"2025-02-16T23:20:56.35061637+11:00","level":"INFO","msg":"created new stream","id":"7szc0v9t"}
+{"time":"2025-02-16T23:20:56.350631489+11:00","level":"INFO","msg":"stream: started","id":"7szc0v9t"}
+{"time":"2025-02-16T23:20:56.350637193+11:00","level":"INFO","msg":"handler: started","stream_id":"7szc0v9t"}
+{"time":"2025-02-16T23:20:56.350640446+11:00","level":"INFO","msg":"sender: started","stream_id":"7szc0v9t"}
+{"time":"2025-02-16T23:20:56.350636594+11:00","level":"INFO","msg":"writer: Do: started","stream_id":"7szc0v9t"}
+{"time":"2025-02-16T23:20:56.669860741+11:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-02-16T23:21:24.544258359+11:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-02-16T23:21:24.544624488+11:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-02-16T23:21:25.482491576+11:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-02-16T23:21:25.544642331+11:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading history steps 38-70, summary, console lines 79-145","runtime_seconds":0.062043028}],"total_operations":1}}
+{"time":"2025-02-16T23:21:26.854775071+11:00","level":"INFO","msg":"stream: closing","id":"7szc0v9t"}
+{"time":"2025-02-16T23:21:26.854791602+11:00","level":"INFO","msg":"handler: closed","stream_id":"7szc0v9t"}
+{"time":"2025-02-16T23:21:26.854799741+11:00","level":"INFO","msg":"writer: Close: closed","stream_id":"7szc0v9t"}
+{"time":"2025-02-16T23:21:26.85480433+11:00","level":"INFO","msg":"sender: closed","stream_id":"7szc0v9t"}
+{"time":"2025-02-16T23:21:26.854856832+11:00","level":"INFO","msg":"stream: closed","id":"7szc0v9t"}

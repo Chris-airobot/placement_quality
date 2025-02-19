@@ -1,38 +1,25 @@
-# import carb
 from isaacsim import SimulationApp
 CONFIG = {"headless": False}
 simulation_app = SimulationApp(CONFIG)
 
 # import carb
-import omni
-import math
+
 import numpy as np
 import asyncio
-import json
-import os
-import glob
-import rclpy
-from rclpy.node import Node
-from tf2_msgs.msg import TFMessage
-from sensor_msgs.msg import PointCloud2
 
 from omni.isaac.core import World
 from omni.isaac.core.utils import extensions
-from omni.isaac.core.scenes import Scene
+from omni.isaac.core.objects import DynamicCuboid
 from omni.isaac.franka import Franka
 from controllers.pick_place_task_with_camera import PickPlaceCamera
 from controllers.data_collection_controller import DataCollectionController
 from omni.isaac.core.utils.types import ArticulationAction
 from helper import *
 from utilies.camera_utility import *
-from omni.isaac.core.utils.rotations import euler_angles_to_quat, quat_to_euler_angles
-from omni.isaac.sensor import ContactSensor
-from functools import partial
-from typing import List
-from omni.isaac.core.objects import DynamicCuboid
 from learning_models.process_data_helpers import *
 from learning_models.dataset import *
-
+from learning_models.model_use import single_model_test, predict_single_sample
+from omni.isaac.core.utils.rotations import  quat_to_euler_angles
 # Enable ROS2 bridge extension
 extensions.enable_extension("omni.isaac.ros2_bridge")
 simulation_app.update()
@@ -56,25 +43,18 @@ def encode_outputs(outputs: dict):
     shift_ori = outputs.get("shift_orientation", None)
     contacts = outputs.get("contacts", None)
 
-    # "values are:pose_diffs: 2.0033138697629886, ori_diffs: 2.9932579711083727, shift_poss: 0.13525934849764623, shift_oris: 1.6673673523277988, contacts: 5.0"
-    pos_diff_max = 2.0033138697629886
-    ori_diff_max = 2.9932579711083727
-    shift_pos_max = 0.13525934849764623
-    shift_ori_max = 1.6673673523277988
-    contacts_max = 5.0
-
     # Convert Nones to 0.0 or some default
     # (Alternatively, you could skip these samples)
     if pos_diff is None: 
-        pos_diff = pos_diff_max
+        pos_diff = 0.0
     if ori_diff is None:
-        ori_diff = ori_diff_max
+        ori_diff = 0.0
     if shift_pos is None:
-        shift_pos = shift_pos_max
+        shift_pos = 0.0
     if shift_ori is None:
-        shift_ori = shift_ori_max
+        shift_ori = 0.0
     if contacts is None:
-        contacts = contacts_max
+        contacts = 0
 
 
     # Make them floats
@@ -84,14 +64,20 @@ def encode_outputs(outputs: dict):
     shift_ori = float(shift_ori)
     contacts  = float(contacts)
 
-    
+    # "values are:pose_diffs: 2.0033138697629886, ori_diffs: 2.9932579711083727, shift_poss: 0.13525934849764623, shift_oris: 1.6673673523277988, contacts: 5.0"
+    pos_diff_max = 0.6081497916935493
+    ori_diff_max = 2.848595486712802
+    shift_pos_max = 0.0794796857415393
+    shift_ori_max = 2.1095218360699306
+    contacts_max = 4.0
+
     params = {
         'h_diff_weight': 0.6,
         'pos_weight': 0.3,
         'h_shift_weight': 0.2,
         'shift_weight': 0.1,
         'h_contact_weight': 0.8,
-        'conatct_weight': 0.3
+        'conatct_weight': 0.4
     }
 
     stability_label = compute_stability_score(
@@ -99,7 +85,7 @@ def encode_outputs(outputs: dict):
         pos_diff_max, ori_diff_max, shift_pos_max, shift_ori_max, contacts_max,
         params=params
     )
-    return feasibility_label, stability_label
+    return stability_label
 
 
 
@@ -177,22 +163,26 @@ class ReplayGrasping:
                 orientation=np.array(data_frame.data["cube_orientation"])
             )
         
-        if data_frame.data["stage"] == 7:
-            target_position = self.inputs["cube_target_position"]
-            target_orientation = self.inputs["cube_target_orientation"]
-            cube = self.world.scene.add(
-                    DynamicCuboid(
-                        name="goal",
-                        position=target_position,
-                        orientation=target_orientation,
-                        prim_path="/World/Cube_final",
-                        scale=[0.05, 0.05, 0.05],
-                        size=1.0,
-                        color=np.array([1, 0, 0]),
-                    )
-                )
-            self.replay_finished = True
-            return 
+            # if data_frame.data["stage"] == 7:
+            #     target_position = self.inputs["cube_target_position"]
+            #     target_orientation = self.inputs["cube_target_orientation"]
+            #     print(f"The target orientation is: {target_orientation}")
+            #     angles = quat_to_euler_angles(target_orientation, True)
+            #     print(f"And the euler angles are: {angles}")
+            #     cube = self.world.scene.add(
+            #             DynamicCuboid(
+            #                 name="goal",
+            #                 position=target_position,
+            #                 orientation=target_orientation,
+            #                 prim_path="/Cube_final",
+            #                 scale=[0.05, 0.05, 0.05],
+            #                 size=1.0,
+            #                 color=np.array([1, 0, 0]),
+            #             )
+            #         )
+            #     # self.replay_finished = True
+            #     self.world.pause()
+            #     return 
 
         elif self.world.current_time_step_index == self.data_logger.get_num_of_data_frames():
             print("----------------- Replay Finished -----------------\n")
@@ -211,15 +201,17 @@ def main():
     # file_path = "/home/chris/Chris/placement_ws/src/random_data/Grasping_115/Placement_70_False.json" # Readlly bad placement
     # file_path = "/home/chris/Chris/placement_ws/src/random_data/Grasping_115/Placement_103_False.json" # Readlly bad placement
     # file_path = "/home/chris/Chris/placement_ws/src/random_data/Grasping_115/Placement_22_False.json" # Readlly bad placement
-    file_path = "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/Placement_27_False.json" # 
+    file_path = "/home/chris/Chris/placement_ws/src/random_data/run_20250216_202906/Grasping_112/Placement_112_False.json" # 
     replay_agent = ReplayGrasping(file_path)
     replay_agent.start()
     starting_replay = False
     data = process_file(file_path)
+    model = single_model_test(3005)
+    pred_score = predict_single_sample(model, data)
     inputs = data["inputs"]
     replay_agent.inputs = inputs
-    cls, reg = encode_outputs(data["outputs"])
-    print(f"Your classification label is: {cls}, and your regression label is: {reg}")
+    reg = encode_outputs(data["outputs"])
+    print(f"Your regression label is: {reg}, and the model prediction is: {pred_score}")
 
 
     while simulation_app.is_running():
@@ -233,12 +225,11 @@ def main():
                 replay_agent.replay_grasping()
                 
             if replay_agent.replay_finished:
-                replay_agent.world.pause()
-
+                # print(f"replay_finished: {replay_agent.world.is_stopped()}")
                 starting_replay = False
                 replay_agent.replay_finished = False
-                # replay_agent.world.reset()
-                # replay_agent.controller.reset()
+                
+
     simulation_app.close()
 
 

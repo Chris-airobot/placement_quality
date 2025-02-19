@@ -1,0 +1,104 @@
+Using device: cuda, seed=3980
+Epoch 1/50
+  Train Loss: 0.0656 | Val Loss: 0.0487
+Epoch 2/50
+  Train Loss: 0.0434 | Val Loss: 0.0435
+Epoch 3/50
+  Train Loss: 0.0403 | Val Loss: 0.0417
+Epoch 4/50
+  Train Loss: 0.0390 | Val Loss: 0.0402
+Epoch 5/50
+  Train Loss: 0.0379 | Val Loss: 0.0395
+Epoch 6/50
+  Train Loss: 0.0372 | Val Loss: 0.0394
+Epoch 7/50
+  Train Loss: 0.0370 | Val Loss: 0.0396
+Epoch 8/50
+  Train Loss: 0.0365 | Val Loss: 0.0393
+Epoch 9/50
+  Train Loss: 0.0359 | Val Loss: 0.0381
+Epoch 10/50
+  Train Loss: 0.0354 | Val Loss: 0.0390
+Epoch 11/50
+  Train Loss: 0.0351 | Val Loss: 0.0382
+Epoch 12/50
+  Train Loss: 0.0355 | Val Loss: 0.0394
+Epoch 13/50
+  Train Loss: 0.0349 | Val Loss: 0.0379
+Epoch 14/50
+  Train Loss: 0.0346 | Val Loss: 0.0379
+Epoch 15/50
+  Train Loss: 0.0343 | Val Loss: 0.0380
+Epoch 16/50
+  Train Loss: 0.0344 | Val Loss: 0.0373
+Epoch 17/50
+  Train Loss: 0.0343 | Val Loss: 0.0390
+Epoch 18/50
+  Train Loss: 0.0338 | Val Loss: 0.0394
+Epoch 19/50
+  Train Loss: 0.0334 | Val Loss: 0.0374
+Epoch 20/50
+  Train Loss: 0.0331 | Val Loss: 0.0393
+Epoch 21/50
+  Train Loss: 0.0334 | Val Loss: 0.0382
+Epoch 22/50
+  Train Loss: 0.0332 | Val Loss: 0.0373
+Epoch 23/50
+  Train Loss: 0.0332 | Val Loss: 0.0370
+Epoch 24/50
+  Train Loss: 0.0328 | Val Loss: 0.0376
+Epoch 25/50
+  Train Loss: 0.0330 | Val Loss: 0.0374
+Epoch 26/50
+  Train Loss: 0.0326 | Val Loss: 0.0376
+Epoch 27/50
+  Train Loss: 0.0324 | Val Loss: 0.0387
+Epoch 28/50
+  Train Loss: 0.0324 | Val Loss: 0.0381
+Epoch 29/50
+  Train Loss: 0.0321 | Val Loss: 0.0393
+Epoch 30/50
+  Train Loss: 0.0321 | Val Loss: 0.0378
+Epoch 31/50
+  Train Loss: 0.0311 | Val Loss: 0.0376
+Epoch 32/50
+  Train Loss: 0.0312 | Val Loss: 0.0371
+Epoch 33/50
+  Train Loss: 0.0310 | Val Loss: 0.0369
+Epoch 34/50
+  Train Loss: 0.0308 | Val Loss: 0.0389
+Epoch 35/50
+  Train Loss: 0.0309 | Val Loss: 0.0372
+Epoch 36/50
+  Train Loss: 0.0307 | Val Loss: 0.0370
+Epoch 37/50
+  Train Loss: 0.0306 | Val Loss: 0.0378
+Epoch 38/50
+  Train Loss: 0.0304 | Val Loss: 0.0379
+Epoch 39/50
+  Train Loss: 0.0306 | Val Loss: 0.0371
+Epoch 40/50
+  Train Loss: 0.0303 | Val Loss: 0.0373
+Epoch 41/50
+  Train Loss: 0.0298 | Val Loss: 0.0370
+Epoch 42/50
+  Train Loss: 0.0297 | Val Loss: 0.0373
+Epoch 43/50
+  Train Loss: 0.0296 | Val Loss: 0.0372
+Epoch 44/50
+  Train Loss: 0.0296 | Val Loss: 0.0371
+Epoch 45/50
+  Train Loss: 0.0295 | Val Loss: 0.0373
+Epoch 46/50
+  Train Loss: 0.0295 | Val Loss: 0.0378
+Epoch 47/50
+  Train Loss: 0.0294 | Val Loss: 0.0372
+Epoch 48/50
+  Train Loss: 0.0291 | Val Loss: 0.0370
+Epoch 49/50
+  Train Loss: 0.0291 | Val Loss: 0.0371
+Epoch 50/50
+  Train Loss: 0.0291 | Val Loss: 0.0372
+Test Loss: 0.0355
+Model saved to /home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/models/run_seed_3980/stability_net.pth
+Train/Val loss figure saved to /home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/models/run_seed_3980/train_val_loss.png

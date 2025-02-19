@@ -1,0 +1,16 @@
+{"time":"2025-02-17T13:50:59.507404928+11:00","level":"INFO","msg":"stream: starting","core version":"0.19.6","symlink path":"/home/chris/Chris/placement_ws/src/wandb/run-20250217_135059-brp6y180/logs/debug-core.log"}
+{"time":"2025-02-17T13:50:59.609660937+11:00","level":"INFO","msg":"created new stream","id":"brp6y180"}
+{"time":"2025-02-17T13:50:59.609677175+11:00","level":"INFO","msg":"stream: started","id":"brp6y180"}
+{"time":"2025-02-17T13:50:59.609713284+11:00","level":"INFO","msg":"handler: started","stream_id":"brp6y180"}
+{"time":"2025-02-17T13:50:59.609725845+11:00","level":"INFO","msg":"writer: Do: started","stream_id":"brp6y180"}
+{"time":"2025-02-17T13:50:59.609721432+11:00","level":"INFO","msg":"sender: started","stream_id":"brp6y180"}
+{"time":"2025-02-17T13:51:00.000456737+11:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-02-17T13:51:08.932095566+11:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-02-17T13:51:08.932515182+11:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-02-17T13:51:09.891819271+11:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-02-17T13:51:09.932643901+11:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading history steps 0-30, summary, console lines 1-63","runtime_seconds":0.040709141}],"total_operations":1}}
+{"time":"2025-02-17T13:51:11.243489283+11:00","level":"INFO","msg":"stream: closing","id":"brp6y180"}
+{"time":"2025-02-17T13:51:11.243505058+11:00","level":"INFO","msg":"handler: closed","stream_id":"brp6y180"}
+{"time":"2025-02-17T13:51:11.243514711+11:00","level":"INFO","msg":"writer: Close: closed","stream_id":"brp6y180"}
+{"time":"2025-02-17T13:51:11.24354071+11:00","level":"INFO","msg":"sender: closed","stream_id":"brp6y180"}
+{"time":"2025-02-17T13:51:11.243595515+11:00","level":"INFO","msg":"stream: closed","id":"brp6y180"}

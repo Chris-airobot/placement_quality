@@ -1,0 +1,24 @@
+2025-02-16 22:34:57,709 INFO    MainThread:680342 [wandb_init.py:setup_run_log_directory():637] Logging user logs to /home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/wandb/run-20250216_223457-xo82e0rj/logs/debug.log
+2025-02-16 22:34:57,709 INFO    MainThread:680342 [wandb_init.py:setup_run_log_directory():638] Logging internal logs to /home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/wandb/run-20250216_223457-xo82e0rj/logs/debug-internal.log
+2025-02-16 22:34:57,709 INFO    MainThread:680342 [wandb_init.py:init():756] calling init triggers
+2025-02-16 22:34:57,709 INFO    MainThread:680342 [wandb_init.py:init():761] wandb.init called with sweep_config: {}
+config: {'input_dim': 21, 'hidden_dim': 256, 'batch_size': 32, 'num_epochs': 70, 'learning_rate': 0.0007284608442088221, 'optimizer': 'adam', 'scheduler_factor': 0.6, 'scheduler_patience': 6, 'train_split': 0.8012556464047194, 'valid_split': 0.09874435359528067, 'seed': 896, '_wandb': {}}
+2025-02-16 22:34:57,709 INFO    MainThread:680342 [wandb_init.py:init():789] starting backend
+2025-02-16 22:34:57,709 INFO    MainThread:680342 [wandb_init.py:init():793] sending inform_init request
+2025-02-16 22:34:57,710 INFO    MainThread:680342 [backend.py:_multiprocessing_setup():97] multiprocessing start_methods=fork,spawn,forkserver, using: spawn
+2025-02-16 22:34:57,710 INFO    MainThread:680342 [wandb_init.py:init():808] backend started and connected
+2025-02-16 22:34:57,710 INFO    MainThread:680342 [wandb_init.py:init():901] updated telemetry
+2025-02-16 22:34:57,714 INFO    MainThread:680342 [wandb_init.py:init():936] communicating run to backend with 90.0 second timeout
+2025-02-16 22:34:58,105 INFO    MainThread:680342 [wandb_init.py:init():994] starting run threads in backend
+2025-02-16 22:34:58,237 INFO    MainThread:680342 [wandb_run.py:_console_start():2385] atexit reg
+2025-02-16 22:34:58,237 INFO    MainThread:680342 [wandb_run.py:_redirect():2235] redirect: wrap_raw
+2025-02-16 22:34:58,237 INFO    MainThread:680342 [wandb_run.py:_redirect():2300] Wrapping output streams.
+2025-02-16 22:34:58,238 INFO    MainThread:680342 [wandb_run.py:_redirect():2325] Redirects installed.
+2025-02-16 22:34:58,238 INFO    MainThread:680342 [wandb_init.py:init():1036] run started, returning control to user process
+2025-02-16 22:35:53,004 INFO    MainThread:680342 [wandb_run.py:_finish():2110] finishing run itschris-deakin-university/stability-regression/xo82e0rj
+2025-02-16 22:35:53,004 INFO    MainThread:680342 [wandb_run.py:_atexit_cleanup():2350] got exitcode: 0
+2025-02-16 22:35:53,004 INFO    MainThread:680342 [wandb_run.py:_restore():2332] restore
+2025-02-16 22:35:53,004 INFO    MainThread:680342 [wandb_run.py:_restore():2338] restore done
+2025-02-16 22:35:55,720 INFO    MainThread:680342 [wandb_run.py:_footer_history_summary_info():3963] rendering history
+2025-02-16 22:35:55,721 INFO    MainThread:680342 [wandb_run.py:_footer_history_summary_info():3995] rendering summary
+2025-02-16 22:35:55,721 INFO    MainThread:680342 [wandb_run.py:_footer_sync_info():3924] logging synced files

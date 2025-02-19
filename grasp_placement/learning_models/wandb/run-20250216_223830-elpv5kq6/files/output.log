@@ -1,0 +1,106 @@
+Using device: cuda, seed=3059
+/home/chris/.local/lib/python3.10/site-packages/torch/optim/lr_scheduler.py:62: UserWarning: The verbose parameter is deprecated. Please use get_last_lr() to access the learning rate.
+  warnings.warn(
+Epoch 1/50
+  Train Loss: 0.0502 | Val Loss: 0.0412
+Epoch 2/50
+  Train Loss: 0.0406 | Val Loss: 0.0408
+Epoch 3/50
+  Train Loss: 0.0384 | Val Loss: 0.0382
+Epoch 4/50
+  Train Loss: 0.0375 | Val Loss: 0.0385
+Epoch 5/50
+  Train Loss: 0.0367 | Val Loss: 0.0386
+Epoch 6/50
+  Train Loss: 0.0361 | Val Loss: 0.0378
+Epoch 7/50
+  Train Loss: 0.0354 | Val Loss: 0.0381
+Epoch 8/50
+  Train Loss: 0.0351 | Val Loss: 0.0374
+Epoch 9/50
+  Train Loss: 0.0348 | Val Loss: 0.0390
+Epoch 10/50
+  Train Loss: 0.0346 | Val Loss: 0.0374
+Epoch 11/50
+  Train Loss: 0.0342 | Val Loss: 0.0367
+Epoch 12/50
+  Train Loss: 0.0338 | Val Loss: 0.0375
+Epoch 13/50
+  Train Loss: 0.0338 | Val Loss: 0.0362
+Epoch 14/50
+  Train Loss: 0.0336 | Val Loss: 0.0375
+Epoch 15/50
+  Train Loss: 0.0333 | Val Loss: 0.0376
+Epoch 16/50
+  Train Loss: 0.0331 | Val Loss: 0.0376
+Epoch 17/50
+  Train Loss: 0.0330 | Val Loss: 0.0382
+Epoch 18/50
+  Train Loss: 0.0331 | Val Loss: 0.0373
+Epoch 19/50
+  Train Loss: 0.0320 | Val Loss: 0.0370
+Epoch 20/50
+  Train Loss: 0.0318 | Val Loss: 0.0366
+Epoch 21/50
+  Train Loss: 0.0316 | Val Loss: 0.0364
+Epoch 22/50
+  Train Loss: 0.0315 | Val Loss: 0.0361
+Epoch 23/50
+  Train Loss: 0.0314 | Val Loss: 0.0370
+Epoch 24/50
+  Train Loss: 0.0313 | Val Loss: 0.0374
+Epoch 25/50
+  Train Loss: 0.0312 | Val Loss: 0.0363
+Epoch 26/50
+  Train Loss: 0.0311 | Val Loss: 0.0373
+Epoch 27/50
+  Train Loss: 0.0309 | Val Loss: 0.0367
+Epoch 28/50
+  Train Loss: 0.0303 | Val Loss: 0.0372
+Epoch 29/50
+  Train Loss: 0.0302 | Val Loss: 0.0368
+Epoch 30/50
+  Train Loss: 0.0302 | Val Loss: 0.0365
+Epoch 31/50
+  Train Loss: 0.0300 | Val Loss: 0.0369
+Epoch 32/50
+  Train Loss: 0.0300 | Val Loss: 0.0363
+Epoch 33/50
+  Train Loss: 0.0295 | Val Loss: 0.0366
+Epoch 34/50
+  Train Loss: 0.0294 | Val Loss: 0.0372
+Epoch 35/50
+  Train Loss: 0.0294 | Val Loss: 0.0370
+Epoch 36/50
+  Train Loss: 0.0294 | Val Loss: 0.0371
+Epoch 37/50
+  Train Loss: 0.0293 | Val Loss: 0.0370
+Epoch 38/50
+  Train Loss: 0.0291 | Val Loss: 0.0367
+Epoch 39/50
+  Train Loss: 0.0290 | Val Loss: 0.0368
+Epoch 40/50
+  Train Loss: 0.0290 | Val Loss: 0.0365
+Epoch 41/50
+  Train Loss: 0.0289 | Val Loss: 0.0365
+Epoch 42/50
+  Train Loss: 0.0289 | Val Loss: 0.0369
+Epoch 43/50
+  Train Loss: 0.0287 | Val Loss: 0.0368
+Epoch 44/50
+  Train Loss: 0.0287 | Val Loss: 0.0368
+Epoch 45/50
+  Train Loss: 0.0287 | Val Loss: 0.0367
+Epoch 46/50
+  Train Loss: 0.0286 | Val Loss: 0.0369
+Epoch 47/50
+  Train Loss: 0.0286 | Val Loss: 0.0368
+Epoch 48/50
+  Train Loss: 0.0285 | Val Loss: 0.0367
+Epoch 49/50
+  Train Loss: 0.0285 | Val Loss: 0.0369
+Epoch 50/50
+  Train Loss: 0.0285 | Val Loss: 0.0367
+Test Loss: 0.0382
+Model saved to /home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/models/run_seed_3059/stability_net.pth
+Train/Val loss figure saved to /home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/models/run_seed_3059/train_val_loss.png

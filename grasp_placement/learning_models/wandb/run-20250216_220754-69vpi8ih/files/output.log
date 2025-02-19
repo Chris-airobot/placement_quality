@@ -1,0 +1,145 @@
+Using device: cuda, seed=7994
+/home/chris/.local/lib/python3.10/site-packages/torch/optim/lr_scheduler.py:62: UserWarning: The verbose parameter is deprecated. Please use get_last_lr() to access the learning rate.
+  warnings.warn(
+Epoch 1/70
+  Train Loss: 0.1901 | Val Loss: 0.0723
+Epoch 2/70
+  Train Loss: 0.0659 | Val Loss: 0.0630
+Epoch 3/70
+  Train Loss: 0.0595 | Val Loss: 0.0576
+Epoch 4/70
+  Train Loss: 0.0558 | Val Loss: 0.0542
+Epoch 5/70
+  Train Loss: 0.0527 | Val Loss: 0.0518
+Epoch 6/70
+  Train Loss: 0.0510 | Val Loss: 0.0498
+Epoch 7/70
+  Train Loss: 0.0495 | Val Loss: 0.0481
+Epoch 8/70
+  Train Loss: 0.0480 | Val Loss: 0.0469
+Epoch 9/70
+  Train Loss: 0.0473 | Val Loss: 0.0455
+Epoch 10/70
+  Train Loss: 0.0469 | Val Loss: 0.0444
+Epoch 11/70
+  Train Loss: 0.0453 | Val Loss: 0.0434
+Epoch 12/70
+  Train Loss: 0.0451 | Val Loss: 0.0428
+Epoch 13/70
+  Train Loss: 0.0438 | Val Loss: 0.0424
+Epoch 14/70
+  Train Loss: 0.0433 | Val Loss: 0.0417
+Epoch 15/70
+  Train Loss: 0.0432 | Val Loss: 0.0412
+Epoch 16/70
+  Train Loss: 0.0427 | Val Loss: 0.0408
+Epoch 17/70
+  Train Loss: 0.0423 | Val Loss: 0.0406
+Epoch 18/70
+  Train Loss: 0.0422 | Val Loss: 0.0402
+Epoch 19/70
+  Train Loss: 0.0413 | Val Loss: 0.0400
+Epoch 20/70
+  Train Loss: 0.0413 | Val Loss: 0.0396
+Epoch 21/70
+  Train Loss: 0.0412 | Val Loss: 0.0394
+Epoch 22/70
+  Train Loss: 0.0406 | Val Loss: 0.0393
+Epoch 23/70
+  Train Loss: 0.0403 | Val Loss: 0.0391
+Epoch 24/70
+  Train Loss: 0.0400 | Val Loss: 0.0387
+Epoch 25/70
+  Train Loss: 0.0398 | Val Loss: 0.0386
+Epoch 26/70
+  Train Loss: 0.0395 | Val Loss: 0.0384
+Epoch 27/70
+  Train Loss: 0.0395 | Val Loss: 0.0382
+Epoch 28/70
+  Train Loss: 0.0392 | Val Loss: 0.0381
+Epoch 29/70
+  Train Loss: 0.0392 | Val Loss: 0.0379
+Epoch 30/70
+  Train Loss: 0.0389 | Val Loss: 0.0378
+Epoch 31/70
+  Train Loss: 0.0388 | Val Loss: 0.0377
+Epoch 32/70
+  Train Loss: 0.0387 | Val Loss: 0.0375
+Epoch 33/70
+  Train Loss: 0.0386 | Val Loss: 0.0375
+Epoch 34/70
+  Train Loss: 0.0382 | Val Loss: 0.0372
+Epoch 35/70
+  Train Loss: 0.0396 | Val Loss: 0.0371
+Epoch 36/70
+  Train Loss: 0.0380 | Val Loss: 0.0371
+Epoch 37/70
+  Train Loss: 0.0379 | Val Loss: 0.0370
+Epoch 38/70
+  Train Loss: 0.0377 | Val Loss: 0.0368
+Epoch 39/70
+  Train Loss: 0.0374 | Val Loss: 0.0367
+Epoch 40/70
+  Train Loss: 0.0373 | Val Loss: 0.0365
+Epoch 41/70
+  Train Loss: 0.0371 | Val Loss: 0.0365
+Epoch 42/70
+  Train Loss: 0.0373 | Val Loss: 0.0364
+Epoch 43/70
+  Train Loss: 0.0370 | Val Loss: 0.0364
+Epoch 44/70
+  Train Loss: 0.0370 | Val Loss: 0.0364
+Epoch 45/70
+  Train Loss: 0.0370 | Val Loss: 0.0363
+Epoch 46/70
+  Train Loss: 0.0367 | Val Loss: 0.0363
+Epoch 47/70
+  Train Loss: 0.0386 | Val Loss: 0.0361
+Epoch 48/70
+  Train Loss: 0.0365 | Val Loss: 0.0360
+Epoch 49/70
+  Train Loss: 0.0365 | Val Loss: 0.0359
+Epoch 50/70
+  Train Loss: 0.0363 | Val Loss: 0.0359
+Epoch 51/70
+  Train Loss: 0.0364 | Val Loss: 0.0362
+Epoch 52/70
+  Train Loss: 0.0363 | Val Loss: 0.0356
+Epoch 53/70
+  Train Loss: 0.0361 | Val Loss: 0.0358
+Epoch 54/70
+  Train Loss: 0.0361 | Val Loss: 0.0357
+Epoch 55/70
+  Train Loss: 0.0359 | Val Loss: 0.0355
+Epoch 56/70
+  Train Loss: 0.0362 | Val Loss: 0.0356
+Epoch 57/70
+  Train Loss: 0.0359 | Val Loss: 0.0358
+Epoch 58/70
+  Train Loss: 0.0362 | Val Loss: 0.0355
+Epoch 59/70
+  Train Loss: 0.0357 | Val Loss: 0.0354
+Epoch 60/70
+  Train Loss: 0.0357 | Val Loss: 0.0352
+Epoch 61/70
+  Train Loss: 0.0358 | Val Loss: 0.0354
+Epoch 62/70
+  Train Loss: 0.0357 | Val Loss: 0.0356
+Epoch 63/70
+  Train Loss: 0.0359 | Val Loss: 0.0353
+Epoch 64/70
+  Train Loss: 0.0355 | Val Loss: 0.0351
+Epoch 65/70
+  Train Loss: 0.0355 | Val Loss: 0.0351
+Epoch 66/70
+  Train Loss: 0.0354 | Val Loss: 0.0351
+Epoch 67/70
+  Train Loss: 0.0354 | Val Loss: 0.0352
+Epoch 68/70
+  Train Loss: 0.0353 | Val Loss: 0.0351
+Epoch 69/70
+  Train Loss: 0.0352 | Val Loss: 0.0351
+Epoch 70/70
+  Train Loss: 0.0351 | Val Loss: 0.0351
+Test Loss: 0.0379
+Model saved to /home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/models/stability_net_run_seed_7994.pth

@@ -1,0 +1,64 @@
+Using device: cuda, seed=1398
+Epoch 1/30
+  Train Loss: 0.0781 | Val Loss: 0.0496
+Epoch 2/30
+  Train Loss: 0.0464 | Val Loss: 0.0453
+Epoch 3/30
+  Train Loss: 0.0421 | Val Loss: 0.0432
+Epoch 4/30
+  Train Loss: 0.0400 | Val Loss: 0.0418
+Epoch 5/30
+  Train Loss: 0.0390 | Val Loss: 0.0409
+Epoch 6/30
+  Train Loss: 0.0378 | Val Loss: 0.0411
+Epoch 7/30
+  Train Loss: 0.0372 | Val Loss: 0.0410
+Epoch 8/30
+  Train Loss: 0.0369 | Val Loss: 0.0395
+Epoch 9/30
+  Train Loss: 0.0363 | Val Loss: 0.0399
+Epoch 10/30
+  Train Loss: 0.0360 | Val Loss: 0.0391
+Epoch 11/30
+  Train Loss: 0.0358 | Val Loss: 0.0396
+Epoch 12/30
+  Train Loss: 0.0356 | Val Loss: 0.0381
+Epoch 13/30
+  Train Loss: 0.0355 | Val Loss: 0.0386
+Epoch 14/30
+  Train Loss: 0.0349 | Val Loss: 0.0392
+Epoch 15/30
+  Train Loss: 0.0349 | Val Loss: 0.0381
+Epoch 16/30
+  Train Loss: 0.0344 | Val Loss: 0.0381
+Epoch 17/30
+  Train Loss: 0.0344 | Val Loss: 0.0383
+Epoch 18/30
+  Train Loss: 0.0343 | Val Loss: 0.0382
+Epoch 19/30
+  Train Loss: 0.0342 | Val Loss: 0.0386
+Epoch 20/30
+  Train Loss: 0.0339 | Val Loss: 0.0381
+Epoch 21/30
+  Train Loss: 0.0334 | Val Loss: 0.0375
+Epoch 22/30
+  Train Loss: 0.0332 | Val Loss: 0.0373
+Epoch 23/30
+  Train Loss: 0.0333 | Val Loss: 0.0384
+Epoch 24/30
+  Train Loss: 0.0332 | Val Loss: 0.0377
+Epoch 25/30
+  Train Loss: 0.0332 | Val Loss: 0.0377
+Epoch 26/30
+  Train Loss: 0.0331 | Val Loss: 0.0381
+Epoch 27/30
+  Train Loss: 0.0328 | Val Loss: 0.0380
+Epoch 28/30
+  Train Loss: 0.0325 | Val Loss: 0.0371
+Epoch 29/30
+  Train Loss: 0.0324 | Val Loss: 0.0375
+Epoch 30/30
+  Train Loss: 0.0325 | Val Loss: 0.0378
+Test Loss: 0.0373
+Model saved to /home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/models/run_seed_1398/stability_net.pth
+Train/Val loss figure saved to /home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/models/run_seed_1398/train_val_loss.png

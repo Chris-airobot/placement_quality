@@ -1,0 +1,66 @@
+Using device: cuda, seed=9822
+/home/chris/.local/lib/python3.10/site-packages/torch/optim/lr_scheduler.py:62: UserWarning: The verbose parameter is deprecated. Please use get_last_lr() to access the learning rate.
+  warnings.warn(
+Epoch 1/30
+  Train Loss: 0.0615 | Val Loss: 0.0464
+Epoch 2/30
+  Train Loss: 0.0444 | Val Loss: 0.0419
+Epoch 3/30
+  Train Loss: 0.0415 | Val Loss: 0.0414
+Epoch 4/30
+  Train Loss: 0.0401 | Val Loss: 0.0401
+Epoch 5/30
+  Train Loss: 0.0389 | Val Loss: 0.0392
+Epoch 6/30
+  Train Loss: 0.0383 | Val Loss: 0.0390
+Epoch 7/30
+  Train Loss: 0.0376 | Val Loss: 0.0395
+Epoch 8/30
+  Train Loss: 0.0371 | Val Loss: 0.0375
+Epoch 9/30
+  Train Loss: 0.0368 | Val Loss: 0.0384
+Epoch 10/30
+  Train Loss: 0.0365 | Val Loss: 0.0375
+Epoch 11/30
+  Train Loss: 0.0361 | Val Loss: 0.0371
+Epoch 12/30
+  Train Loss: 0.0359 | Val Loss: 0.0371
+Epoch 13/30
+  Train Loss: 0.0355 | Val Loss: 0.0373
+Epoch 14/30
+  Train Loss: 0.0354 | Val Loss: 0.0370
+Epoch 15/30
+  Train Loss: 0.0353 | Val Loss: 0.0368
+Epoch 16/30
+  Train Loss: 0.0348 | Val Loss: 0.0383
+Epoch 17/30
+  Train Loss: 0.0348 | Val Loss: 0.0369
+Epoch 18/30
+  Train Loss: 0.0347 | Val Loss: 0.0368
+Epoch 19/30
+  Train Loss: 0.0346 | Val Loss: 0.0388
+Epoch 20/30
+  Train Loss: 0.0345 | Val Loss: 0.0389
+Epoch 21/30
+  Train Loss: 0.0342 | Val Loss: 0.0365
+Epoch 22/30
+  Train Loss: 0.0339 | Val Loss: 0.0376
+Epoch 23/30
+  Train Loss: 0.0338 | Val Loss: 0.0370
+Epoch 24/30
+  Train Loss: 0.0338 | Val Loss: 0.0374
+Epoch 25/30
+  Train Loss: 0.0337 | Val Loss: 0.0381
+Epoch 26/30
+  Train Loss: 0.0331 | Val Loss: 0.0372
+Epoch 27/30
+  Train Loss: 0.0332 | Val Loss: 0.0362
+Epoch 28/30
+  Train Loss: 0.0329 | Val Loss: 0.0367
+Epoch 29/30
+  Train Loss: 0.0329 | Val Loss: 0.0366
+Epoch 30/30
+  Train Loss: 0.0327 | Val Loss: 0.0379
+Test Loss: 0.0361
+Model saved to /home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/models/run_seed_9822/stability_net.pth
+Train/Val loss figure saved to /home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/models/run_seed_9822/train_val_loss.png

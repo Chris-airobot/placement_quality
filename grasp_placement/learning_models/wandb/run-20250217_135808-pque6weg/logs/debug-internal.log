@@ -1,0 +1,16 @@
+{"time":"2025-02-17T13:58:08.569553436+11:00","level":"INFO","msg":"stream: starting","core version":"0.19.6","symlink path":"/home/chris/Chris/placement_ws/src/wandb/run-20250217_135808-pque6weg/logs/debug-core.log"}
+{"time":"2025-02-17T13:58:08.671518995+11:00","level":"INFO","msg":"created new stream","id":"pque6weg"}
+{"time":"2025-02-17T13:58:08.671532853+11:00","level":"INFO","msg":"stream: started","id":"pque6weg"}
+{"time":"2025-02-17T13:58:08.671564404+11:00","level":"INFO","msg":"handler: started","stream_id":"pque6weg"}
+{"time":"2025-02-17T13:58:08.671575318+11:00","level":"INFO","msg":"writer: Do: started","stream_id":"pque6weg"}
+{"time":"2025-02-17T13:58:08.671605933+11:00","level":"INFO","msg":"sender: started","stream_id":"pque6weg"}
+{"time":"2025-02-17T13:58:09.060787155+11:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-02-17T13:58:22.622030151+11:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-02-17T13:58:22.622551866+11:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-02-17T13:58:23.622634177+11:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading config.yaml","runtime_seconds":0.485094984,"progress":"865B/865B"}],"total_operations":1}}
+{"time":"2025-02-17T13:58:24.067258462+11:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-02-17T13:58:25.424079901+11:00","level":"INFO","msg":"stream: closing","id":"pque6weg"}
+{"time":"2025-02-17T13:58:25.424095078+11:00","level":"INFO","msg":"handler: closed","stream_id":"pque6weg"}
+{"time":"2025-02-17T13:58:25.424103726+11:00","level":"INFO","msg":"writer: Close: closed","stream_id":"pque6weg"}
+{"time":"2025-02-17T13:58:25.424108752+11:00","level":"INFO","msg":"sender: closed","stream_id":"pque6weg"}
+{"time":"2025-02-17T13:58:25.424155258+11:00","level":"INFO","msg":"stream: closed","id":"pque6weg"}
