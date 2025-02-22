@@ -25,13 +25,13 @@ from utilies.camera_utility import *
 from omni.isaac.sensor import ContactSensor
 from functools import partial
 from typing import List
-from omni.isaac.dynamic_control import _dynamic_control
+# from omni.isaac.dynamic_control import _dynamic_control
 import datetime
 # Enable ROS2 bridge extension
 extensions.enable_extension("omni.isaac.ros2_bridge")
 simulation_app.update()
 
-base_dir = "/home/chris/Chris/placement_ws/src/random_data/"
+base_dir = "/home/chris/Chris/placement_ws/src/data/random_data/"
 time_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 DIR_PATH = os.path.join(base_dir, f"run_{time_str}/")
 

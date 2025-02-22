@@ -1,11 +1,12 @@
 import torch
 from torch.utils.data import Dataset
 import numpy as np
+import json
+import random
 
 def compute_stability_score(pos_diff, ori_diff, shift_pos, shift_ori, contacts,
                             pos_max, ori_max, shift_pos_max, shift_ori_max, contacts_max, params=None):
     """
-    Computes a stability score in [0,1] by first normalizing each metric to [0,1]
     using the provided upper bounds, then combining them with weighted penalties.
     """
     pos_norm       = pos_diff / pos_max
@@ -13,16 +14,22 @@ def compute_stability_score(pos_diff, ori_diff, shift_pos, shift_ori, contacts,
     shift_pos_norm = shift_pos / shift_pos_max
     shift_ori_norm = shift_ori / shift_ori_max
     contacts_norm  = contacts / contacts_max
-
+    
     penalty = (params['pos_weight'] * pos_norm + 
                params['pos_weight'] * ori_norm + 
                params['shift_weight'] * shift_pos_norm + 
                params['shift_weight'] * shift_ori_norm + 
                params['conatct_weight'] * contacts_norm)
-    
-    stability = 100 - penalty  # No clamping is applied here
+    stability = -penalty  # No clamping is applied here
     return stability
 
+
+# -------------------------------------------------
+# ADD THIS HELPER TO MAP [-2,0] --> [-1,1]:
+def to_tanh_range(value, y_min, y_max):
+    """Linearly map value in [y_min,y_max] to [-1,1]."""
+    return 2.0 * (value - y_min) / (y_max - y_min) - 1.0
+# -------------------------------------------------
 
 class MyStabilityDataset(Dataset):
     def __init__(self, all_entries):
@@ -33,6 +40,11 @@ class MyStabilityDataset(Dataset):
         """
         self.samples = []
         self.gripper_reference = False
+        self.data_params = None
+
+        with open("/home/chris/Chris/placement_ws/src/data/processed_data/parameters.json", 'r') as f1:
+            self.data_params = json.load(f1)
+
 
         for entry in all_entries:
             # Encode inputs
@@ -68,24 +80,18 @@ class MyStabilityDataset(Dataset):
         """
         is_fail = outputs.get("grasp_unsuccessful", False) or outputs.get("bad", False)
         feasibility_label = 0 if is_fail else 1
+        
+        
+        def get_valid_float(outputs: dict, key, default):
+            value = outputs.get(key, default)
+            return float(value) if isinstance(value, float) else float(default)
 
-        pos_diff_max = 0.6081497916935493
-        ori_diff_max = 2.848595486712802
-        shift_pos_max = 0.0794796857415393
-        shift_ori_max = 2.1095218360699306
-        contacts_max = 4.0
+        pos_diff   = get_valid_float(outputs, "position_difference", self.data_params["position_difference"])
+        ori_diff   = get_valid_float(outputs, "orientation_difference", self.data_params["orientation_difference"])
+        shift_pos  = get_valid_float(outputs, "shift_position", self.data_params["shift_position"])
+        shift_ori  = get_valid_float(outputs, "shift_orientation", self.data_params["shift_orientation"])
+        contacts   = get_valid_float(outputs, "contacts", self.data_params["contacts"])
 
-        pos_diff = outputs.get("position_difference", pos_diff_max)
-        ori_diff = outputs.get("orientation_difference", ori_diff_max)
-        shift_pos = outputs.get("shift_position", shift_pos_max)
-        shift_ori = outputs.get("shift_orientation", shift_ori_max)
-        contacts = outputs.get("contacts", contacts_max)
-
-        pos_diff = float(pos_diff)
-        ori_diff = float(ori_diff)
-        shift_pos = float(shift_pos)
-        shift_ori = float(shift_ori)
-        contacts = float(contacts)
 
         
 
@@ -100,9 +106,14 @@ class MyStabilityDataset(Dataset):
 
         stability_label = compute_stability_score(
             pos_diff, ori_diff, shift_pos, shift_ori, contacts,
-            pos_diff_max, ori_diff_max, shift_pos_max, shift_ori_max, contacts_max,
+            self.data_params["position_difference"], self.data_params["orientation_difference"], self.data_params["shift_position"], 
+            self.data_params["shift_orientation"], self.data_params["contacts"],
             params=params
         )
+        raw_clamped = max(min(stability_label, self.data_params["max_score"]), self.data_params["min_score"])
+
+        stability_label = to_tanh_range(raw_clamped, self.data_params["min_score"], self.data_params["max_score"])
+        
         return (feasibility_label, stability_label)
 
     def __len__(self):
@@ -113,3 +124,53 @@ class MyStabilityDataset(Dataset):
         cls_lbl = torch.tensor(cls_lbl, dtype=torch.float32)
         reg_lbl = torch.tensor(reg_lbl, dtype=torch.float32)
         return x, (cls_lbl, reg_lbl)
+
+if __name__ == "__main__":
+
+    data_path = "/home/chris/Chris/placement_ws/src/data/processed_data/data.json"
+    with open(data_path, "r") as file:
+        all_entries = json.load(file)
+    random.shuffle(all_entries)
+
+    N = len(all_entries)
+    train_size = int(0.8 * N)
+    valid_size = int(0.1 * N)
+    test_size  = N - train_size - valid_size
+
+    train_entries = all_entries[:train_size]
+    valid_entries = all_entries[train_size:train_size + valid_size]
+    test_entries  = all_entries[train_size + valid_size:]
+
+    train_dataset = MyStabilityDataset(train_entries)
+
+    import matplotlib.pyplot as plt
+
+    # Assuming train_dataset is already defined as an instance of MyStabilityDataset
+    stability_scores = []
+    for _, labels in train_dataset:
+        # labels is a tuple (feasibility_label, stability_label)
+        stability_scores.append(labels[1].item())  # Convert tensor to Python float
+
+    # Convert to a NumPy array for convenience
+    stability_scores_np = np.array(stability_scores)
+
+    # Remove outliers using the IQR method
+    q1 = np.percentile(stability_scores_np, 25)
+    q3 = np.percentile(stability_scores_np, 75)
+    iqr = q3 - q1
+    lower_bound = q1 - 1.5 * iqr
+    upper_bound = q3 + 1.5 * iqr
+
+    # Filter out scores outside of the bounds
+    filtered_scores = stability_scores_np[(stability_scores_np >= lower_bound) &
+                                        (stability_scores_np <= upper_bound)]
+
+    # Plot a histogram of the filtered stability scores
+    plt.hist(filtered_scores, bins=50, edgecolor='black')
+    plt.xlabel("Stability Score")
+    plt.ylabel("Frequency")
+    plt.title("Distribution of Stability Scores (Outliers Removed)")
+
+    # Set x-axis limits to show only the range of interest
+    plt.xlim(lower_bound, upper_bound)
+    plt.show()

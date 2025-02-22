@@ -18,20 +18,24 @@ if module_path not in sys.path:
 from learning_models.dataset import MyStabilityDataset
 
 # Base directory for saving models and images
-DIR = "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/models/"
+DIR = "/home/chris/Chris/placement_ws/src/data/models"
 
 ###############################################################################
 # 1) MODEL DEFINITION (Two-head network: classification and regression)
 ###############################################################################
 class StabilityNet(nn.Module):
-    def __init__(self, input_dim=21, hidden_dim=128):
+    def __init__(self, input_dim=21, hidden_dim=256):
         super().__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, hidden_dim)
         self.fc4 = nn.Linear(hidden_dim, hidden_dim)
         self.class_head = nn.Linear(hidden_dim, 1)  # Binary classification (logits)
-        self.reg_head = nn.Linear(hidden_dim, 1)     # Regression (stability score)
+        self.reg_head = nn.Sequential(
+            nn.Linear(hidden_dim, 1),
+            nn.Tanh()  # yields [-1, 1]
+        )
+     # Regression (stability score)
         self.relu = nn.ReLU()
 
     def forward(self, x):
@@ -47,6 +51,7 @@ class StabilityNet(nn.Module):
 # 2) LOSS FUNCTIONS
 ###############################################################################
 def combined_loss(pred_cls, label_cls, pred_reg, label_reg):
+    # print(f"At this time, pred_cls: {pred_cls}, label_cls: {label_cls}, pred_reg: {pred_reg}, label_reg: {label_reg}")
     criterion_cls = nn.BCEWithLogitsLoss()
     criterion_reg = nn.MSELoss()
     
@@ -58,7 +63,7 @@ def combined_loss(pred_cls, label_cls, pred_reg, label_reg):
     pred_reg = pred_reg.view(-1)
     label_reg = label_reg.view(-1)
     loss_reg = criterion_reg(pred_reg, label_reg)
-    
+    # print(f"and your loss is: {loss_cls + loss_reg}, loss_cls is: {loss_cls}, loss_reg is: {loss_reg}")
     return loss_cls + loss_reg, loss_cls, loss_reg
 
 ###############################################################################
@@ -69,7 +74,7 @@ def train_one_epoch(model, loader, optimizer, device):
     total_loss = 0.0
     total_cls_loss = 0.0
     total_reg_loss = 0.0
-    for x, (cls_lbl, reg_lbl) in loader:
+    for x, (cls_lbl, reg_lbl) in loader:  
         x = x.float().to(device)
         cls_lbl = cls_lbl.float().to(device)
         reg_lbl = reg_lbl.float().to(device)
@@ -77,6 +82,8 @@ def train_one_epoch(model, loader, optimizer, device):
         optimizer.zero_grad()
         pred_cls, pred_reg = model(x)
         loss, loss_cls, loss_reg = combined_loss(pred_cls, cls_lbl, pred_reg, reg_lbl)
+        # print(f"for one data, loss is: {loss_reg}")
+        # print(f"And corresponding labels are: {pred_reg}, the actual labels are: {reg_lbl}")
         loss.backward()
         optimizer.step()
 
@@ -87,6 +94,8 @@ def train_one_epoch(model, loader, optimizer, device):
     avg_loss = total_loss / len(loader)
     avg_cls_loss = total_cls_loss / len(loader)
     avg_reg_loss = total_reg_loss / len(loader)
+
+    # print(f"Overall for one epoch, loss is: {avg_loss}, loss_cls is: {avg_cls_loss}, loss_reg is: {avg_reg_loss}")
     return avg_loss, avg_cls_loss, avg_reg_loss
 
 def eval_model(model, loader, device):
@@ -119,26 +128,75 @@ def sample_hyperparams():
     batch_size = random.choice([16, 32, 64])
     log_lr = random.uniform(-5, -3)
     learning_rate = 10 ** log_lr
+    optimizer = random.choice(['adam', 'sgd'])
     seed = random.randint(0, 9999)
     scheduler_factor = random.choice([0.5, 0.6, 0.7])
     scheduler_patience = random.randint(2, 6)
-    num_epochs = random.choice([30, 50, 70])
+    num_epochs = random.choice([100, 50, 70])
     params = {
         'batch_size': batch_size,
         'num_epochs': num_epochs,
         'learning_rate': learning_rate,
-        'optimizer': 'adam',
+        'optimizer': optimizer,
         'scheduler_factor': scheduler_factor,
         'scheduler_patience': scheduler_patience,
         'seed': seed,
         # 'hidden_dim': hidden_dim
     }
+
+    # params = {
+    #     'batch_size': 16,
+    #     'num_epochs': 100,
+    #     'learning_rate': 1.1897909925768335e-05,
+    #     'optimizer': 'adam',
+    #     'scheduler_factor': 0.5,
+    #     'scheduler_patience': 3,
+    #     'seed': seed,
+    #     # 'hidden_dim': hidden_dim
+    # }
     return params
+
+def plot_and_save_loss(train_losses, valid_losses, 
+                       title, run_fig_path,  train_label="Train Loss", valid_label="Validation Loss", 
+                       image_file_path=None):
+    """
+    Plots and saves the training and validation losses.
+    
+    Parameters:
+    - train_losses: List of training losses per epoch.
+    - valid_losses: List of validation losses per epoch.
+    - title: Title of the plot.
+    - y_label: Label for the y-axis.
+    - run_fig_path: File path to save the figure in the current run directory.
+    - image_file_path: File path to save the figure in the central images folder.
+    - train_label: Legend label for training loss.
+    - valid_label: Legend label for validation loss.
+    """
+    plt.figure(figsize=(8, 6))
+    plt.plot(train_losses, label=train_label)
+    plt.plot(valid_losses, label=valid_label)
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title(title)
+    plt.legend()
+    plt.grid(True)
+    
+    # Save to the run directory
+    plt.savefig(run_fig_path)
+    print(f"{title} figure saved to {run_fig_path}")
+    
+    # Save to the central images folder
+    if image_file_path is not None:
+        plt.savefig(image_file_path)
+        print(f"Plot saved to {image_file_path}")
+    
+    # Close the plot to avoid overlapping figures in subsequent calls
+    plt.close()
 
 ###############################################################################
 # 4) MAIN TRAINING FUNCTION WITH W&B LOGGING AND SAVING HYPERPARAMETERS & PLOTS
 ###############################################################################
-def main(params):
+def main(params, data_folder):
     # Initialize W&B run
     run = wandb.init(project="stability-regression",
                      config=params,
@@ -163,21 +221,22 @@ def main(params):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}, seed={seed}")
 
-    # Load data & split
-    file_path = "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json"
-    with open(file_path, "r") as file:
-        all_entries = json.load(file)
-    random.shuffle(all_entries)
+    # Load data
+    train_path = data_folder + "/train_data.json"
+    valid_path = data_folder + "/valid_data.json"
+    test_path = data_folder + "/test_data.json"
 
-    N = len(all_entries)
-    train_size = int(0.8 * N)
-    valid_size = int(0.1 * N)
-    test_size  = N - train_size - valid_size
+    with open(train_path, "r") as file:
+        train_entries = json.load(file)
+    with open(valid_path, "r") as file:
+        valid_entries = json.load(file)
+    with open(test_path, "r") as file:
+        test_entries = json.load(file)
+    # print(f"Train: {len(train_entries)}, Valid: {len(valid_entries)}, Test: {len(test_entries)}")
 
-    train_entries = all_entries[:train_size]
-    valid_entries = all_entries[train_size:train_size + valid_size]
-    test_entries  = all_entries[train_size + valid_size:]
+    random.shuffle(train_entries)
 
+    
     train_dataset = MyStabilityDataset(train_entries)
     valid_dataset = MyStabilityDataset(valid_entries)
     test_dataset  = MyStabilityDataset(test_entries)
@@ -204,12 +263,21 @@ def main(params):
 
     # Training loop
     train_losses, valid_losses = [], []
+    train_cls_losses, valid_cls_losses = [], []
+    train_reg_losses, valid_reg_losses = [], []
+
     for epoch in range(params['num_epochs']):
         train_loss, train_cls_loss, train_reg_loss = train_one_epoch(model, train_loader, optimizer, device)
         val_loss, val_cls_loss, val_reg_loss = eval_model(model, valid_loader, device)
 
         train_losses.append(train_loss)
         valid_losses.append(val_loss)
+
+        train_cls_losses.append(train_cls_loss)
+        valid_cls_losses.append(val_cls_loss)
+        
+        train_reg_losses.append(train_reg_loss)
+        valid_reg_losses.append(val_reg_loss)
 
         print(f"Epoch {epoch+1}/{params['num_epochs']}")
         print(f"  Train Loss: {train_loss:.4f} (Cls: {train_cls_loss:.4f}, Reg: {train_reg_loss:.4f})")
@@ -235,27 +303,21 @@ def main(params):
     model_path = os.path.join(run_dir, "stability_net.pth")
     save_model(model, model_path)
 
-    # Plot training vs validation loss
-    plt.figure(figsize=(8, 6))
-    plt.plot(train_losses, label='Train Loss')
-    plt.plot(valid_losses, label='Validation Loss')
-    plt.legend()
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title("Train vs Val Loss")
-    plt.grid(True)
-    
-    # Save plot inside run_dir
-    fig_path = os.path.join(run_dir, "train_val_loss.png")
-    plt.savefig(fig_path)
-    print(f"Train/Val loss figure saved to {fig_path}")
-    
-    # Also save plot in a central images folder
     images_dir = os.path.join(DIR, "images")
     os.makedirs(images_dir, exist_ok=True)
-    image_file_path = os.path.join(images_dir, f"seed_{params['seed']}.png")
-    plt.savefig(image_file_path)
-    print(f"Plot saved to {image_file_path}")
+
+    # Overall Loss Plot
+    overall_run_fig = os.path.join(run_dir, "train_val_loss.png")
+    overall_image_fig = os.path.join(images_dir, f"seed_{params['seed']}.png")
+    plot_and_save_loss(train_losses, valid_losses, "Train vs Val Loss", overall_run_fig, image_file_path=overall_image_fig)
+
+    # Classification Loss Plot
+    cls_run_fig = os.path.join(run_dir, "cls_loss.png")
+    plot_and_save_loss(train_cls_losses, valid_cls_losses, "Train vs Val Classification Loss", cls_run_fig, "Train Classification Loss", "Validation Classification Loss")
+
+    # Regression Loss Plot
+    reg_run_fig = os.path.join(run_dir, "reg_loss.png")
+    plot_and_save_loss(train_reg_losses, valid_reg_losses, "Train vs Val Regression Loss", reg_run_fig, "Train Regression Loss", "Validation Regression Loss")
 
     wandb.finish()
 
@@ -263,8 +325,8 @@ def main(params):
 # 5) ENTRY POINT
 ###############################################################################
 if __name__ == "__main__":
-    total_experiment = 100
+    total_experiment = 10
     for i in range(total_experiment):
         params = sample_hyperparams()
         print(f"\n=== Experiment {i+1}/{total_experiment} with {params} ===\n")
-        main(params)
+        main(params, "/home/chris/Chris/placement_ws/src/data/processed_data/data_splits")

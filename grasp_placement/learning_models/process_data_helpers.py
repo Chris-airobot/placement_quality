@@ -10,6 +10,64 @@ from scipy.spatial.transform import Rotation as R
 import tf_transformations as tft 
 import matplotlib.pyplot as plt
 import math
+import random
+from dataset import MyStabilityDataset
+
+def data_split(data_path="/home/chris/Chris/placement_ws/src/data/processed_data/data.json"):
+    # Define paths
+    output_dir = "/home/chris/Chris/placement_ws/src/data/processed_data/data_splits"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Load the full dataset
+    with open(data_path, "r") as file:
+        all_entries = json.load(file)
+
+    # Shuffle the dataset to randomize the entries
+    random.shuffle(all_entries)
+
+    # Compute split sizes
+    N = len(all_entries)
+    train_size = int(0.8 * N)
+    valid_size = int(0.1 * N)
+    # Ensure all entries are used for test set
+    test_size = N - train_size - valid_size
+
+    # Split the data
+    train_entries = all_entries[:train_size]
+    valid_entries = all_entries[train_size:train_size + valid_size]
+    test_entries = all_entries[train_size + valid_size:]
+
+    # Save each split to a separate file
+    with open(os.path.join(output_dir, "train_data.json"), "w") as f:
+        json.dump(train_entries, f, indent=4)
+
+    with open(os.path.join(output_dir, "valid_data.json"), "w") as f:
+        json.dump(valid_entries, f, indent=4)
+
+    with open(os.path.join(output_dir, "test_data.json"), "w") as f:
+        json.dump(test_entries, f, indent=4)
+
+    print(f"Data split completed:\n - Train/Validation/Test: {len(train_entries)} / {len(valid_entries)} / {len(test_entries)}")
+
+
+
+
+
+def merge_json_files(file1, file2, output_file):
+    """
+    Merge two JSON files into a single file.
+    """
+    with open(file1, 'r') as f1:
+        data1 = json.load(f1)
+
+    with open(file2, 'r') as f2:
+        data2 = json.load(f2)
+
+    combined_data = data1 + data2  # Directly concatenates the two lists
+
+    with open(output_file, 'w') as fout:
+        json.dump(combined_data, fout, indent=4)
+
 
 def count_files_in_subfolders(directory):
     """
@@ -65,8 +123,7 @@ def rough_analysis(file_path):
     print("Number of trajectories with unsuccessful grasp:", unsuccessful_count)
 
 
-def data_analysis():
-    file_path = "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json"
+def data_analysis(file_path):
     with open(file_path, "r") as file:
         all_entries = json.load(file)
 
@@ -100,6 +157,46 @@ def data_analysis():
 
 
     print(f"values are:pose_diffs: {pos_diff_95p}, ori_diffs: {ori_diff_95p}, shift_poss: {shift_pos_95p}, shift_oris: {shift_ori_95p}, contacts: {contacts_95p}")
+    output_file = "/home/chris/Chris/placement_ws/src/data/processed_data/parameters.json"
+    combined_data = {
+        "position_difference": pos_diff_95p,
+        "orientation_difference": ori_diff_95p,
+        "shift_position": shift_pos_95p,
+        "shift_orientation": shift_ori_95p,
+        "contacts": contacts_95p,
+        "max_score": None,
+        "min_score": None
+    }
+
+    with open(output_file, 'w') as fout:
+        json.dump(combined_data, fout, indent=4)
+
+    
+    whole_dataset = MyStabilityDataset(all_entries)
+
+    stability_scores = []
+    for _, labels in whole_dataset:
+        # labels is a tuple (feasibility_label, stability_label)
+        stability_scores.append(labels[1].item())  # Convert tensor to Python float
+    
+    stability_scores = np.array(stability_scores)
+    q1 = np.percentile(stability_scores, 25)  # First quartile (Q1)
+    q3 = np.percentile(stability_scores, 75)  # Third quartile (Q3)
+    iqr = q3 - q1  # Interquartile range
+    lower_bound = q1 - 1.5 * iqr  # Lower bound
+    upper_bound = q3 + 1.5 * iqr  # Upper bound
+    
+    # print(f"before filtering: {len(stability_scores)}")
+    updated = [x for x in stability_scores if lower_bound <= x <= upper_bound]
+    # print(f"after filtering: {len(updated)}")
+
+    combined_data["max_score"] = max(updated)
+    combined_data["min_score"] = min(updated)
+
+    with open(output_file, 'w') as fout:
+        json.dump(combined_data, fout, indent=4)
+
+
     # Create a figure with 2 rows x 3 columns (6 subplots)
     fig, axes = plt.subplots(2, 3, figsize=(15, 8))
     axes = axes.ravel()  # Flatten the axes array for easier indexing
@@ -110,8 +207,8 @@ def data_analysis():
     axes[0].hist(pos_diffs_f, bins=20, color='skyblue', edgecolor='k')
     axes[0].axhline(pos_diff_95p, color='red', linestyle='--', label='95th Percentile')
     axes[0].set_title("Position Difference (Filtered)")
-    axes[0].set_xlabel("Sample Index")
-    axes[0].set_ylabel("pos_diff (meters)")
+    axes[0].set_xlabel("Pos_diff (meters)")
+    axes[0].set_ylabel("Frequency")
     axes[0].legend()
 
     # Plot 2: Orientation Difference (Filtered)
@@ -119,8 +216,8 @@ def data_analysis():
     axes[1].hist(ori_diffs_f, bins=20, color='skyblue', edgecolor='k')
     axes[1].axhline(ori_diff_95p, color='red', linestyle='--', label='95th Percentile')
     axes[1].set_title("Orientation Difference (Filtered)")
-    axes[1].set_xlabel("Sample Index")
-    axes[1].set_ylabel("ori_diff (radians)")
+    axes[1].set_xlabel("Ori_diff (radians)")
+    axes[1].set_ylabel("Frequency")
     axes[1].legend()
 
     # Plot 3: Shift Position (Filtered)
@@ -128,8 +225,8 @@ def data_analysis():
     axes[2].hist(shift_poss_f, bins=20, color='skyblue', edgecolor='k')
     axes[2].axhline(shift_pos_95p, color='red', linestyle='--', label='95th Percentile')
     axes[2].set_title("Shift Position (Filtered)")
-    axes[2].set_xlabel("Sample Index")
-    axes[2].set_ylabel("shift_pos (meters)")
+    axes[2].set_xlabel("Shift_pos (meters)")
+    axes[2].set_ylabel("Frequency")
     axes[2].legend()
 
     # Plot 4: Shift Orientation (Filtered)
@@ -137,8 +234,8 @@ def data_analysis():
     axes[3].hist(shift_oris_f, bins=20, color='skyblue', edgecolor='k')
     axes[3].axhline(shift_ori_95p, color='red', linestyle='--', label='95th Percentile')
     axes[3].set_title("Shift Orientation (Filtered)")
-    axes[3].set_xlabel("Sample Index")
-    axes[3].set_ylabel("shift_ori (radians)")
+    axes[3].set_xlabel("Shift_ori (radians)")
+    axes[3].set_ylabel("Frequency")
     axes[3].legend()
 
     # Plot 5: Contacts (Filtered)
@@ -147,8 +244,8 @@ def data_analysis():
 
     axes[4].axhline(contacts_95p, color='red', linestyle='--', label='95th Percentile')
     axes[4].set_title("Contacts (Filtered)")
-    axes[4].set_xlabel("Sample Index")
-    axes[4].set_ylabel("Contacts")
+    axes[4].set_xlabel("Contacts")
+    axes[4].set_ylabel("Frequency")
     axes[4].legend()
 
     # Hide the 6th subplot (or use it for a summary)
@@ -156,6 +253,8 @@ def data_analysis():
 
     plt.tight_layout()
     plt.show()
+
+    
 
 
 
@@ -615,9 +714,10 @@ def quaternion_distance(q1_xyzw, q2_xyzw):
 
 
 if __name__ == "__main__":
-    process_folder("/home/chris/Chris/placement_ws/src/random_data", "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/data_intergration.json")
+    # process_folder("/home/chris/Chris/placement_ws/src/random_data", "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/data_intergration.json")
     # x = process_file("/home/chris/Chris/placement_ws/src/random_data/run_20250215_172420/Grasping_3/Placement_0_True.json")
     # reformat_json("/home/chris/Chris/placement_ws/src/random_data/Grasping_159/Placement_68_False.json")
-    # rough_analysis("/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
+    # rough_analysis("/home/chris/Chris/placement_ws/src/data/processed_data/data.json")
     # count_files_in_subfolders("/home/chris/Chris/placement_ws/src/random_data")
-    # data_analysis()
+    # data_analysis("/home/chris/Chris/placement_ws/src/data/processed_data/data.json")
+    data_split()
