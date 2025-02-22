@@ -12,19 +12,17 @@ from controllers.pick_place_task_with_camera import PickPlaceCamera
 from controllers.data_collection_controller import DataCollectionController
 from omni.isaac.core.utils.types import ArticulationAction
 from helper import *
+from omni.isaac.sensor import ContactSensor
 from utilies.camera_utility import *
 from omni.isaac.dynamic_control import _dynamic_control
 from carb import Float3
-from omni.physx import get_physx_interface
+import random
+from functools import partial
+from typing import List
 # Enable ROS2 bridge extension
 extensions.enable_extension("omni.isaac.ros2_bridge")
 simulation_app.update()
 
-# def physics_update(dt: float):
-#     physxIFace = get_physx_interface()
-#     physxIFace.apply_force_at_pos(prims[-1], Float3([0,0,1000]),Float3([0,0,0]))
-#     physxIFace.apply_force_at_pos(prims[-1], Float3([1000,0,0]),Float3([0,100,0]))
-#     physxIFace.apply_force_at_pos(prims[-1], Float3([-1000,0,0]),Float3([0,-100,0]))
 
 my_world: World = World(stage_units_in_meters=1.0)
 my_task = PickPlaceCamera(set_camera=False)
@@ -38,14 +36,86 @@ my_controller = DataCollectionController(
 articulation_controller = my_franka.get_articulation_controller()
 # Acquire the dynamic control interface
 dc = _dynamic_control.acquire_dynamic_control_interface()
-robot_prim_path = "/World/Franka"    
-robot_art = dc.get_articulation(robot_prim_path)
 
-# 2) Find the end-effector body within the articulation
-ee_body_name = "panda_hand"  # <-- The link name in your URDF / USD
-ee_body_handle = dc.find_articulation_body(robot_art, ee_body_name)
-if ee_body_handle == _dynamic_control.INVALID_HANDLE:
-    raise RuntimeError(f"Could not find end-effector body: {ee_body_name}")
+pedestrian1_handle = dc.get_rigid_body("/World/Cube")
+
+
+panda_prim_names = [
+            "Franka/panda_link0",
+            "Franka/panda_link1",
+            "Franka/panda_link2",
+            "Franka/panda_link3",
+            "Franka/panda_link4",
+            "Franka/panda_link5",
+            "Franka/panda_link6",
+            "Franka/panda_link7",
+            "Franka/panda_link8",
+            "Franka/panda_hand",
+            "Cube"
+        ]
+
+contact_sensors = []
+for i, link_name in enumerate(panda_prim_names):
+    sensor: ContactSensor = my_world.scene.add(
+        ContactSensor(
+            prim_path=f"/World/{link_name}/contact_sensor",
+            name=f"contact_sensor_{i}",
+            min_threshold=0.0,
+            max_threshold=1e7,
+            radius=0.1,
+        )
+    )
+    # Use raw contact data if desired
+    sensor.add_raw_contact_data_to_frame()
+    contact_sensors.append(sensor)
+
+my_world.reset()
+
+def sensor_cb(dt, sensors: List[ContactSensor]):
+    """Physics-step callback: checks all sensors, sets self.contact accordingly."""
+    any_contact = False  # track if at least one sensor had contact
+    cube_contacted = False
+    cube_grasped = None
+
+    for sensor in sensors:
+        frame_data = sensor.get_current_frame()
+        if frame_data["in_contact"]:
+            # We have contact! Extract the bodies, force, etc.
+            for c in frame_data["contacts"]:
+                body0 = c["body0"]
+                body1 = c["body1"]
+                if "panda" in body0 + body1 and "Cube" in body0 + body1:
+                    # print("Cube in the ground")
+                    cube_grasped = f"{body0} | {body1} | Force: {frame_data['force']:.3f} | #Contacts: {frame_data['number_of_contacts']}"
+
+                if "GroundPlane" in body0 + body1 and "Cube" in body0 + body1:
+                    # print("Cube in the ground")
+                    cube_contacted = True
+                elif ("GroundPlane" in body0) or ("GroundPlane" in body1):
+                    print("Robot hits the ground, and it will be recorded")
+                    any_contact = True
+                    contact = f"{body0} | {body1} | Force: {frame_data['force']:.3f} | #Contacts: {frame_data['number_of_contacts']}"
+                    # self.contact = f"{body0} | {body1} | Force: {frame_data['force']:.3f} | #Contacts: {frame_data['number_of_contacts']}"
+    # print(f"cube is in the ground: {self.cube_contacted}, time is {self.world.current_time_step_index}, stage is {self.controller.get_current_event()}")
+
+    # If, after checking all sensors, none had contact, reset self.contact to None
+    if not any_contact:
+        contact = None
+
+# Contact report for links
+my_world.add_physics_callback("contact_sensor_callback", partial(sensor_cb, sensors=contact_sensors))
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -66,10 +136,12 @@ while simulation_app.is_running():
             current_joint_positions=observations[task_params["robot_name"]["value"]]["joint_positions"],
             end_effector_offset=np.array([0, 0.005, 0]),
         )
-        force_vec = Float3(50, 50, 50)
-        # Apply the force at the body's center of mass (zero offset).
-        position_vec = Float3(0.0, 0.0, 0.0)
-        dc.apply_body_force(ee_body_handle, force_vec, position_vec, False)
+        possible_forces = [Float3(5, 0, 0), Float3(0, 5, 0), Float3(0, 0, 5)]
+        force_vec = random.choice(possible_forces)
+
+        if my_controller.get_current_event() > 4 and my_controller.get_current_event() < 7:
+            position_vec = Float3(np.random.uniform(0, 5, 3))
+            dc.apply_body_force(pedestrian1_handle, force_vec, position_vec, False)
 
         articulation_controller.apply_action(actions)
 simulation_app.close()
