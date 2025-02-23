@@ -110,9 +110,10 @@ class MyStabilityDataset(Dataset):
             self.data_params["shift_orientation"], self.data_params["contacts"],
             params=params
         )
-        raw_clamped = max(min(stability_label, self.data_params["max_score"]), self.data_params["min_score"])
 
-        stability_label = to_tanh_range(raw_clamped, self.data_params["min_score"], self.data_params["max_score"])
+        if self.data_params["max_score"] is not None:
+            raw_clamped = max(min(stability_label, self.data_params["max_score"]), self.data_params["min_score"])
+            stability_label = to_tanh_range(raw_clamped, self.data_params["min_score"], self.data_params["max_score"])
         
         return (feasibility_label, stability_label)
 

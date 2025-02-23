@@ -9,11 +9,71 @@ import struct
 from network_client import GraspClient
 from transforms3d.quaternions import quat2mat, mat2quat, qmult, qinverse
 from transforms3d.axangles import axangle2mat
+from transforms3d.euler import euler2quat
 from tf2_msgs.msg import TFMessage
 from sensor_msgs.msg import PointCloud2
 from geometry_msgs.msg import TransformStamped
+import random
 
-DIR_PATH = "/home/chris/Chris/placement_ws/src/data/"
+
+def convert_wxyz_to_xyzw(q_wxyz):
+    """Convert a quaternion from [w, x, y, z] format to [x, y, z, w] format."""
+    return [q_wxyz[1], q_wxyz[2], q_wxyz[3], q_wxyz[0]]
+
+
+def cube_orientation_to_ee_orientation(q_cube_init, q_ee_init, q_cube_target):
+    """
+    Compute the target end-effector orientation in quaternion form 
+    to preserve the same relative orientation (offset).
+    
+    Parameters:
+    -----------
+    q_cube_init  : (4,) array_like
+        Quaternion (x, y, z, w) for the initial cube orientation (world frame).
+    q_ee_init    : (4,) array_like
+        Quaternion for the initial end-effector orientation.
+    q_cube_target: (4,) array_like
+        Quaternion for the target cube orientation.
+        
+    Returns:
+    --------
+    q_ee_target : (4,) np.ndarray
+        Quaternion (x, y, z, w) for the target end-effector orientation.
+    """
+
+
+    R_cube_init  = R.from_quat(convert_wxyz_to_xyzw(q_cube_init))
+    R_ee_init    = R.from_quat(convert_wxyz_to_xyzw(q_ee_init))
+    R_cube_target= R.from_quat(convert_wxyz_to_xyzw(q_cube_target))
+    
+    # Offset is the rotation taking the cube frame to the ee frame
+    # offset = R_cube_init⁻¹ * R_ee_init
+    offset = R_cube_init.inv() * R_ee_init
+    
+    # Target end-effector orientation = R_cube_target * offset
+    R_ee_target = R_cube_target * offset
+    
+    return R_ee_target.as_quat()
+
+
+def cube_feasible_orientation():
+    random_orientations = {
+        "top_surface":      np.array([   0.0,  0.0,   np.random.uniform(-180, 180)]),     # top face up  z diff
+        "bottom_surface":   np.array([-180.0,  0.0,   np.random.uniform(-180, 180)]),     # bottom face up z diff
+        "left_surface":     np.array([  90.0,  np.random.uniform(-180, 180),   0.0]),     # left face up y diff
+        "right_surface":    np.array([ -90.0,  np.random.uniform(-180, 180),   0.0]),     # right face up y diff
+        "front_surface":    np.array([  90.0,  np.random.uniform(-180, 180),  90.0]),     # front face up y diff
+        "back_surface":     np.array([   0.0,  np.random.uniform(-180, 180), -90.0]),     # back face up y diff
+    }
+
+    # Randomly select one of the keys
+    random_surface = random.choice(list(random_orientations.keys()))
+
+    # Get the corresponding orientation
+    random_orientation = random_orientations[random_surface]
+
+
+    return euler2quat(random_orientation)
 
 def surface_detection(rpy):
     local_normals = {
@@ -266,19 +326,19 @@ def filter_points_in_bounding_box(points, box_center, box_size):
     return points[~inside_mask]
 
 
-def save_pointcloud(msg: PointCloud2, pcd_counter: int) -> str:
+def save_pointcloud(msg: PointCloud2, root) -> str:
     """
     Saves a ROS PointCloud2 (with x,y,z,[rgb]) to an ASCII PCD file.
     The file includes a voxel-based downsampling step to reduce size.
 
-    The output path is:  DIR_PATH/Pcd_{pcd_counter}/pointcloud.pcd
+    The output path is:  root/Pcd_{pcd_counter}/pointcloud.pcd
     """
     # 1) Create the directory
-    dir_name = os.path.join(DIR_PATH, f"Pcd_{pcd_counter}")
-    os.makedirs(dir_name, exist_ok=True)
+    # dir_name = os.path.join(root, f"Pcd_{pcd_counter}")
+    # os.makedirs(dir_name, exist_ok=True)
 
     # 2) Fixed filename: "pointcloud.pcd"
-    file_path = os.path.join(dir_name, "pointcloud.pcd")
+    file_path = os.path.join(root, "pointcloud.pcd")
 
     # 3) Identify offsets for x,y,z,rgb
     offset_x = offset_y = offset_z = None
@@ -573,9 +633,9 @@ def get_world_translation(prim):
 
 
 
-def obtain_grasps(file_path):
+def obtain_grasps(pcd_path):
     node = GraspClient()
-    raw_grasps = node.request_grasps(file_path)
+    raw_grasps = node.request_grasps(pcd_path)
 
     grasps = []
     for key in sorted(raw_grasps.keys(), key=int):
@@ -586,8 +646,6 @@ def obtain_grasps(file_path):
         grasps.append([position, orientation])
 
     return grasps
-
-
 
 
 

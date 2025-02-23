@@ -196,6 +196,7 @@ def data_analysis(file_path):
     with open(output_file, 'w') as fout:
         json.dump(combined_data, fout, indent=4)
 
+    data_split()
 
     # Create a figure with 2 rows x 3 columns (6 subplots)
     fig, axes = plt.subplots(2, 3, figsize=(15, 8))
@@ -255,17 +256,9 @@ def data_analysis(file_path):
     plt.show()
 
     
-
-
-
-
-
 def convert_wxyz_to_xyzw(q_wxyz):
     """Convert a quaternion from [w, x, y, z] format to [x, y, z, w] format."""
     return [q_wxyz[1], q_wxyz[2], q_wxyz[3], q_wxyz[0]]
-
-
-
 
 
 def get_transform_to_world(tf_list, target_frame):
@@ -719,5 +712,5 @@ if __name__ == "__main__":
     # reformat_json("/home/chris/Chris/placement_ws/src/random_data/Grasping_159/Placement_68_False.json")
     # rough_analysis("/home/chris/Chris/placement_ws/src/data/processed_data/data.json")
     # count_files_in_subfolders("/home/chris/Chris/placement_ws/src/random_data")
-    # data_analysis("/home/chris/Chris/placement_ws/src/data/processed_data/data.json")
-    data_split()
+    data_analysis("/home/chris/Chris/placement_ws/src/data/processed_data/data.json")
+    # data_split()

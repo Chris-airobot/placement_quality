@@ -125,14 +125,14 @@ def save_model(model, path='stability_net.pth'):
 
 def sample_hyperparams():
     # hidden_dim = 2 ** random.randint(6, 9)  # e.g., 64 to 512
-    batch_size = random.choice([16, 32, 64])
+    batch_size = random.choice([16, 32, 64, 128])
     log_lr = random.uniform(-5, -3)
     learning_rate = 10 ** log_lr
     optimizer = random.choice(['adam', 'sgd'])
-    seed = random.randint(0, 9999)
+    seed = random.randint(0, 99999999)
     scheduler_factor = random.choice([0.5, 0.6, 0.7])
     scheduler_patience = random.randint(2, 6)
-    num_epochs = random.choice([100, 50, 70])
+    num_epochs = random.choice([100, 90, 70, 120])
     params = {
         'batch_size': batch_size,
         'num_epochs': num_epochs,
@@ -325,7 +325,7 @@ def main(params, data_folder):
 # 5) ENTRY POINT
 ###############################################################################
 if __name__ == "__main__":
-    total_experiment = 10
+    total_experiment = 200
     for i in range(total_experiment):
         params = sample_hyperparams()
         print(f"\n=== Experiment {i+1}/{total_experiment} with {params} ===\n")

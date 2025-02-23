@@ -28,15 +28,15 @@ def load_run_hyperparams(model_path):
         return hyperparams
     return {}
 
-def load_model(model_path, input_dim):
+def load_model(model_path, input_dim=21):
     """
     Load a saved model using hyperparameters from hyperparams.json.
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    hyperparams = load_run_hyperparams(model_path)
-    hidden_dim = hyperparams.get("hidden_dim", 128)
+    # hyperparams = load_run_hyperparams(model_path)
+    # hidden_dim = hyperparams.get("hidden_dim", 256)
     # Create a new instance of the model with the saved hyperparameters.
-    model = StabilityNet(input_dim, hidden_dim=hidden_dim).to(device)
+    model = StabilityNet(input_dim).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
     return model
@@ -82,7 +82,7 @@ def model_comparisons():
     and compute both the RMSE for regression and the classification accuracy for each model.
     Then, plot the RMSE comparisons.
     """
-    models_root = "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/models"
+    models_root = "/home/chris/Chris/placement_ws/src/data/models"
     input_dim = 21
     results = {}  # maps seed -> (rmse, classification_accuracy)
 
@@ -101,7 +101,7 @@ def model_comparisons():
                 print(f"Loaded model from: {model_path}")
 
                 # Path to your inference JSON file.
-                test_file = "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data_laptop.json"
+                test_file = "/home/chris/Chris/placement_ws/src/data/processed_data/data_splits/test_data.json"
                 with open(test_file, "r") as f:
                     data = json.load(f)
                 
@@ -174,7 +174,7 @@ def model_comparisons():
     else:
         print("No model results to plot.")
 
-def single_model_test(model_seed):
+def single_model(model_seed):
     """
     Find and load the model with the given seed.
     """
@@ -204,16 +204,13 @@ def single_model_test(model_seed):
         print(f"Failed to load model from {target_model_path}: {e}")
         return None
 
-if __name__ == "__main__":
-    # Uncomment one of the following to run comparisons or test a single model.
-    # model_comparisons()
-    
-    # Test a single model with a specific seed (change the seed value as needed):
-    model = single_model_test(3005)
-    if model is None:
-        exit()
 
-    test_file = "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data_laptop.json"
+def model_test(seed):
+    # Test a single model with a specific seed (change the seed value as needed):
+    model = single_model(seed)
+    
+    test_file = "/home/chris/Chris/placement_ws/src/data/processed_data/data_splits/test_data.json"
+
     with open(test_file, "r") as f:
         data = json.load(f)
     
@@ -272,3 +269,15 @@ if __name__ == "__main__":
     plt.ylabel("Frequency")
     plt.title("Histogram of Regression Prediction Errors")
     plt.show()
+
+
+
+
+
+if __name__ == "__main__":
+    # Uncomment one of the following to run comparisons or test a single model.
+    # model_comparisons()
+    seed = 4208
+    model_test(seed)
+    
+    
