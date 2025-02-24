@@ -10,12 +10,12 @@ class GraspClient(Node):
     def __init__(self):
         super().__init__('grasp_client')
  
-    def request_grasps(self, file_path="/home/chris/Desktop/krylon.pcd"):
+    def request_grasps(self, port=12346, file_path="/home/chris/Desktop/krylon.pcd"):
         # The IP/hostname should match how you can access the container
         # For Docker on the same machine, you might use 'localhost' + port-mapping
         # Or you might have a specific container IP address (e.g. 172.17.x.x)
         HOST = '127.0.0.1'  # or container IP / hostname
-        PORT = 12345
+        PORT = port
  
         # Construct some sample point cloud info (JSON-serializable dict)
         pointcloud_data = self.format_pcd(file_path)

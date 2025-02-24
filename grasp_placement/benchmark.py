@@ -17,7 +17,7 @@ import tf2_ros
 import re
 
 from omni.isaac.core import World
-from omni.isaac.core.utils import extensions
+from omni.isaac.core.utils import extensions, prims
 from omni.isaac.core.scenes import Scene
 from omni.isaac.franka import Franka
 from controllers.pick_place_task_with_camera import PickPlaceCamera
@@ -25,17 +25,16 @@ from controllers.data_collection_controller import DataCollectionController
 from omni.isaac.core.utils.types import ArticulationAction
 from helper import *
 from utilies.camera_utility import *
-from omni.isaac.core.utils.rotations import euler_angles_to_quat
+from omni.isaac.core.utils.rotations import euler_angles_to_quat, quat_to_euler_angles
 from omni.isaac.sensor import ContactSensor
 from functools import partial
 from typing import List
 import datetime
 from learning_models.model_use import load_model, predict_single_sample
 from learning_models.model_train import StabilityNet, eval_model
-from learning_models.dataset import MyStabilityDataset
-from torch.utils.data import DataLoader
 import torch
 from rclpy.executors import SingleThreadedExecutor
+
 # Enable ROS2 bridge extension
 extensions.enable_extension("omni.isaac.ros2_bridge")
 simulation_app.update()
@@ -103,6 +102,7 @@ class StartSimulation:
 
         self.current_grasp_pose = None # Should be in a format of [np.array[x,y,z], np.array[x,y,z]]
         self.grasp_poses = []
+        self.sorted_grasp_poses = []
         
         self.data_logger = None
 
@@ -156,16 +156,16 @@ class StartSimulation:
         self.world.reset()
 
         panda_prim_names = [
-            "panda_link0",
-            "panda_link1",
-            "panda_link2",
-            "panda_link3",
-            "panda_link4",
-            "panda_link5",
-            "panda_link6",
-            "panda_link7",
-            "panda_link8",
-            "panda_hand",
+            "Franka/panda_link0",
+            "Franka/panda_link1",
+            "Franka/panda_link2",
+            "Franka/panda_link3",
+            "Franka/panda_link4",
+            "Franka/panda_link5",
+            "Franka/panda_link6",
+            "Franka/panda_link7",
+            "Franka/panda_link8",
+            "Franka/panda_hand",
             "Cube"
         ]
 
@@ -189,6 +189,12 @@ class StartSimulation:
         # Contact report for links
         self.world.add_physics_callback("contact_sensor_callback", partial(self.on_sensor_contact_report, sensors=self.contact_sensors))
 
+        self.task.set_params(
+            cube_position=np.array([x, y, 0]),
+            target_position=np.array([p, q, 0.075]),
+            cube_orientation=cube_feasible_orientation(),
+        )
+
         self.task_params = self.task.get_params()
         self.robot: Franka =  self.world.scene.get_object(self.task_params["robot_name"]["value"])
         
@@ -200,18 +206,22 @@ class StartSimulation:
         )
         self.articulation_controller = self.robot.get_articulation_controller() 
 
-        self.task.set_params(
-            cube_position=np.array([x, y, 0]),
-            target_position=np.array([p, q, 0.075])
-        )
+        
 
         self.cube_target_orientation = cube_feasible_orientation()
 
-        self.sample["inputs"]["cube_target_position"] = self.task_params["target_position"]["value"]
-        self.sample["inputs"]["cube_initial_position"] = self.task_params["cube_position"]["value"]
-        self.sample["inputs"]["cube_initial_orientation"] = self.task_params["cube_orientation"]["value"]
-        self.sample["inputs"]["cube_target_orientation"] = self.cube_target_orientation
+        self.sample["inputs"]["cube_target_position"] = self.task_params["target_position"]["value"].tolist()
+        self.sample["inputs"]["cube_initial_position"] = self.task_params["cube_position"]["value"].tolist()
+        self.sample["inputs"]["cube_initial_orientation"] = self.task_params["cube_orientation"]["value"].tolist()
+        self.sample["inputs"]["cube_target_orientation"] = self.cube_target_orientation.tolist()
         
+
+        
+        prims.create_prim(prim_path="/World/VisualCube", prim_type="Cube", 
+                          position=self.sample["inputs"]["cube_target_position"],
+                          orientation=self.cube_target_orientation,
+                          scale=[0.05, 0.05, 0.05],)
+
 
         tf_graph_generation()
         start_camera(self.task._camera, True)
@@ -345,13 +355,19 @@ class StartSimulation:
                 "inputs": sample["inputs"],
                 "scores": [pred_cls, pred_reg],
             }
-    
-        with open(file_path, 'w') as file:
-            json.dump(data, file, indent=4)
             
-        print(f"Saved {len(data)} grasps to {file_path}")
+        sorted_grasps = sorted(
+            data.values(), 
+            key=lambda x: x["scores"][1], 
+            reverse=True  # Higher scores first
+        )
 
-        return data
+        with open(file_path, 'w') as file:
+            json.dump(sorted_grasps, file, indent=4)
+            
+        print(f"Saved {len(sorted_grasps)} grasps to {file_path}")
+
+        return sorted_grasps
         
         
 
@@ -396,9 +412,10 @@ def main(model_path):
     env = StartSimulation(model_path)
     env.start()
 
-    reset_needed = False           # Used when grasp is done 
+    reset_needed = True            # Used when grasp is done 
     start_logging = True           # Used for start logging
     recorded = False               # Used to check if the data has been recorded 
+    pipeline = True                # Used to do the pipeline testing
 
     while simulation_app.is_running():
         try:
@@ -407,7 +424,10 @@ def main(model_path):
             print("Something wrong with hitting the floor in step")
             env.reset()
             env.grasp_counter += 1
-            continue
+            if not pipeline:
+                continue
+            else:
+                break
         # 2) Spin ROS for a short time so callbacks are processed
         executor.spin_once(timeout_sec=0.01)
 
@@ -423,15 +443,18 @@ def main(model_path):
                 start_logging = True
                 recorded = False
 
-                if env.grasp_poses: # There are saved existing poses 
+                if env.grasp_poses and not pipeline: # There are saved existing poses and I want to test all the poses rather than one only
                     env.current_grasp_pose = env.grasp_poses.pop(0)
                     env.grasp_counter += 1
                 else:
                     transformed_pcd = transform_pointcloud_to_frame(tf_node.latest_pcd, tf_node.buffer, 'panda_link0')
                     saved_path = save_pointcloud(transformed_pcd, env.folder_path)
-                    env.grasp_poses = obtain_grasps(saved_path)
-                    env.save_grasps()
-                    env.current_grasp_pose = env.grasp_poses.pop(0)
+                    env.grasp_poses = obtain_grasps(saved_path, 12346)
+                    data = env.save_grasps()
+                    env.sorted_grasp_poses = [ [grasp["inputs"]["grasp_position"], 
+                                                grasp["inputs"]["grasp_orientation"]] for grasp in data]
+                     
+                    env.current_grasp_pose = env.sorted_grasp_poses.pop(0)
                     env.grasp_counter = 1
                 
                 env.ee_target_orientation = cube_orientation_to_ee_orientation(env.sample["inputs"]["cube_initial_orientation"],
@@ -448,13 +471,16 @@ def main(model_path):
                     print("Something wrong with hitting the floor in observation")
                     env.reset()
                     env.grasp_counter += 1
-                    continue
+                    if not pipeline:
+                        continue
+                    else:
+                        break
                 
                 actions = env.controller.forward(
                     picking_position=observations[env.task_params["cube_name"]["value"]]["position"],
                     placing_position=observations[env.task_params["cube_name"]["value"]]["target_position"],
                     current_joint_positions=observations[env.task_params["robot_name"]["value"]]["joint_positions"],
-                    end_effector_offset=np.array([0, 0.005, 0]),
+                    end_effector_offset=np.array([0, 0, 0]),
                     placement_orientation=env.ee_target_orientation,  
                     grasping_orientation=env.current_grasp_pose[1],    
                 )
@@ -477,7 +503,8 @@ def main(model_path):
     simulation_app.close()
 
 if __name__ == "__main__":
-    main()
+    model_path = "/home/chris/Chris/placement_ws/src/data/models/run_seed_93345942/stability_net.pth"
+    main(model_path)
     
 
     

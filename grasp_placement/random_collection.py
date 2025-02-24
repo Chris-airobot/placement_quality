@@ -155,7 +155,8 @@ class StartSimulation:
 
         self.task.set_params(
             cube_position=np.array([x, y, 0]),
-            target_position=np.array([p, q, 0.075])
+            target_position=np.array([p, q, 0.075]),
+            cube_orientation=cube_feasible_orientation(),
         )
 
         self.placement_orientation = np.random.uniform(low=-np.pi, high=np.pi, size=3)
@@ -311,7 +312,8 @@ class StartSimulation:
         # Create the cube position with z fixed at 0
         self.task.set_params(
             cube_position=np.array([x, y, 0]),
-            target_position=np.array([p, q, 0.075])
+            target_position=np.array([p, q, 0.075]),
+            cube_orientation=cube_feasible_orientation(),
         )
         
         self.placement_orientation = np.random.uniform(low=-np.pi, high=np.pi, size=3)

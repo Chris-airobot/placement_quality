@@ -73,7 +73,9 @@ def cube_feasible_orientation():
     random_orientation = random_orientations[random_surface]
 
 
-    return euler2quat(random_orientation)
+    return euler2quat(random_orientation[0],
+                      random_orientation[1],
+                      random_orientation[2], 'sxyz')
 
 def surface_detection(rpy):
     local_normals = {
@@ -633,9 +635,9 @@ def get_world_translation(prim):
 
 
 
-def obtain_grasps(pcd_path):
+def obtain_grasps(pcd_path, port):
     node = GraspClient()
-    raw_grasps = node.request_grasps(pcd_path)
+    raw_grasps = node.request_grasps(port, pcd_path)
 
     grasps = []
     for key in sorted(raw_grasps.keys(), key=int):

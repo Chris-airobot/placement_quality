@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import sys
 import numpy as np
 from transforms3d.euler import euler2quat
 from transforms3d.quaternions import quat2mat, mat2quat, qmult, qinverse
@@ -11,7 +12,12 @@ import tf_transformations as tft
 import matplotlib.pyplot as plt
 import math
 import random
-from dataset import MyStabilityDataset
+# Add the parent folder to sys.path so `learning_models` is found
+module_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if module_path not in sys.path:
+    sys.path.append(module_path)
+
+from learning_models.dataset import MyStabilityDataset
 
 def data_split(data_path="/home/chris/Chris/placement_ws/src/data/processed_data/data.json"):
     # Define paths
@@ -711,6 +717,6 @@ if __name__ == "__main__":
     # x = process_file("/home/chris/Chris/placement_ws/src/random_data/run_20250215_172420/Grasping_3/Placement_0_True.json")
     # reformat_json("/home/chris/Chris/placement_ws/src/random_data/Grasping_159/Placement_68_False.json")
     # rough_analysis("/home/chris/Chris/placement_ws/src/data/processed_data/data.json")
-    # count_files_in_subfolders("/home/chris/Chris/placement_ws/src/random_data")
-    data_analysis("/home/chris/Chris/placement_ws/src/data/processed_data/data.json")
+    count_files_in_subfolders("/home/chris/Chris/placement_ws/src/data/random_data")
+    # data_analysis("/home/chris/Chris/placement_ws/src/data/processed_data/data.json")
     # data_split()
