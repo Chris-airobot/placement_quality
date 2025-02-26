@@ -634,6 +634,24 @@ def get_world_translation(prim):
     return world_matrix.ExtractTranslation()
 
 
+def task_randomization():
+    """
+    Generate random initial and target positions for the cube.
+    Output: cube_initial_position, cube_target_position, cube_orientation
+    """
+    ranges = [(-0.5, -0.15), (0.15, 0.5)]
+    range_choice = ranges[np.random.choice(len(ranges))]
+    
+    # Generate x and y as random values between -π and π
+    x, y = np.random.uniform(low=range_choice[0], high=range_choice[1]), np.random.uniform(low=range_choice[0], high=range_choice[1])
+    p, q = np.random.uniform(low=range_choice[0], high=range_choice[1]), np.random.uniform(low=range_choice[0], high=range_choice[1])
+
+    cube_initial_position = np.array([x, y, 0.3])
+    cube_target_position = np.array([p, q, 0.075])
+    cube_orientation = cube_feasible_orientation()
+
+    return cube_initial_position, cube_target_position, cube_orientation
+
 
 def obtain_grasps(pcd_path, port):
     node = GraspClient()

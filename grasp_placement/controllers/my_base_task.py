@@ -21,7 +21,7 @@ from pyquaternion import Quaternion
 from omni.isaac.franka import Franka
 from pxr import Usd, UsdGeom, UsdShade, Sdf, Gf
 import omni
-
+from helper import *
 
 class MyPickPlace(ABC, BaseTask):
     """[summary]
@@ -54,17 +54,11 @@ class MyPickPlace(ABC, BaseTask):
         self._cube_initial_orientation = cube_initial_orientation
         self._target_position = target_position
         self._cube_size = cube_size
+        
+        if self._cube_initial_position is None:
+            self._cube_initial_position, self._cube_initial_orientation, self._target_position = task_randomization()
         if self._cube_size is None:
             self._cube_size = np.array([0.0515, 0.0515, 0.0515]) / get_stage_units()
-        if self._cube_initial_position is None:
-            self._cube_initial_position = np.array([0.3, 0., 0.3]) / get_stage_units()
-        if self._cube_initial_orientation is None:
-            self._cube_initial_orientation = np.array([1, 0, 0, 0])
-        if self._target_position is None:
-            self._target_position = np.array([-0.3, -0.3, 0]) / get_stage_units()
-            self._target_position[2] = self._cube_size[2] / 2.0
-        self._target_position = self._target_position + self._offset
-
         self._set_camera = set_camera
 
         return
