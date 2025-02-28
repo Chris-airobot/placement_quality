@@ -179,7 +179,7 @@ def single_model(model_seed):
     Find and load the model with the given seed.
     """
     input_dim = 21
-    models_root = "/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/models"
+    models_root = "/home/chris/Chris/placement_ws/src/data/models"
     target_model_path = None
 
     for root, dirs, files in os.walk(models_root):
@@ -277,7 +277,7 @@ def model_test(seed):
 if __name__ == "__main__":
     # Uncomment one of the following to run comparisons or test a single model.
     # model_comparisons()
-    seed = 4208
+    seed = 30395149
     model_test(seed)
     
     

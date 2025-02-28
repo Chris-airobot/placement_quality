@@ -129,7 +129,7 @@ def rough_analysis(file_path):
     print("Number of trajectories with unsuccessful grasp:", unsuccessful_count)
 
 
-def data_analysis(file_path):
+def data_analysis(file_path, split=False):
     with open(file_path, "r") as file:
         all_entries = json.load(file)
 
@@ -202,7 +202,8 @@ def data_analysis(file_path):
     with open(output_file, 'w') as fout:
         json.dump(combined_data, fout, indent=4)
 
-    data_split()
+    if split:
+        data_split()
 
     # Create a figure with 2 rows x 3 columns (6 subplots)
     fig, axes = plt.subplots(2, 3, figsize=(15, 8))
@@ -717,6 +718,6 @@ if __name__ == "__main__":
     # x = process_file("/home/chris/Chris/placement_ws/src/random_data/run_20250215_172420/Grasping_3/Placement_0_True.json")
     # reformat_json("/home/chris/Chris/placement_ws/src/random_data/Grasping_159/Placement_68_False.json")
     # rough_analysis("/home/chris/Chris/placement_ws/src/data/processed_data/data.json")
-    count_files_in_subfolders("/home/chris/Chris/placement_ws/src/data/random_data")
-    # data_analysis("/home/chris/Chris/placement_ws/src/data/processed_data/data.json")
+    # count_files_in_subfolders("/home/chris/Chris/placement_ws/src/data/random_data")
+    data_analysis("/home/chris/Chris/placement_ws/src/data/processed_data/data.json")
     # data_split()

@@ -7,7 +7,7 @@
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 #
 import typing
-from omni.isaac.franka.controllers.pick_place_controller import PickPlaceController
+# from omni.isaac.franka.controllers.pick_place_controller import PickPlaceController
 import numpy as np
 from omni.isaac.core.controllers.base_controller import BaseController
 from omni.isaac.core.utils.rotations import euler_angles_to_quat, quat_to_euler_angles
@@ -15,13 +15,13 @@ from omni.isaac.core.utils.stage import get_stage_units
 from omni.isaac.core.utils.types import ArticulationAction
 from omni.isaac.manipulators.grippers.gripper import Gripper
 from scipy.spatial.transform import Rotation, Slerp
-from omni.isaac.dynamic_control import _dynamic_control
+from helper import get_current_end_effector_pose, draw_frame
 
 def convert_wxyz_to_xyzw(q_wxyz):
     """Convert a quaternion from [w, x, y, z] format to [x, y, z, w] format."""
     return [q_wxyz[1], q_wxyz[2], q_wxyz[3], q_wxyz[0]]
 
-class ModifiedBaseController(BaseController):
+class MyBaseController(BaseController):
     """
     A simple pick and place state machine for tutorials
 
@@ -82,7 +82,7 @@ class ModifiedBaseController(BaseController):
         self._pause = False
 
         # Set a position threshold for early stage completion
-        self._position_threshold = 0.01
+        self._position_threshold = 0.022
         # Store the current target position for reference
         self._current_ee_target_position = None
         return
@@ -124,12 +124,14 @@ class ModifiedBaseController(BaseController):
         Returns:
             ArticulationAction: action to be executed by the ArticulationController
         """
-        
         end_effector_offset = np.array([0, 0, 0]) if end_effector_offset is None else end_effector_offset
         grasping_orientation = np.array([0.0, np.pi, 0.0]) if grasping_orientation is None else grasping_orientation
         placement_orientation = np.array([0.0, np.pi, 0.0]) if placement_orientation is None else placement_orientation
 
-        
+        if self._current_ee_target_position is not None:            
+            self._is_stage_task_done()
+            self.pause()
+
         stage_time_limit = None
         if self._pause or self.is_done():
             self.pause()
@@ -164,35 +166,32 @@ class ModifiedBaseController(BaseController):
                 ]
             )
 
-            if self._event in [0, 4, 5, 6, 8, 9]:
+            if self._event in [0, 4, 5, 8, 9]:
                 self._current_ee_target_position = position_target
             elif self._event == 1:
                 self._current_ee_target_position = picking_position
-            # elif self._event == 9:
-
-            
+            elif self._event == 6:
+                self._current_ee_target_position = placing_position
+            ### Orientation Section
             if len(grasping_orientation) == 3:
                 grasping_orientation = euler_angles_to_quat(grasping_orientation)
-
             if len(placement_orientation) == 3:
                 placement_orientation = euler_angles_to_quat(placement_orientation)
-
-            ### Orientation Section
-            # end_effector_orientation = grasping_orientation if self._event in [0, 1] else placement_orientation
             interpolated_orientation = self._get_slerp_quat(grasping_orientation, placement_orientation)
-            # print(f"Event: {self._event}, Position: {position_target}, Orientation: {end_effector_orientation}")
+
             target_joint_positions = self._cspace_controller.forward(
                 target_end_effector_position=position_target, 
                 target_end_effector_orientation=interpolated_orientation
             )
 
         self._t += self._events_dt[self._event]
-        print(f"Event: {self._event}, Your stage time limit: {stage_time_limit}")
+        # print(f"Event: {self._event}, Your stage time limit: {stage_time_limit}")
         # Case for stages other than 2, 3, 7
         if stage_time_limit == None:
             # Define a maximum allowed time for the stage (e.g., 2 seconds)
             stage_time_limit = 2.0
             if self._t >= stage_time_limit or self._is_stage_task_done():
+
                 self._event += 1
                 self._t = 0
         else:
@@ -209,65 +208,20 @@ class ModifiedBaseController(BaseController):
         Checks if the end-effector has reached the target position within a tolerance.
         Replace the _get_current_end_effector_position() method with actual sensor feedback.
         """
-        current_position = self._get_current_end_effector_position()
+        current_position, current_orientation = get_current_end_effector_pose()
 
-        if self._current_ee_target_position is not None:
+        if self._current_ee_target_position is not None:            
+            # draw_frame(current_position, current_orientation)
             pos_error = np.linalg.norm(current_position - self._current_ee_target_position)
-            print(f"pos_error: {pos_error}")
+            # print(f"current_position: {current_position}")
+            # print(f"current_ee_target_position: {self._current_ee_target_position}")
+            # print(f"pos_error: {pos_error}")
             # Print error for debugging (optional)
             return (pos_error < self._position_threshold)
         return False
 
-    def _get_current_end_effector_position(self) -> np.ndarray:
-        """Return the current end-effector (grasp center) position."""
-        # Acquire dynamic control interface
-        dc = _dynamic_control.acquire_dynamic_control_interface()
-        # Get rigid body handles for the two gripper fingers
-        left_body = dc.get_rigid_body("/World/Franka/panda_leftfinger")
-        right_body = dc.get_rigid_body("/World/Franka/panda_rightfinger")
-        if left_body == _dynamic_control.INVALID_HANDLE or right_body == _dynamic_control.INVALID_HANDLE:
-            raise RuntimeError("Could not acquire gripper finger bodies")
-        # Query the world poses of each finger
-        left_pose = dc.get_rigid_body_pose(left_body)
-        right_pose = dc.get_rigid_body_pose(right_body)
-        # Extract position vectors (carb.Float3 to numpy array) 
-        left_pos = np.array(left_pose.p)
-        right_pos = np.array(right_pose.p)
+    
 
-        # Define the tip offset (in meters) in each finger's local frame.
-        # Adjust this value to match your robot model (e.g. 0.04 m might be a good start).
-        tip_offset = 0.04  
-        # Assuming that in the finger's local frame the tip is along the positive x-axis:
-        left_offset_local = np.array([0.0, 0.0, tip_offset])
-        right_offset_local = np.array([0.0, 0.0, tip_offset])
-        
-        # Convert each finger's local tip offset into world coordinates using its rotation.
-        from scipy.spatial.transform import Rotation
-        left_rot = Rotation.from_quat(left_pose.r)    # assumes [x, y, z, w] format
-        right_rot = Rotation.from_quat(right_pose.r)
-        left_tip_offset_world = left_rot.apply(left_offset_local)
-        right_tip_offset_world = right_rot.apply(right_offset_local)
-        
-        # Compute the tip positions by adding the world offset to each finger's base position.
-        left_tip = left_pos + left_tip_offset_world
-        right_tip = right_pos + right_tip_offset_world
-        # The grasping center is the midpoint between the two finger tips.
-        grasp_center = (left_tip + right_tip) / 2.0
-        # print(f"Grasp center: {grasp_center}")
-        return grasp_center
-
-    def _get_current_end_effector_velocity(self) -> np.ndarray:
-        """
-        Retrieve the current linear velocity of the end-effector.
-        Assumes that the dynamic control interface provides a method
-        to query linear velocity of a rigid body.
-        """
-        dc = _dynamic_control.acquire_dynamic_control_interface()
-        ee_body = dc.get_rigid_body("/World/Franka/panda_hand")
-        # Get the linear velocity as a tuple or list, then convert to a numpy array.
-        # Adjust the API call as needed if the function name or return type differs.
-        linear_velocity = dc.get_rigid_body_linear_velocity(ee_body)
-        return np.array(linear_velocity)
 
     def _get_slerp_quat(self, q_start, q_end):
         """

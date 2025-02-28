@@ -8,13 +8,13 @@
 #
 from typing import List, Optional
 
-from controllers import ModifiedBaseController
+from controllers import MyBaseController
 from omni.isaac.core.articulations import Articulation
 from omni.isaac.franka.controllers.rmpflow_controller import RMPFlowController
 from omni.isaac.manipulators.grippers.parallel_gripper import ParallelGripper
 
 
-class DataCollectionController(ModifiedBaseController):
+class DataCollectionController(MyBaseController):
     """[summary]
 
     Args:
@@ -35,7 +35,7 @@ class DataCollectionController(ModifiedBaseController):
     ) -> None:
         if events_dt is None:
             events_dt = [0.008, 0.005, 1, 0.1, 0.05, 0.05, 0.0025, 1, 0.008, 0.08]
-        ModifiedBaseController.__init__(
+        MyBaseController.__init__(
             self,
             name=name,
             cspace_controller=RMPFlowController(

@@ -98,18 +98,17 @@ class StartSimulation:
         self.cube_grasped = None
         self.contact_sensors = None
         self.model = None
+        self.data_logger = None
         
 
         self.current_grasp_pose = None # Should be in a format of [np.array[x,y,z], np.array[x,y,z]]
         self.grasp_poses = []
         self.sorted_grasp_poses = []
         
-        self.data_logger = None
-
         self.grasp_counter = 0
-        
         self.grasping_failure = False
         self.cube_contacted = False
+        self.enable_pcd = False
 
         self.sample = {
                 "inputs":{
@@ -139,22 +138,42 @@ class StartSimulation:
 
         # Set up the world
         self.world: World = World(stage_units_in_meters=1.0)
-
-        ranges = [(-0.3, -0.1), (0.1, 0.3)]
-        range_choice = ranges[np.random.choice(len(ranges))]
-        
-        # Generate x and y as random values between -π and π
-        x, y = np.random.uniform(low=range_choice[0], high=range_choice[1]), np.random.uniform(low=range_choice[0], high=range_choice[1])
-        p, q = np.random.uniform(low=range_choice[0], high=range_choice[1]), np.random.uniform(low=range_choice[0], high=range_choice[1])
-
-        self.task = PickPlaceCamera()
-        
         self.data_logger = self.world.get_data_logger() # a DataLogger object is defined in the World by default
 
+        # Set up the task
+        self.task = PickPlaceCamera()
         self.world.add_task(self.task)
-
         self.world.reset()
+        self.task_params = self.task.get_params()
 
+        # Set up the robot components
+        self.robot: Franka =  self.world.scene.get_object(self.task_params["robot_name"]["value"])
+        self.controller = DataCollectionController(
+            name = "data_collection_controller",
+            gripper=self.robot.gripper,
+            robot_articulation=self.robot
+        )
+        self.articulation_controller = self.robot.get_articulation_controller() 
+
+
+        self.contact_activation()
+        tf_graph_generation()
+        if self.enable_pcd:
+            camera_graph_generation(self.task._camera)
+
+        # Benchmark the evaluation of the model
+        self.sample["inputs"]["cube_target_position"] = self.task_params["target_position"]["value"].tolist()
+        self.sample["inputs"]["cube_initial_position"] = self.task_params["cube_position"]["value"].tolist()
+        self.sample["inputs"]["cube_initial_orientation"] = self.task_params["cube_orientation"]["value"].tolist()
+        self.sample["inputs"]["cube_target_orientation"] = self.task_params["cube_target_orientation"]["value"].tolist()
+        self.cube_target_orientation = self.task_params["cube_target_orientation"]["value"].tolist()
+        prims.create_prim(prim_path="/World/VisualCube", prim_type="Cube", 
+                          position=self.sample["inputs"]["cube_target_position"],
+                          orientation=self.cube_target_orientation,
+                          scale=[0.05, 0.05, 0.05],)
+        
+
+    def contact_activation(self):
         panda_prim_names = [
             "Franka/panda_link0",
             "Franka/panda_link1",
@@ -183,49 +202,11 @@ class StartSimulation:
             # Use raw contact data if desired
             sensor.add_raw_contact_data_to_frame()
             self.contact_sensors.append(sensor)
-
         self.world.reset()
-
         # Contact report for links
         self.world.add_physics_callback("contact_sensor_callback", partial(self.on_sensor_contact_report, sensors=self.contact_sensors))
 
-        self.task.set_params(
-            cube_position=np.array([x, y, 0]),
-            target_position=np.array([p, q, 0.075]),
-            cube_orientation=cube_feasible_orientation(),
-        )
 
-        self.task_params = self.task.get_params()
-        self.robot: Franka =  self.world.scene.get_object(self.task_params["robot_name"]["value"])
-        
-        # Set up the robot
-        self.controller = DataCollectionController(
-            name = "data_collection_controller",
-            gripper=self.robot.gripper,
-            robot_articulation=self.robot
-        )
-        self.articulation_controller = self.robot.get_articulation_controller() 
-
-        
-
-        self.cube_target_orientation = cube_feasible_orientation()
-
-        self.sample["inputs"]["cube_target_position"] = self.task_params["target_position"]["value"].tolist()
-        self.sample["inputs"]["cube_initial_position"] = self.task_params["cube_position"]["value"].tolist()
-        self.sample["inputs"]["cube_initial_orientation"] = self.task_params["cube_orientation"]["value"].tolist()
-        self.sample["inputs"]["cube_target_orientation"] = self.cube_target_orientation.tolist()
-        
-
-        
-        prims.create_prim(prim_path="/World/VisualCube", prim_type="Cube", 
-                          position=self.sample["inputs"]["cube_target_position"],
-                          orientation=self.cube_target_orientation,
-                          scale=[0.05, 0.05, 0.05],)
-
-
-        tf_graph_generation()
-        start_camera(self.task._camera, True)
-        
 
     def on_sensor_contact_report(self, dt, sensors: List[ContactSensor]):
         """Physics-step callback: checks all sensors, sets self.contact accordingly."""
@@ -263,10 +244,8 @@ class StartSimulation:
         
         if not self.world.get_data_logger().is_started():
             self.task_params = self.task.get_params()
-            robot_name = self.task_params["robot_name"]["value"]
             cube_name = self.task_params["cube_name"]["value"]
-            target_position = self.task_params["target_position"]["value"]
-            camera_name = self.task_params["camera_name"]["value"]
+            cube_target_position = self.task_params["cube_target_position"]["value"]
             if tf_node.latest_tf is not None:
                 tf_data = process_tf_message(tf_node.latest_tf)
             else:
@@ -276,24 +255,21 @@ class StartSimulation:
 
             def frame_logging_func(tasks, scene: Scene):
                 cube_position, cube_orientation =  scene.get_object(cube_name).get_world_pose()
-                ee_position, ee_orientation =  scene.get_object(robot_name).end_effector.get_world_pose()
-                # surface = surface_detection(quat_to_euler_angles(cube_orientation))
-                camera_position, camera_orientation =  scene.get_object(camera_name).get_world_pose()
+                ee_position, ee_orientation = get_current_end_effector_pose()
+
                 surface, _ = get_upward_facing_marker("/World/Cube")
 
                 return {
-                    "joint_positions": scene.get_object(robot_name).get_joint_positions().tolist(),# save data as lists since its a json file.
-                    "applied_joint_positions": scene.get_object(robot_name).get_applied_action().joint_positions.tolist(),
+                    "joint_positions": self.robot.get_joint_positions().tolist(),# save data as lists since its a json file.
+                    "applied_joint_positions": self.robot.get_applied_action().joint_positions.tolist(),
                     "ee_position": ee_position.tolist(),
                     "ee_orientation": ee_orientation.tolist(),
-                    "target_position": target_position.tolist(), # Cube target position
+                    "cube_target_position": cube_target_position.tolist(), # Cube target position
                     "cube_position": cube_position.tolist(),
                     "cube_orientation": cube_orientation.tolist(),
                     "stage": self.controller.get_current_event(),
                     "surface": surface,
                     "ee_target_orientation":self.ee_target_orientation.tolist(),
-                    "camera_position": camera_position.tolist(),
-                    "camera_orientation": camera_orientation.tolist(),
                     "tf": tf_data,
                     "contact": self.contact,
                     "cube_in_ground": self.cube_contacted,
@@ -324,17 +300,13 @@ class StartSimulation:
         self.controller.reset()
         self.grasping_failure = False
 
-        ranges = [(-0.3, -0.1), (0.1, 0.3)]
-        range_choice = ranges[np.random.choice(len(ranges))]
-        
-        # Generate x and y as random values between -π and π
-        x, y = np.random.uniform(low=range_choice[0], high=range_choice[1]), np.random.uniform(low=range_choice[0], high=range_choice[1])
-        p, q = np.random.uniform(low=range_choice[0], high=range_choice[1]), np.random.uniform(low=range_choice[0], high=range_choice[1])
+        cube_initial_position, target_position, cube_initial_orientation = task_randomization()
 
         # Create the cube position with z fixed at 0
         self.task.set_params(
-            cube_position=np.array([x, y, 0]),
-            target_position=np.array([p, q, 0.075])
+            cube_position=cube_initial_position,
+            cube_orientation=cube_initial_orientation,
+            target_position=target_position
         )
         
         
@@ -405,7 +377,6 @@ def main(model_path):
     tf_node = TFSubscriber()
     
     # Create an executor (SingleThreadedExecutor is the simplest choice)
-    
     executor = SingleThreadedExecutor()
     executor.add_node(tf_node)
 
@@ -477,8 +448,8 @@ def main(model_path):
                         break
                 
                 actions = env.controller.forward(
-                    picking_position=observations[env.task_params["cube_name"]["value"]]["position"],
-                    placing_position=observations[env.task_params["cube_name"]["value"]]["target_position"],
+                    picking_position=observations[env.task_params["cube_name"]["value"]]["cube_current_position"],
+                    placing_position=observations[env.task_params["cube_name"]["value"]]["cube_target_position"],
                     current_joint_positions=observations[env.task_params["robot_name"]["value"]]["joint_positions"],
                     end_effector_offset=np.array([0, 0, 0]),
                     placement_orientation=env.ee_target_orientation,  

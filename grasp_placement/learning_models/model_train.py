@@ -18,7 +18,7 @@ if module_path not in sys.path:
 from learning_models.dataset import MyStabilityDataset
 
 # Base directory for saving models and images
-DIR = "/home/chris/Chris/placement_ws/src/data/models"
+DIR = "/home/chris/Chris/placement_ws/src/data/models/final_test"
 
 ###############################################################################
 # 1) MODEL DEFINITION (Two-head network: classification and regression)
@@ -132,7 +132,7 @@ def sample_hyperparams():
     seed = random.randint(0, 99999999)
     scheduler_factor = random.choice([0.5, 0.6, 0.7])
     scheduler_patience = random.randint(2, 6)
-    num_epochs = random.choice([100, 90, 70, 120])
+    num_epochs = random.choice([200,300])
     params = {
         'batch_size': batch_size,
         'num_epochs': num_epochs,
@@ -146,7 +146,7 @@ def sample_hyperparams():
 
     # params = {
     #     'batch_size': 16,
-    #     'num_epochs': 100,
+    #     'num_epochs': 300,
     #     'learning_rate': 1.1897909925768335e-05,
     #     'optimizer': 'adam',
     #     'scheduler_factor': 0.5,
@@ -325,7 +325,7 @@ def main(params, data_folder):
 # 5) ENTRY POINT
 ###############################################################################
 if __name__ == "__main__":
-    total_experiment = 200
+    total_experiment = 10
     for i in range(total_experiment):
         params = sample_hyperparams()
         print(f"\n=== Experiment {i+1}/{total_experiment} with {params} ===\n")

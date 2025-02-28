@@ -247,29 +247,143 @@ def tf_graph_generation():
         }
     )
 
+def get_current_end_effector_pose() -> np.ndarray:
+    """
+    Return the current end-effector (grasp center, i.e. outside the robot) pose.
+    return: (3,) np.ndarray: [x, y, z] position of the grasp center.
+            (4,) np.ndarray: [w, x, y, z] orientation of the grasp center.
+    """
+
+    offset = np.array([0.0, 0.0, 0.1034])
+    from omni.isaac.dynamic_control import _dynamic_control
+    """Return the current end-effector (grasp center) position."""
+    # Acquire dynamic control interface
+    dc = _dynamic_control.acquire_dynamic_control_interface()
+    # Get rigid body handles for the two gripper fingers
+    ee_body = dc.get_rigid_body("/World/Franka/panda_hand")
+    # Query the world poses of each finger
+    ee_pose = dc.get_rigid_body_pose(ee_body)
+    panda_hand_translation = ee_pose.p 
+    panda_hand_quat = ee_pose.r
+
+    # Create a Rotation object from the panda_hand quaternion.
+    hand_rot = R.from_quat(panda_hand_quat)
+    
+    # Rotate the local offset into world coordinates.
+    offset_world = hand_rot.apply(offset)
+    
+    # Compute the tool_center position.
+    tool_center_translation = panda_hand_translation + offset_world
+    
+    # Since the relative orientation is identity ([0,0,0]), the tool_center's orientation
+    # remains the same as the panda_hand's.
+    tool_center_quat = [panda_hand_quat[3], panda_hand_quat[0], panda_hand_quat[1], panda_hand_quat[2]]
+    # print(f"Tool center translation: {tool_center_translation}")
+    # print(f"Tool center quaternion: {tool_center_quat}")
+    
+    return tool_center_translation, tool_center_quat
+
+
+
+
+def draw_frame(
+    position: np.ndarray,
+    orientation: np.ndarray,
+    scale: float = 0.1,
+):
+    # Isaac Sim's debug draw interface
+    from omni.isaac.debug_draw import _debug_draw
+    from carb import Float3, ColorRgba
+    # Acquire the debug draw interface once at startup or script init
+    draw = _debug_draw.acquire_debug_draw_interface()
+    # Clear previous lines so we have only one, moving frame.
+    draw.clear_lines()
+    """
+    Draws a coordinate frame with colored X, Y, Z axes at the specified pose.
+    
+    Args:
+        frame_name: A unique name for this drawing (used by Debug Draw).
+        position:   (3,) array-like of [x, y, z] for frame origin in world coordinates.
+        orientation:(4,) array-like quaternion [x, y, z, w].
+        scale:      Length of each axis line.
+        duration:   How long (in seconds) the lines remain in the viewport
+                    before disappearing. If you keep calling draw_frame each
+                    physics step, it will appear continuously.
+    """
+    # Convert the quaternion into a 3x3 rotation matrix
+    rot_mat = R.from_quat(convert_wxyz_to_xyzw(orientation)).as_matrix()
+    
+    # Extract the basis vectors for x, y, z from the rotation matrix
+    # and scale them to draw lines
+    x_axis = rot_mat[:, 0] * scale
+    y_axis = rot_mat[:, 1] * scale
+    z_axis = rot_mat[:, 2] * scale
+    
+    # Convert position to a numpy array if needed
+    origin = np.array(position, dtype=float)
+    
+    # Create carb.Float3 objects for start and end points.
+    start_points = [
+        Float3(origin[0], origin[1], origin[2]),  # for x-axis
+        Float3(origin[0], origin[1], origin[2]),  # for y-axis
+        Float3(origin[0], origin[1], origin[2])   # for z-axis
+    ]
+    end_points = [
+        Float3(*(origin + x_axis)),
+        Float3(*(origin + y_axis)),
+        Float3(*(origin + z_axis))
+    ]
+
+    # Create carb.ColorRgba objects for each axis.
+    colors = [
+        ColorRgba(1.0, 0.0, 0.0, 1.0),  # red for x-axis
+        ColorRgba(0.0, 1.0, 0.0, 1.0),  # green for y-axis
+        ColorRgba(0.0, 0.0, 1.0, 1.0)   # blue for z-axis
+    ]
+
+    # Specify line thicknesses as a list of floats.
+    sizes = [2.0, 2.0, 2.0]
+
+    # Draw the three axes.
+    draw.draw_lines(start_points, end_points, colors, sizes)
+
+
+
+
+
+
+
+
+
+
 
 
 
 def process_tf_message(tf_message: TFMessage):
+    allowed_frames = {"world", "panda_link0", "panda_hand", "Cube"}
     # Extract the frames and transformations
     tf_data = []
     for transform in tf_message.transforms:
-        frame_data = {
-            "parent_frame": transform.header.frame_id,
-            "child_frame": transform.child_frame_id,
-            "translation": {
-                "x": transform.transform.translation.x,
-                "y": transform.transform.translation.y,
-                "z": transform.transform.translation.z
-            },
-            "rotation": {
-                "x": transform.transform.rotation.x,
-                "y": transform.transform.rotation.y,
-                "z": transform.transform.rotation.z,
-                "w": transform.transform.rotation.w
+        parent_frame = transform.header.frame_id
+        child_frame = transform.child_frame_id
+        if parent_frame in allowed_frames and child_frame in allowed_frames:
+            frame_data = {
+                "parent_frame": parent_frame,
+                "child_frame": child_frame,
+                "translation": {
+                    "x": transform.transform.translation.x,
+                    "y": transform.transform.translation.y,
+                    "z": transform.transform.translation.z
+                },
+                "rotation": {
+                    "x": transform.transform.rotation.x,
+                    "y": transform.transform.rotation.y,
+                    "z": transform.transform.rotation.z,
+                    "w": transform.transform.rotation.w
+                }
             }
-        }
-        tf_data.append(frame_data)
+            tf_data.append(frame_data)
+
     return tf_data
 
 
@@ -637,7 +751,7 @@ def get_world_translation(prim):
 def task_randomization():
     """
     Generate random initial and target positions for the cube.
-    Output: cube_initial_position, cube_target_position, cube_orientation
+    Output: cube_initial_position, cube_target_position, cube_initial_orientation, cube_target_orientation
     """
     ranges = [(-0.5, -0.15), (0.15, 0.5)]
     range_choice = ranges[np.random.choice(len(ranges))]
@@ -648,9 +762,10 @@ def task_randomization():
 
     cube_initial_position = np.array([x, y, 0.3])
     cube_target_position = np.array([p, q, 0.075])
-    cube_orientation = cube_feasible_orientation()
+    cube_initial_orientation = cube_feasible_orientation()
+    cube_target_orientation = cube_feasible_orientation()
 
-    return cube_initial_position, cube_target_position, cube_orientation
+    return cube_initial_position, cube_target_position, cube_initial_orientation, cube_target_orientation
 
 
 def obtain_grasps(pcd_path, port):

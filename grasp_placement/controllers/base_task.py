@@ -41,6 +41,7 @@ class MyPickPlace(ABC, BaseTask):
         cube_initial_position: Optional[np.ndarray] = None,
         cube_initial_orientation: Optional[np.ndarray] = None,
         target_position: Optional[np.ndarray] = None,
+        cube_target_orientation: Optional[np.ndarray] = None,
         cube_size: Optional[np.ndarray] = None,
         offset: Optional[np.ndarray] = None,
         set_camera: bool = True,
@@ -52,14 +53,15 @@ class MyPickPlace(ABC, BaseTask):
         self._camera = None
         self._cube_initial_position = cube_initial_position
         self._cube_initial_orientation = cube_initial_orientation
-        self._target_position = target_position
+        self._cube_target_position = target_position
+        self._cube_target_orientation = cube_target_orientation
         self._cube_size = cube_size
         
         if self._cube_initial_position is None:
-            self._cube_initial_position, self._cube_initial_orientation, self._target_position = task_randomization()
+            self._cube_initial_position, self._cube_target_position, self._cube_initial_orientation, self._cube_target_orientation = task_randomization()
         if self._cube_size is None:
             self._cube_size = np.array([0.0515, 0.0515, 0.0515]) / get_stage_units()
-        self._set_camera = set_camera
+    
 
         return
 
@@ -89,28 +91,16 @@ class MyPickPlace(ABC, BaseTask):
         self.attach_face_markers(cube_prim_path)
         self._task_objects[self._cube.name] = self._cube
 
-        if self._set_camera:
-            camera_position = self._cube_initial_position + np.array([0.0, 0.0, 1.1])
-            # camera_orientation = np.array([1, 0, 0, 0])
-            camera_orientation = np.array([0.5, -0.5, 0.5, 0.5])
-
-            self._camera:Camera = self.set_camera(camera_position, camera_orientation)
-            scene.add(self._camera)
-            self._task_objects[self._camera.name] = self._camera
-
         self._robot: Franka = self.set_robot()
         self._robot.set_enabled_self_collisions(True)
         scene.add(self._robot)
+        self._camera:Camera = Camera(prim_path="/World/Franka/panda_hand/geometry/realsense/realsense_camera")
         self._task_objects[self._robot.name] = self._robot
         self._move_task_objects_to_their_frame()
         return
 
     @abstractmethod
     def set_robot(self) -> None:
-        raise NotImplementedError
-    
-    @abstractmethod
-    def set_camera(self) -> Camera:
         raise NotImplementedError
     
 
@@ -165,37 +155,28 @@ class MyPickPlace(ABC, BaseTask):
         self,
         cube_position: Optional[np.ndarray] = None,
         cube_orientation: Optional[np.ndarray] = None,
-        target_position: Optional[np.ndarray] = None,
+        cube_target_position: Optional[np.ndarray] = None,
+        cube_target_orientation: Optional[np.ndarray] = None,
     ) -> None:
-        if target_position is not None:
-            self._target_position = target_position
+        if cube_target_position is not None:
+            self._cube_target_position = cube_target_position
+        if cube_target_orientation is not None:
+            self._cube_target_orientation = cube_target_orientation
         if cube_position is not None or cube_orientation is not None:
-            self._cube.set_local_pose(translation=cube_position, orientation=cube_orientation)
-
-            if self._set_camera:
-                camera_position = cube_position + np.array([0, 0.0, 1.1])
-                camera_orientation = np.array([0.5, -0.5, 0.5, 0.5])
-                self._camera.set_local_pose(translation=camera_position, orientation=camera_orientation)
-
+            self._cube.set_world_pose(translation=cube_position, orientation=cube_orientation)
         return
 
     def get_params(self) -> dict:
         params_representation = dict()
-        position, orientation = self._cube.get_local_pose()
+        position, orientation = self._cube.get_world_pose()
 
-        params_representation["cube_position"] = {"value": position, "modifiable": True}
-        params_representation["cube_orientation"] = {"value": orientation, "modifiable": True}
+        params_representation["cube_current_position"] = {"value": position, "modifiable": True}
+        params_representation["cube_current_orientation"] = {"value": orientation, "modifiable": True}
 
-        params_representation["target_position"] = {"value": self._target_position, "modifiable": True}
+        params_representation["cube_target_position"] = {"value": self._cube_target_position, "modifiable": True}
+        params_representation["cube_target_orientation"] = {"value": self._cube_target_orientation, "modifiable": True}
         params_representation["cube_name"] = {"value": self._cube.name, "modifiable": False}
         params_representation["robot_name"] = {"value": self._robot.name, "modifiable": False}
-
-        if self._set_camera:
-            camera_postion, camera_orientation = self._camera.get_local_pose()
-            params_representation["camera_name"] = {"value": self._camera.name, "modifiable": False}
-            params_representation["camera_position"] = {"value": camera_postion, "modifiable": True}
-            params_representation["camera_orientation"] = {"value": camera_orientation, "modifiable": True}
-
         return params_representation
 
     def get_observations(self) -> dict:
@@ -206,27 +187,20 @@ class MyPickPlace(ABC, BaseTask):
         """
         joints_state = self._robot.get_joints_state()
         cube_position, cube_orientation = self._cube.get_local_pose()
-        end_effector_position, _ = self._robot.end_effector.get_local_pose()
+        end_effector_position, _ = get_current_end_effector_pose()
 
         observations = {
             self._cube.name: {
-                "position": cube_position,
-                "orientation": cube_orientation,
-                "target_position": self._target_position,
+                "cube_current_position": cube_position,
+                "cube_current_orientation": cube_orientation,
+                "cube_target_position": self._cube_target_position,
+                "cube_target_orientation": self._cube_target_orientation,
             },
             self._robot.name: {
                 "joint_positions": joints_state.positions,
                 "end_effector_position": end_effector_position,
             }
         }
-
-        if self._set_camera:
-            camera_position, camera_orientation = self._camera.get_local_pose()
-            
-            observations[self._camera.name] = {
-                "position": camera_position,
-                "orientation": camera_orientation,
-            }
         return observations
 
 

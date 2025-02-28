@@ -12,8 +12,10 @@ import numpy as np
 from controllers import MyPickPlace
 from omni.isaac.core.utils.prims import is_prim_path_valid
 from omni.isaac.core.utils.string import find_unique_string_name
+from omni.isaac.nucleus import get_assets_root_path
 from omni.isaac.franka import Franka
 from omni.isaac.sensor import Camera
+import carb
 import omni.graph.core as og
 import omni.replicator.core as rep
 import omni
@@ -41,7 +43,6 @@ class PickPlaceCamera(MyPickPlace):
         target_position: Optional[np.ndarray] = None,
         cube_size: Optional[np.ndarray] = None,
         offset: Optional[np.ndarray] = None,
-        set_camera: bool = True,
     ) -> None:
         MyPickPlace.__init__(
             self,
@@ -51,7 +52,6 @@ class PickPlaceCamera(MyPickPlace):
             target_position=target_position,
             cube_size=cube_size,
             offset=offset,
-            set_camera=set_camera,
         )
         return
 
@@ -67,26 +67,12 @@ class PickPlaceCamera(MyPickPlace):
         franka_robot_name = find_unique_string_name(
             initial_name="my_franka", is_unique_fn=lambda x: not self.scene.object_exists(x)
         )
-        return Franka(prim_path=franka_prim_path, name=franka_robot_name)
+        assets_root_path = get_assets_root_path()
+        if assets_root_path is None:
+            carb.log_error("Could not find Isaac Sim assets folder")
+        usd_path = assets_root_path + "/Isaac/Robots/Franka/franka_alt_fingers.usd"
+        return Franka(prim_path=franka_prim_path, name=franka_robot_name, usd_path=usd_path)
 
-    def set_camera(self, position=None, orientation=None) -> Camera:
-        """[summary]
-
-        Returns:
-            Camera: [description]
-        """
-        camera_prim_path = find_unique_string_name(
-            initial_name="/World/Camera", is_unique_fn=lambda x: not is_prim_path_valid(x)
-        )
-        camera_name = find_unique_string_name(
-            initial_name="my_camera", is_unique_fn=lambda x: not self.scene.object_exists(x)
-        )
-        return Camera(prim_path=camera_prim_path, 
-                      name=camera_name, 
-                      position=position, 
-                      orientation=orientation,
-                      frequency=20,
-                      resolution=(256, 256))
     
 
 
