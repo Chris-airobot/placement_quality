@@ -14,6 +14,7 @@ from rclpy.node import Node
 from tf2_msgs.msg import TFMessage
 from sensor_msgs.msg import PointCloud2
 import tf2_ros
+import time
 import re
 
 from omni.isaac.core import World
@@ -81,6 +82,7 @@ class TestRobotMovement:
         self.task_params = None
         self.cube_target_orientation = None  # Gripper orientation when the cube is about to be placed
         self.ee_target_orientation = None    # End effector orientation when the cube is about to be placed
+        # self.setup_start_time = None
         self.contact = None
         self.cube_grasped = None
         self.contact_sensors = None
@@ -92,6 +94,7 @@ class TestRobotMovement:
 
         self.enable_pcd = True
         self.cube_contacted = False
+        self.setup_finished = False
 
     def start(self):
         # Set up the world
@@ -114,19 +117,20 @@ class TestRobotMovement:
         self.articulation_controller = self.robot.get_articulation_controller() 
 
         # self.placement_orientation = np.random.uniform(low=-np.pi, high=np.pi, size=3)
-        self.grasping_orientation = np.array([0, np.pi/2, 0])
-        self.placement_orientation = np.array([0, np.pi/2, 0])
+        self.grasping_orientation = np.array([0, np.pi, 0])
+        self.placement_orientation = np.array([0, np.pi, 0])
         
         self.contact_activation()
         tf_graph_generation()
-        if self.enable_pcd:
-            camera_graph_generation(self.task._camera)
+        start_camera(self.task._camera, self.enable_pcd)
+
+            
 
         self.cube_target_orientation = self.task_params["cube_target_orientation"]["value"].tolist()
-        prims.create_prim(prim_path="/World/VisualCube", prim_type="Cube", 
-                        position=self.task_params["cube_target_position"]["value"].tolist(),
-                        orientation=self.cube_target_orientation,
-                        scale=[0.05, 0.05, 0.05],)
+        # prims.create_prim(prim_path="/World/VisualCube", prim_type="Cube", 
+        #                 position=self.task_params["cube_target_position"]["value"].tolist(),
+        #                 orientation=self.cube_target_orientation,
+        #                 scale=[0.05, 0.05, 0.05],)
 
     
     def contact_activation(self):
@@ -197,16 +201,19 @@ class TestRobotMovement:
         self.world.reset()
         self.controller.reset()
 
-        cube_initial_position, target_position, cube_initial_orientation = task_randomization()
+        self.task.cube_init(False)
+        self.setup_finished = False
 
-        # Create the cube position with z fixed at 0
-        self.task.set_params(
-            cube_position=cube_initial_position,
-            cube_orientation=cube_initial_orientation,
-            target_position=target_position
-        )
-        # print(f"cube_position is :{np.array([x, y, 0])}")
-        # self.placement_orientation = np.random.uniform(low=-np.pi, high=np.pi, size=3)
+        # cube_initial_position, target_position, cube_initial_orientation = task_randomization()
+
+        # # Create the cube position with z fixed at 0
+        # self.task.set_params(
+        #     cube_position=cube_initial_position,
+        #     cube_orientation=cube_initial_orientation,
+        #     target_position=target_position
+        # )
+        # # print(f"cube_position is :{np.array([x, y, 0])}")
+        # # self.placement_orientation = np.random.uniform(low=-np.pi, high=np.pi, size=3)
 
 def main():
     rclpy.init()
@@ -246,6 +253,19 @@ def main():
             if reset_needed:
                 env.reset()
                 reset_needed = False
+
+            if not env.setup_finished:
+                if not hasattr(env, "setup_start_time"):
+                    env.setup_start_time = time.time()
+                if time.time() - env.setup_start_time < 1:
+                    # Skip sending robot commands, letting other parts of the simulation continue.
+                    continue
+                else:
+                    env.task.cube_pose_finalization()
+                    env.setup_finished = True
+                    if hasattr(env, "setup_start_time"):
+                        del env.setup_start_time
+                    print(f"set up finished")
             try:
                 observations = env.world.get_observations()
             except:

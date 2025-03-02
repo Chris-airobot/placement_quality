@@ -9,11 +9,12 @@ import struct
 from network_client import GraspClient
 from transforms3d.quaternions import quat2mat, mat2quat, qmult, qinverse
 from transforms3d.axangles import axangle2mat
-from transforms3d.euler import euler2quat
+from transforms3d.euler import euler2quat, quat2euler
 from tf2_msgs.msg import TFMessage
 from sensor_msgs.msg import PointCloud2
 from geometry_msgs.msg import TransformStamped
 import random
+from omni.isaac.core.utils.prims import is_prim_path_valid
 
 
 def convert_wxyz_to_xyzw(q_wxyz):
@@ -70,12 +71,9 @@ def cube_feasible_orientation():
     random_surface = random.choice(list(random_orientations.keys()))
 
     # Get the corresponding orientation
-    random_orientation = random_orientations[random_surface]
+    random_orientation = np.deg2rad(random_orientations[random_surface])
 
-
-    return euler2quat(random_orientation[0],
-                      random_orientation[1],
-                      random_orientation[2], 'sxyz')
+    return euler2quat(*random_orientation)
 
 def surface_detection(rpy):
     local_normals = {
@@ -215,7 +213,8 @@ def tf_graph_generation():
     cube_frame = "/World/Cube"
     graph_path = "/Graphs/TF"
     # test_cube = "/World/Franka/test_cube"
-
+    if is_prim_path_valid(graph_path):
+        return
     (graph_handle, list_of_nodes, _, _) = og.Controller.edit(
         {
             "graph_path": graph_path, 
@@ -246,6 +245,7 @@ def tf_graph_generation():
             ]
         }
     )
+
 
 def get_current_end_effector_pose() -> np.ndarray:
     """
@@ -767,6 +767,53 @@ def task_randomization():
 
     return cube_initial_position, cube_target_position, cube_initial_orientation, cube_target_orientation
 
+def pose_init():
+    ranges = [(-0.5, -0.15), (0.15, 0.5)]
+    range_choice = ranges[np.random.choice(len(ranges))]
+    
+    # Generate x and y as random values between -π and π
+    x, y = np.random.uniform(low=range_choice[0], high=range_choice[1]), np.random.uniform(low=range_choice[0], high=range_choice[1])
+    z = np.random.uniform(1.0, 2.0)
+
+    # Random Euler angles in degrees and convert to radians
+    euler_angles_deg = [random.uniform(0, 360) for _ in range(3)]
+    euler_angles_rad = np.deg2rad(euler_angles_deg)
+    
+    # Convert Euler angles to quaternion using your preferred function,
+    # e.g., if you have a function euler2quat that takes 3 angles:
+    quat = euler2quat(*euler_angles_rad)  # Make sure euler2quat returns in the correct order
+    pos =  np.array([x, y, z])
+
+    return pos, quat
+    
+
+
+def spawn_random_cube(prim_path: str):
+    from omni.isaac.core.utils import prims
+    ranges = [(-0.5, -0.15), (0.15, 0.5)]
+    range_choice = ranges[np.random.choice(len(ranges))]
+    
+    # Generate x and y as random values between -π and π
+    x, y = np.random.uniform(low=range_choice[0], high=range_choice[1]), np.random.uniform(low=range_choice[0], high=range_choice[1])
+    
+    pos = [x,y, np.random.uniform(1.0, 2.0)]  # Random z between 0.1 and 0.5
+    # Random Euler angles in degrees and convert to radians
+    euler_angles_deg = [random.uniform(0, 360) for _ in range(3)]
+    euler_angles_rad = np.deg2rad(euler_angles_deg)
+    
+    # Convert Euler angles to quaternion using your preferred function,
+    # e.g., if you have a function euler2quat that takes 3 angles:
+    quat = euler2quat(*euler_angles_rad)  # Make sure euler2quat returns in the correct order
+
+    # Create the cube prim with a given scale (adjust as needed)
+    prims.create_prim(
+        prim_path=prim_path,
+        prim_type="Cube",
+        position=pos,
+        orientation=quat,
+        scale=[0.1, 0.1, 0.1]
+    )
+    print(f"Spawned cube at {pos} with Euler angles (rad): {euler_angles_rad}")
 
 def obtain_grasps(pcd_path, port):
     node = GraspClient()

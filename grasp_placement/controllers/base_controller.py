@@ -82,7 +82,7 @@ class MyBaseController(BaseController):
         self._pause = False
 
         # Set a position threshold for early stage completion
-        self._position_threshold = 0.022
+        self._position_threshold = 0.01
         # Store the current target position for reference
         self._current_ee_target_position = None
         return
@@ -128,9 +128,11 @@ class MyBaseController(BaseController):
         grasping_orientation = np.array([0.0, np.pi, 0.0]) if grasping_orientation is None else grasping_orientation
         placement_orientation = np.array([0.0, np.pi, 0.0]) if placement_orientation is None else placement_orientation
 
-        if self._current_ee_target_position is not None:            
-            self._is_stage_task_done()
-            self.pause()
+        # if self._current_ee_target_position is not None:        
+        #     # print(f"now you are pausing")    
+        #     self._is_stage_task_done()
+        #     self.pause()
+
 
         stage_time_limit = None
         if self._pause or self.is_done():

@@ -67,11 +67,11 @@ class PickPlaceCamera(MyPickPlace):
         franka_robot_name = find_unique_string_name(
             initial_name="my_franka", is_unique_fn=lambda x: not self.scene.object_exists(x)
         )
-        assets_root_path = get_assets_root_path()
-        if assets_root_path is None:
-            carb.log_error("Could not find Isaac Sim assets folder")
-        usd_path = assets_root_path + "/Isaac/Robots/Franka/franka_alt_fingers.usd"
-        return Franka(prim_path=franka_prim_path, name=franka_robot_name, usd_path=usd_path)
+        # assets_root_path = get_assets_root_path()
+        # if assets_root_path is None:
+        #     carb.log_error("Could not find Isaac Sim assets folder")
+        # usd_path = assets_root_path + "/Isaac/Robots/Franka/franka_alt_fingers.usd"
+        return Franka(prim_path=franka_prim_path, name=franka_robot_name)
 
     
 

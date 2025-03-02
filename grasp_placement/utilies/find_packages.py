@@ -23,7 +23,7 @@ import carb
 
 modules = [
     "carb",
-    "omni.syntheticdata",
+    "omni.isaac.core.utils",
     "omni.isaac.core_nodes"
 ]
 

@@ -148,7 +148,8 @@ def publish_camera_tf(camera: Camera):
 
         # Generate an action graph associated with camera TF publishing.
         ros_camera_graph_path = "/Graphs/CameraTFActionGraph"
-
+        if is_prim_path_valid(ros_camera_graph_path):
+            return  # Graph already exists, so skip re-creation
         # If a camera graph is not found, create a new one.
         if not is_prim_path_valid(ros_camera_graph_path):
             (ros_camera_graph, _, _, _) = og.Controller.edit(
@@ -237,7 +238,8 @@ def camera_graph_generation(
     # # Stop the timeline so we can safely build the graph
     # timeline = omni.timeline.get_timeline_interface()
     # timeline.stop()
-
+    if is_prim_path_valid(graph_path):
+        return  # Graph already exists, so skip re-creation
     # Create a new graph with OnPlaybackTick, RunOnce, RenderProduct, ROS2Context
     # Always use "execution" evaluator
     graph_edit_result = og.Controller.edit(
@@ -329,7 +331,7 @@ def camera_graph_generation(
 
 
 def start_camera(camera: Camera, enable_pcd=False):
-    # publish_camera_tf(camera)
+    publish_camera_tf(camera)
     if enable_pcd:
         camera_graph_generation(camera)
     # publish_camera_info(camera, approx_freq)

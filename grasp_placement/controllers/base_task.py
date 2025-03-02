@@ -9,19 +9,20 @@
 from abc import ABC, abstractmethod
 from typing import Optional
 
-import numpy as np
 from omni.isaac.core.objects import DynamicCuboid
 from omni.isaac.core.scenes.scene import Scene
 from omni.isaac.core.tasks import BaseTask
 from omni.isaac.core.utils.prims import is_prim_path_valid
 from omni.isaac.core.utils.stage import get_stage_units
 from omni.isaac.core.utils.string import find_unique_string_name
+from omni.isaac.nucleus import get_assets_root_path
 from omni.isaac.sensor import Camera
 from pyquaternion import Quaternion
 from omni.isaac.franka import Franka
 from pxr import Usd, UsdGeom, UsdShade, Sdf, Gf
 import omni
 from helper import *
+import numpy as np
 
 class MyPickPlace(ABC, BaseTask):
     """[summary]
@@ -50,6 +51,7 @@ class MyPickPlace(ABC, BaseTask):
         self._robot = None
         self._target_cube = None
         self._cube = None
+        self._cube_final = None
         self._camera = None
         self._cube_initial_position = cube_initial_position
         self._cube_initial_orientation = cube_initial_orientation
@@ -58,12 +60,25 @@ class MyPickPlace(ABC, BaseTask):
         self._cube_size = cube_size
         
         if self._cube_initial_position is None:
-            self._cube_initial_position, self._cube_target_position, self._cube_initial_orientation, self._cube_target_orientation = task_randomization()
+            # self._cube_initial_position, self._cube_target_position, self._cube_initial_orientation, self._cube_target_orientation = task_randomization()
+            self.cube_init()
         if self._cube_size is None:
             self._cube_size = np.array([0.0515, 0.0515, 0.0515]) / get_stage_units()
     
 
         return
+
+    def cube_init(self, first_time=True):
+        self._cube_initial_position, self._cube_initial_orientation = pose_init()
+        self._cube_target_position, self._cube_target_orientation = pose_init()
+        if not first_time:
+            self.set_params(
+                cube_position=self._cube_initial_position,
+                cube_orientation=self._cube_initial_orientation,
+                cube_target_position=self._cube_target_position,
+                cube_target_orientation=self._cube_target_orientation,
+            )
+        return 
 
     def set_up_scene(self, scene: Scene) -> None:
         """[summary]
@@ -73,7 +88,9 @@ class MyPickPlace(ABC, BaseTask):
         """
         super().set_up_scene(scene)
         scene.add_default_ground_plane()
-        cube_prim_path = find_unique_string_name(
+
+
+        initial_cube_prim_path = find_unique_string_name(
             initial_name="/World/Cube", is_unique_fn=lambda x: not is_prim_path_valid(x)
         )
         cube_name = find_unique_string_name(initial_name="cube", is_unique_fn=lambda x: not self.scene.object_exists(x))
@@ -82,21 +99,74 @@ class MyPickPlace(ABC, BaseTask):
                 name=cube_name,
                 position=self._cube_initial_position,
                 orientation=self._cube_initial_orientation,
-                prim_path=cube_prim_path,
+                prim_path=initial_cube_prim_path,
                 scale=self._cube_size,
                 size=1.0,
                 color=np.array([0, 0, 1]),
             )
         )
-        self.attach_face_markers(cube_prim_path)
+
+
+        final_cube_prim_path = find_unique_string_name(
+            initial_name="/World/Cube_final", is_unique_fn=lambda x: not is_prim_path_valid(x)
+        )
+        final_cube_name = find_unique_string_name(initial_name="cube", is_unique_fn=lambda x: not self.scene.object_exists(x))
+
+        self._cube_final = scene.add(
+            DynamicCuboid(
+                name=final_cube_name,
+                position=self._cube_target_position,
+                orientation=self._cube_target_orientation,
+                prim_path=final_cube_prim_path,
+                scale=self._cube_size,
+                size=1.0,
+                color=np.array([1, 0, 0]),
+            )
+        )
+
+
+        self.attach_face_markers(initial_cube_prim_path)
         self._task_objects[self._cube.name] = self._cube
+        self._task_objects[self._cube_final.name] = self._cube_final
 
         self._robot: Franka = self.set_robot()
         self._robot.set_enabled_self_collisions(True)
         scene.add(self._robot)
-        self._camera:Camera = Camera(prim_path="/World/Franka/panda_hand/geometry/realsense/realsense_camera")
+
+        # set up the camera
+        # stage = omni.usd.get_context().get_stage()
+        # cameraPrim = stage.DefinePrim("/World/Franka/panda_hand/geometry/realsense/realsense_camera")
+        # # Define a new prim in file B where you want the camera to be inserted.
+
+        # assets_root_path = get_assets_root_path()
+        # usd_path = assets_root_path + "/Isaac/Robots/Franka/franka_alt_fingers.usd"
+        # cameraPrim.GetReferences().AddReference(usd_path, "/panda/panda_hand/geometry/realsense/realsense_camera")
+        orientation_degrees = np.deg2rad([0, -90, 180]) # or [0, -90, 180]
+        orientation = euler2quat(orientation_degrees[0], orientation_degrees[1], orientation_degrees[2])
+        self._camera = Camera(
+            prim_path="/World/Franka/panda_hand/geometry/realsense/realsense_camera",
+            name="realsense_camera",
+            translation=[0.05, 0.0, 0.05],
+            orientation=orientation,
+            resolution=[640, 480],
+        )
+                # Set the focal length (in millimeters) to match something similar to a RealSense D435.
+        self._camera.set_focal_length(0.193)
+
+        # Set the clipping range. Typically, near and far clipping distances are in meters.
+        self._camera.set_clipping_range(0.0001, 1000.0)
+        # stage.GetRootLayer().Save()
+
+
         self._task_objects[self._robot.name] = self._robot
         self._move_task_objects_to_their_frame()
+        # from omni.isaac.sensor import Camera
+        # import numpy as np
+        # from transforms3d.euler import euler2quat
+        # camera = Camera(prim_path="/World/Franka/panda_hand/geometry/realsense/realsense_camera")
+        # orientation_degrees = np.deg2rad([0, -90, 90]) # or [0, -90, 180]
+        # orientation = euler2quat(orientation_degrees[0], orientation_degrees[1], orientation_degrees[2])
+        # camera.set_local_pose(orientation)
         return
 
     @abstractmethod
@@ -149,6 +219,24 @@ class MyPickPlace(ABC, BaseTask):
             # to indicate the face number, or name the prim accordingly.
             # print(f"Attached marker for face '{face}' with label {label} at {translation}")
 
+    def cube_pose_finalization(self) -> None:
+        """ Both cubes finished setting up.
+        """
+        cube_position, cube_orientation = self._cube.get_world_pose()   
+        cube_target_position, cube_target_orientation = self._cube_final.get_world_pose()
+        print(f"Cube initial position: {cube_position}")
+        print(f"Cube initial orientation: {cube_orientation}")
+        print(f"Cube target position: {cube_target_position}")
+        print(f"Cube target orientation: {cube_target_orientation}")
+        self.set_params(
+            cube_position=cube_position,
+            cube_orientation=cube_orientation,
+            cube_target_position=cube_target_position,
+            cube_target_orientation=cube_target_orientation,
+        )
+
+        self._cube_final.set_world_pose(position=[1000,1000,0.5], orientation=cube_target_orientation)
+        return
 
 
     def set_params(
@@ -163,7 +251,7 @@ class MyPickPlace(ABC, BaseTask):
         if cube_target_orientation is not None:
             self._cube_target_orientation = cube_target_orientation
         if cube_position is not None or cube_orientation is not None:
-            self._cube.set_world_pose(translation=cube_position, orientation=cube_orientation)
+            self._cube.set_world_pose(position=cube_position, orientation=cube_orientation)
         return
 
     def get_params(self) -> dict:
@@ -186,7 +274,7 @@ class MyPickPlace(ABC, BaseTask):
             dict: [description]
         """
         joints_state = self._robot.get_joints_state()
-        cube_position, cube_orientation = self._cube.get_local_pose()
+        cube_position, cube_orientation = self._cube.get_world_pose()
         end_effector_position, _ = get_current_end_effector_pose()
 
         observations = {
