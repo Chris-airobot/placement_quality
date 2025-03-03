@@ -212,6 +212,113 @@ def publish_camera_tf(camera: Camera):
     )
     return
 
+def merge_graphs(camera: Camera):
+    import omni.graph.core as og
+    keys = og.Controller.Keys
+
+    robot_prim = "/World/Franka"
+    cube_prim = "/World/Cube"
+    camera_prim = camera.prim_path
+    graph_path = "/Graphs/TF"
+
+
+    if is_prim_path_valid(graph_path):
+        return
+    try:
+        # Generate the camera_frame_id. OmniActionGraph will use the last part of
+        # the full camera prim path as the frame name, so we will extract it here
+        # and use it for the pointcloud frame_id.
+        camera_frame_id=camera_prim.split("/")[-1]
+
+        # If a camera graph is not found, create a new one.
+        if not is_prim_path_valid(graph_path):
+            (ros_camera_graph, _, _, _) = og.Controller.edit(
+                {
+                    "graph_path": graph_path,
+                    "evaluator_name": "execution",
+                    "pipeline_stage": og.GraphPipelineStage.GRAPH_PIPELINE_STAGE_SIMULATION,
+                },
+                {
+                    keys.CREATE_NODES: [
+                        ("OnTick", "omni.graph.action.OnTick"),
+                        ("IsaacClock", "omni.isaac.core_nodes.IsaacReadSimulationTime"),
+                        ("RosPublisher", "omni.isaac.ros2_bridge.ROS2PublishClock"),
+                        ("RosContext", "omni.isaac.ros2_bridge.ROS2Context"),
+                    ],
+                    keys.CONNECT: [
+                        ("OnTick.outputs:tick", "RosPublisher.inputs:execIn"),
+                        ("IsaacClock.outputs:simulationTime", "RosPublisher.inputs:timeStamp"),
+                    ]
+                }
+            )
+
+        # Generate 2 nodes associated with each camera: TF from world to ROS camera convention, and world frame.
+        og.Controller.edit(
+            graph_path,
+            {
+                og.Controller.Keys.CREATE_NODES: [
+                    ("PublishTF_"+camera_frame_id, "omni.isaac.ros2_bridge.ROS2PublishTransformTree"),
+                    ("PublishRawTF_"+camera_frame_id+"_world", "omni.isaac.ros2_bridge.ROS2PublishRawTransformTree"),
+                ],
+                og.Controller.Keys.SET_VALUES: [
+                    ("PublishTF_"+camera_frame_id+".inputs:topicName", "/tf"),
+                    # Note if topic_name is changed to something else besides "/tf",
+                    # it will not be captured by the ROS tf broadcaster.
+                    ("PublishRawTF_"+camera_frame_id+"_world.inputs:topicName", "/tf"),
+                    ("PublishRawTF_"+camera_frame_id+"_world.inputs:parentFrameId", camera_frame_id),
+                    ("PublishRawTF_"+camera_frame_id+"_world.inputs:childFrameId", camera_frame_id+"_world"),
+                    # Static transform from ROS camera convention to world (+Z up, +X forward) convention:
+                    ("PublishRawTF_"+camera_frame_id+"_world.inputs:rotation", [0.5, -0.5, 0.5, 0.5]),
+                ],
+                og.Controller.Keys.CONNECT: [
+                    (graph_path+"/OnTick.outputs:tick",
+                        "PublishTF_"+camera_frame_id+".inputs:execIn"),
+                    (graph_path+"/RosContext.outputs:context",
+                        "PublishTF_"+camera_frame_id+".inputs:context"),
+                    (graph_path+"/OnTick.outputs:tick",
+                        "PublishRawTF_"+camera_frame_id+"_world.inputs:execIn"),
+                    (graph_path+"/IsaacClock.outputs:simulationTime",
+                        "PublishTF_"+camera_frame_id+".inputs:timeStamp"),
+                    (graph_path+"/IsaacClock.outputs:simulationTime",
+                        "PublishRawTF_"+camera_frame_id+"_world.inputs:timeStamp"),
+                    
+                ],
+            },
+        )
+    except Exception as e:
+        print(e)
+
+    # Add target prims for the USD pose. All other frames are static.
+    set_target_prims(
+        primPath=graph_path+"/PublishTF_"+camera_frame_id,
+        inputName="inputs:targetPrims",
+        targetPrimPaths=[camera_prim, robot_prim, cube_prim],
+    )
+    return
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def camera_graph_generation(
@@ -331,7 +438,7 @@ def camera_graph_generation(
 
 
 def start_camera(camera: Camera, enable_pcd=False):
-    publish_camera_tf(camera)
+    # publish_camera_tf(camera)
     if enable_pcd:
         camera_graph_generation(camera)
     # publish_camera_info(camera, approx_freq)

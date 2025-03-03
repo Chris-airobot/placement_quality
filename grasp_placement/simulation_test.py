@@ -121,7 +121,8 @@ class TestRobotMovement:
         self.placement_orientation = np.array([0, np.pi, 0])
         
         self.contact_activation()
-        tf_graph_generation()
+        # tf_graph_generation()
+        merge_graphs(self.task._camera)
         start_camera(self.task._camera, self.enable_pcd)
 
             
