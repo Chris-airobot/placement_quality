@@ -5,7 +5,182 @@ import omni.syntheticdata
 from omni.isaac.sensor import Camera
 from omni.isaac.core.utils.prims import is_prim_path_valid
 from omni.isaac.core_nodes.scripts.utils import set_target_prims
-from datetime import datetime
+import numpy as np
+import open3d as o3d
+from sensor_msgs.msg import PointCloud2
+import sensor_msgs_py.point_cloud2 as pc2
+import os
+
+
+def process_collected_pointclouds(collected_msgs):
+    """
+    Process the collected point cloud messages.
+    The pipeline is:
+        1. Convert ROS2 messages to Open3D point clouds and (optionally) downsample.
+        2. Merge them using registration.
+        3. Crop to a workspace, remove a dominant plane and outliers.
+        4. Estimate normals with translation adjustments.
+        5. Save the final processed point cloud to disk.
+    """
+    if not collected_msgs:
+        print("Warning: No collected messages to process.")
+        return
+
+
+    # 1. Convert collected messages.
+    pcds = []
+    for msg in collected_msgs:
+        pcd = convert_pointcloud2_to_open3d(msg)
+        if pcd is not None:
+            # Optionally downsample for speed.
+            pcd = downsample_pointcloud(pcd, voxel_size=0.01)
+            pcds.append(pcd)
+
+    if not pcds:
+        print("Warning: No valid point clouds after conversion.")
+        return
+    
+    # 2. Merge all point clouds.
+    merged_pcd = pcds[0]
+    for pcd in pcds[1:]:
+        try:
+            merged_pcd = register_and_merge(merged_pcd, pcd, voxel_size=0.01)
+        except Exception as e:
+            print("Error during registration/merge:", e)
+            continue
+
+    if merged_pcd is None:
+        print("Error: Merging resulted in None.")
+        return
+    
+
+    # 3. Process the merged point cloud.
+    # 3b. Plane segmentation (using RANSAC).
+    try:
+        plane_model, inliers = merged_pcd.segment_plane(
+            distance_threshold=0.0075, ransac_n=100, num_iterations=1000
+        )
+    except Exception as e:
+        print("Error during plane segmentation:", e)
+        return
+    
+    if len(inliers) == 0:
+        print("Warning: No plane found. Skipping plane removal.")
+        non_plane_cloud = merged_pcd
+    else:
+        # Remove plane inliers (i.e. keep only points not belonging to the plane).
+        non_plane_cloud = merged_pcd.select_by_index(inliers, invert=True)
+
+    # 3c. Remove statistical outliers.
+    try:
+        filtered_cloud, ind_filt = non_plane_cloud.remove_statistical_outlier(
+            nb_neighbors=20, std_ratio=1.5
+        )
+    except Exception as e:
+        print("Error during outlier removal:", e)
+        return
+
+
+    # 4. Normal estimation with translation adjustments.
+    try:
+        # Compute the bounding box and translate to center the object.
+        obj_bbox = filtered_cloud.get_axis_aligned_bounding_box()
+        center = obj_bbox.get_center()
+        filtered_cloud.translate(-center)
+        
+        # Apply a small upward translation to improve normal estimation.
+        filtered_cloud.translate(np.array([0, 0, 0.05]))
+        filtered_cloud.estimate_normals(
+            fast_normal_computation=True,
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30)
+        )
+        filtered_cloud.normalize_normals()
+        filtered_cloud.orient_normals_towards_camera_location(camera_location=np.array([0, 0, 0]))
+        
+        # Flip normals.
+        normals = np.asarray(filtered_cloud.normals)
+        filtered_cloud.normals = o3d.utility.Vector3dVector(-normals)
+        
+        # Reverse the translation.
+        filtered_cloud.translate(np.array([0, 0, -0.05]))
+        filtered_cloud.translate(center)
+    except Exception as e:
+        print("Error during normal estimation:", e)
+        return
+    
+    # Optionally, if you wish to reapply the outlier indices:
+    try:
+        processed_pcd = filtered_cloud.select_by_index(ind_filt)
+    except Exception as e:
+        print("Error applying filtering indices:", e)
+        processed_pcd = filtered_cloud
+
+
+
+    # 5. Save the processed point cloud.
+    try:
+        full_save_path = "/home/chris/Chris/placement_ws/src/collected.pcd"
+        o3d.io.write_point_cloud(full_save_path, processed_pcd)
+        print("Processed point cloud saved to:", full_save_path)
+    except Exception as e:
+        print("Error saving processed point cloud:", e)
+
+
+
+
+
+
+
+
+
+
+
+def convert_pointcloud2_to_open3d(msg: PointCloud2):
+    """
+    Convert a sensor_msgs/PointCloud2 message to an Open3D point cloud.
+    This example uses sensor_msgs_py.point_cloud2 to extract the (x,y,z) points.
+    """
+    # Extract field names (e.g. 'x','y','z')
+    field_names = [field.name for field in msg.fields]
+    cloud_data = list(pc2.read_points(msg, skip_nans=True, field_names=field_names))
+    if len(cloud_data) == 0:
+        return None
+    # print(f"here is the cloud data: {cloud_data}")
+
+    points = np.array(cloud_data)
+    # Extract x, y, z fields explicitly and stack them into a 2D array.
+    xyz = np.stack([points['x'], points['y'], points['z']], axis=-1).astype(np.float64)
+
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(xyz)
+    return pcd
+
+
+def downsample_pointcloud(pcd, voxel_size=0.01):
+    """
+    Downsample an Open3D point cloud using a voxel grid filter.
+    """
+    return pcd.voxel_down_sample(voxel_size)
+
+def register_and_merge(accumulated_pcd, new_pcd, voxel_size=0.01):
+    """
+    Use ICP to register the new point cloud to the accumulated point cloud,
+    then merge and downsample the result.
+    """
+    threshold = voxel_size * 1.5  # distance threshold for ICP
+    trans_init = np.identity(4)
+    reg = o3d.pipelines.registration.registration_icp(
+        new_pcd, accumulated_pcd, threshold, trans_init,
+        o3d.pipelines.registration.TransformationEstimationPointToPoint())
+    
+    # Transform the new point cloud to align with the accumulated cloud.
+    new_pcd.transform(reg.transformation)
+    
+    # Merge the point clouds and downsample the merged result.
+    merged_pcd = accumulated_pcd + new_pcd
+    merged_pcd = merged_pcd.voxel_down_sample(voxel_size)
+    return merged_pcd
+
 
 def publish_camera_info(camera: Camera, freq):
     from omni.isaac.ros2_bridge import read_camera_info
@@ -410,8 +585,8 @@ def camera_graph_generation(
                 ("RenderProduct.outputs:renderProductPath", "RGB.inputs:renderProductPath"),
 
                 # RenderProduct -> Depth
-                ("RenderProduct.outputs:execOut", "Depth.inputs:execIn"),
-                ("RenderProduct.outputs:renderProductPath", "Depth.inputs:renderProductPath"),
+                # ("RenderProduct.outputs:execOut", "Depth.inputs:execIn"),
+                # ("RenderProduct.outputs:renderProductPath", "Depth.inputs:renderProductPath"),
 
                 # RenderProduct -> DepthPCL
                 ("RenderProduct.outputs:execOut", "DepthPCL.inputs:execIn"),

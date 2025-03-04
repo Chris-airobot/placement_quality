@@ -224,10 +224,10 @@ class MyPickPlace(ABC, BaseTask):
         """
         cube_position, cube_orientation = self._cube.get_world_pose()   
         cube_target_position, cube_target_orientation = self._cube_final.get_world_pose()
-        print(f"Cube initial position: {cube_position}")
-        print(f"Cube initial orientation: {cube_orientation}")
-        print(f"Cube target position: {cube_target_position}")
-        print(f"Cube target orientation: {cube_target_orientation}")
+        # print(f"Cube initial position: {cube_position}")
+        # print(f"Cube initial orientation: {cube_orientation}")
+        # print(f"Cube target position: {cube_target_position}")
+        # print(f"Cube target orientation: {cube_target_orientation}")
         self.set_params(
             cube_position=cube_position,
             cube_orientation=cube_orientation,
@@ -275,7 +275,7 @@ class MyPickPlace(ABC, BaseTask):
         """
         joints_state = self._robot.get_joints_state()
         cube_position, cube_orientation = self._cube.get_world_pose()
-        end_effector_position, _ = get_current_end_effector_pose()
+        end_effector_position, end_effector_orientation = get_current_end_effector_pose()
 
         observations = {
             self._cube.name: {
@@ -287,6 +287,7 @@ class MyPickPlace(ABC, BaseTask):
             self._robot.name: {
                 "joint_positions": joints_state.positions,
                 "end_effector_position": end_effector_position,
+                "end_effector_orientation": end_effector_orientation,
             }
         }
         return observations

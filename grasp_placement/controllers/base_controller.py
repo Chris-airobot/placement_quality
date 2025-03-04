@@ -192,7 +192,7 @@ class MyBaseController(BaseController):
         if stage_time_limit == None:
             # Define a maximum allowed time for the stage (e.g., 2 seconds)
             stage_time_limit = 2.0
-            if self._t >= stage_time_limit or self._is_stage_task_done():
+            if self._t >= stage_time_limit or self.is_stage_task_done(self._current_ee_target_position, self._position_threshold):
 
                 self._event += 1
                 self._t = 0
@@ -204,22 +204,22 @@ class MyBaseController(BaseController):
         return target_joint_positions
 
 
-
-    def _is_stage_task_done(self) -> bool:
+    
+    def is_stage_task_done(self, ee_target_position, threshold) -> bool:
         """
         Checks if the end-effector has reached the target position within a tolerance.
         Replace the _get_current_end_effector_position() method with actual sensor feedback.
         """
         current_position, current_orientation = get_current_end_effector_pose()
 
-        if self._current_ee_target_position is not None:            
+        if ee_target_position is not None:            
             # draw_frame(current_position, current_orientation)
-            pos_error = np.linalg.norm(current_position - self._current_ee_target_position)
+            pos_error = np.linalg.norm(current_position - ee_target_position)
             # print(f"current_position: {current_position}")
             # print(f"current_ee_target_position: {self._current_ee_target_position}")
             # print(f"pos_error: {pos_error}")
             # Print error for debugging (optional)
-            return (pos_error < self._position_threshold)
+            return (pos_error < threshold)
         return False
 
     

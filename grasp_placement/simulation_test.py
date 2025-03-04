@@ -20,7 +20,7 @@ import re
 from omni.isaac.core import World
 from omni.isaac.core.utils import extensions, prims
 from omni.isaac.core.scenes import Scene
-from omni.isaac.franka import Franka
+from omni.isaac.franka import Franka, KinematicsSolver
 from controllers.pick_place_task_with_camera import PickPlaceCamera
 from controllers.data_collection_controller import DataCollectionController
 from omni.isaac.core.utils.types import ArticulationAction
@@ -62,8 +62,44 @@ class TFSubscriber(Node):
             10                   # QoS
         )
 
+        # This will hold the accumulated (merged) point cloud.
+        self.accumulated_pcd = []
+
+        # Flag to control whether to process new pointcloud messages.
+        self.pcd_callback_enabled = True
+
+
+
     def pcd_callback(self, msg):
+        if not self.pcd_callback_enabled:
+            return
+
         self.latest_pcd = msg
+        self.accumulated_pcd.append(msg)
+        # current_time = time.time()
+        # # Limit processing rate by checking the time since the last accepted message.
+        # if current_time - self.last_collection_time < self.collection_interval:
+        #     return  # Skip this message if it's too soon.
+        # self.last_collection_time = current_time
+
+        # # Convert ROS2 PointCloud2 to an Open3D point cloud.
+        # pcd = convert_pointcloud2_to_open3d(msg)
+        # if pcd is None:
+        #     self.get_logger().warn("Received empty pointcloud.")
+        #     return
+
+        # # Downsample the new point cloud.
+        # pcd = downsample_pointcloud(pcd, voxel_size=0.01)
+
+        # # If no accumulated point cloud exists yet, set it as the initial one.
+        # if self.accumulated_pcd is None:
+        #     self.accumulated_pcd = pcd
+        #     self.get_logger().info("Initialized accumulated pointcloud.")
+        # else:
+        #     # Otherwise, register the new scan to the accumulated cloud and merge.
+        #     self.accumulated_pcd = register_and_merge(self.accumulated_pcd, pcd, voxel_size=0.01)
+        #     self.get_logger().info("Merged a new pointcloud scan.")
+
 
     def tf_callback(self, msg):
         # This callback is triggered for every new TF message on /tf
@@ -76,6 +112,7 @@ class TestRobotMovement:
         self.world = None
         self.cube = None
         self.controller = None
+        self.kinematics_solver = None
         self.articulation_controller = None
         self.robot = None
         self.task = None
@@ -86,6 +123,8 @@ class TestRobotMovement:
         self.contact = None
         self.cube_grasped = None
         self.contact_sensors = None
+        self.pcd_poses = None
+        self.pcd_orientations = None
         self.model = None
         self.grasping_orientation = None
         self.placement_orientation = None  
@@ -115,6 +154,7 @@ class TestRobotMovement:
             robot_articulation=self.robot
         )
         self.articulation_controller = self.robot.get_articulation_controller() 
+        self.kinematics_solver = KinematicsSolver(self.robot, end_effector_frame_name="panda_hand")
 
         # self.placement_orientation = np.random.uniform(low=-np.pi, high=np.pi, size=3)
         self.grasping_orientation = np.array([0, np.pi, 0])
@@ -230,6 +270,10 @@ def main():
 
     # One grasp corresponding to many placements
     reset_needed = False        # Used when grasp is done 
+    pcd_finished = False
+
+    current_target = None
+    current_orientation = None
     
     while simulation_app.is_running():
         try:
@@ -263,6 +307,14 @@ def main():
                     continue
                 else:
                     env.task.cube_pose_finalization()
+                    observations = env.world.get_observations()
+                    print(f"So, the cube positions is: {observations[env.task_params['cube_name']['value']]['cube_current_position']}")
+                    env.pcd_poses, env.pcd_orientations = pcd_movements(observations[env.task_params["cube_name"]["value"]]["cube_current_position"],
+                                                                        observations[env.task_params["robot_name"]["value"]]["end_effector_position"],
+                                                                        observations[env.task_params["robot_name"]["value"]]["end_effector_orientation"],
+                                                                        )
+                    print(f"And your movements are: {env.pcd_poses}")
+                
                     env.setup_finished = True
                     if hasattr(env, "setup_start_time"):
                         del env.setup_start_time
@@ -270,19 +322,45 @@ def main():
             try:
                 observations = env.world.get_observations()
             except:
-                print("Something wrong with hitting the floor in observation")
+                print("Something wrong with getting the observation")
                 env.reset()
                 continue
+            
+            # movement for robot to obtain the pcd of the scene
+            if not pcd_finished:
+                # If there's no current target (or the previous one was reached), pop the next one.
+                if current_target is None:
+                    if len(env.pcd_poses) > 0:
+                        current_target = env.pcd_poses.pop(0)
+                        current_orientation = env.pcd_orientations.pop(0)
+                    
+                if env.controller.is_stage_task_done(current_target, 0.01):
+                    if len(env.pcd_poses) > 0:
+                        current_target = env.pcd_poses.pop(0)
+                        current_orientation = env.pcd_orientations.pop(0)
+                    else:
+                        process_collected_pointclouds(tf_node.accumulated_pcd)
+                        pcd_finished = True
+                        tf_node.pcd_callback_enabled = False
+                        
 
-            # Use random orientation only after the grasp part trajectory has been collected  
-            actions = env.controller.forward(
-                picking_position=observations[env.task_params["cube_name"]["value"]]["cube_current_position"],
-                placing_position=observations[env.task_params["cube_name"]["value"]]["cube_target_position"],
-                current_joint_positions=observations[env.task_params["robot_name"]["value"]]["joint_positions"],
-                end_effector_offset=None,
-                placement_orientation=env.placement_orientation,  
-                grasping_orientation=env.grasping_orientation,    
-            )
+
+                actions = env.controller._cspace_controller.forward(
+                    target_end_effector_position=current_target,
+                    target_end_effector_orientation=current_orientation,
+                )
+                
+                
+            else:
+                # Use random orientation only after the grasp part trajectory has been collected  
+                actions = env.controller.forward(
+                    picking_position=observations[env.task_params["cube_name"]["value"]]["cube_current_position"],
+                    placing_position=observations[env.task_params["cube_name"]["value"]]["cube_target_position"],
+                    current_joint_positions=observations[env.task_params["robot_name"]["value"]]["joint_positions"],
+                    end_effector_offset=None,
+                    placement_orientation=env.placement_orientation,  
+                    grasping_orientation=env.grasping_orientation,    
+                )
 
 
             env.articulation_controller.apply_action(actions)
