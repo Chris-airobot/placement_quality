@@ -75,32 +75,7 @@ class TFSubscriber(Node):
             return
 
         self.latest_pcd = msg
-        self.accumulated_pcd.append(msg)
-        # current_time = time.time()
-        # # Limit processing rate by checking the time since the last accepted message.
-        # if current_time - self.last_collection_time < self.collection_interval:
-        #     return  # Skip this message if it's too soon.
-        # self.last_collection_time = current_time
-
-        # # Convert ROS2 PointCloud2 to an Open3D point cloud.
-        # pcd = convert_pointcloud2_to_open3d(msg)
-        # if pcd is None:
-        #     self.get_logger().warn("Received empty pointcloud.")
-        #     return
-
-        # # Downsample the new point cloud.
-        # pcd = downsample_pointcloud(pcd, voxel_size=0.01)
-
-        # # If no accumulated point cloud exists yet, set it as the initial one.
-        # if self.accumulated_pcd is None:
-        #     self.accumulated_pcd = pcd
-        #     self.get_logger().info("Initialized accumulated pointcloud.")
-        # else:
-        #     # Otherwise, register the new scan to the accumulated cloud and merge.
-        #     self.accumulated_pcd = register_and_merge(self.accumulated_pcd, pcd, voxel_size=0.01)
-        #     self.get_logger().info("Merged a new pointcloud scan.")
-
-
+        
     def tf_callback(self, msg):
         # This callback is triggered for every new TF message on /tf
         self.latest_tf = msg
@@ -274,7 +249,9 @@ def main():
 
     current_target = None
     current_orientation = None
-    
+    # Set a time limit in seconds for each movement
+    movement_time_limit = 2  # adjust this value as needed
+
     while simulation_app.is_running():
         try:
             env.world.step(render=True)
@@ -333,18 +310,25 @@ def main():
                     if len(env.pcd_poses) > 0:
                         current_target = env.pcd_poses.pop(0)
                         current_orientation = env.pcd_orientations.pop(0)
+                        movement_start_time = time.time()  # start timer for this movement
                     
-                if env.controller.is_stage_task_done(current_target, 0.01):
+                if env.controller.is_stage_task_done(current_target, 0.01) or \
+                    (movement_start_time and (time.time() - movement_start_time > movement_time_limit)):
+                     # Target reached or the movement has exceeded the time limit, reset the timer and get the next target
+                    movement_start_time = None
+                    tf_node.accumulated_pcd.append(tf_node.latest_pcd)
                     if len(env.pcd_poses) > 0:
                         current_target = env.pcd_poses.pop(0)
                         current_orientation = env.pcd_orientations.pop(0)
+                        movement_start_time = time.time()  # start timer for new target
                     else:
                         process_collected_pointclouds(tf_node.accumulated_pcd)
                         pcd_finished = True
                         tf_node.pcd_callback_enabled = False
-                        
+                
 
-
+                print(f"Your current target is: {current_target}")
+                print(f"Your current orientation is: {current_orientation}")
                 actions = env.controller._cspace_controller.forward(
                     target_end_effector_position=current_target,
                     target_end_effector_orientation=current_orientation,

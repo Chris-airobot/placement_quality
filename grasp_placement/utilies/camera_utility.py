@@ -22,19 +22,25 @@ def process_collected_pointclouds(collected_msgs):
         4. Estimate normals with translation adjustments.
         5. Save the final processed point cloud to disk.
     """
+    print("Now starting to process collected point clouds...")
     if not collected_msgs:
         print("Warning: No collected messages to process.")
         return
 
 
     # 1. Convert collected messages.
+    print(f"There are {len(collected_msgs)} collected messages")
     pcds = []
     for msg in collected_msgs:
         pcd = convert_pointcloud2_to_open3d(msg)
         if pcd is not None:
             # Optionally downsample for speed.
-            pcd = downsample_pointcloud(pcd, voxel_size=0.01)
+            pcd = downsample_pointcloud(pcd, voxel_size=0.005)
             pcds.append(pcd)
+            print(f"{len(pcds)}/{len(collected_msgs)} pcds have been processed.")
+
+
+    
 
     if not pcds:
         print("Warning: No valid point clouds after conversion.")
@@ -44,6 +50,7 @@ def process_collected_pointclouds(collected_msgs):
     merged_pcd = pcds[0]
     for pcd in pcds[1:]:
         try:
+            print("Registering and merging point clouds...")
             merged_pcd = register_and_merge(merged_pcd, pcd, voxel_size=0.01)
         except Exception as e:
             print("Error during registration/merge:", e)
@@ -56,6 +63,8 @@ def process_collected_pointclouds(collected_msgs):
 
     # 3. Process the merged point cloud.
     # 3b. Plane segmentation (using RANSAC).
+    print("Processing merged point cloud...")
+    print(f"This is your merged point cloud: {merged_pcd}")
     try:
         plane_model, inliers = merged_pcd.segment_plane(
             distance_threshold=0.0075, ransac_n=100, num_iterations=1000
@@ -82,6 +91,7 @@ def process_collected_pointclouds(collected_msgs):
 
 
     # 4. Normal estimation with translation adjustments.
+    print("Estimating normals and adjusting translations...")
     try:
         # Compute the bounding box and translate to center the object.
         obj_bbox = filtered_cloud.get_axis_aligned_bounding_box()
@@ -108,19 +118,21 @@ def process_collected_pointclouds(collected_msgs):
         print("Error during normal estimation:", e)
         return
     
-    # Optionally, if you wish to reapply the outlier indices:
-    try:
-        processed_pcd = filtered_cloud.select_by_index(ind_filt)
-    except Exception as e:
-        print("Error applying filtering indices:", e)
-        processed_pcd = filtered_cloud
+    # # Optionally, if you wish to reapply the outlier indices:
+    # print("Reapplying outlier indices...")
+    # try:
+    #     processed_pcd = filtered_cloud.select_by_index(ind_filt)
+    # except Exception as e:
+    #     print("Error applying filtering indices:", e)
+    #     processed_pcd = filtered_cloud
 
 
 
     # 5. Save the processed point cloud.
+    print("Saving processed point cloud...")
     try:
         full_save_path = "/home/chris/Chris/placement_ws/src/collected.pcd"
-        o3d.io.write_point_cloud(full_save_path, processed_pcd)
+        o3d.io.write_point_cloud(full_save_path, filtered_cloud)
         print("Processed point cloud saved to:", full_save_path)
     except Exception as e:
         print("Error saving processed point cloud:", e)
@@ -178,7 +190,7 @@ def register_and_merge(accumulated_pcd, new_pcd, voxel_size=0.01):
     
     # Merge the point clouds and downsample the merged result.
     merged_pcd = accumulated_pcd + new_pcd
-    merged_pcd = merged_pcd.voxel_down_sample(voxel_size)
+    # merged_pcd = merged_pcd.voxel_down_sample(voxel_size)
     return merged_pcd
 
 

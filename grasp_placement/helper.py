@@ -303,13 +303,13 @@ def pcd_movements(cube_position, ee_pos, ee_ori):
     """
     object_center = cube_position
     radius = 0.4  # Distance from the object for the viewpoints
-    initial_position = ee_pos
-    initial_orientation = ee_ori
+    initial_position = np.array(ee_pos)
+    initial_orientation = np.array(ee_ori)
 
     
 
     azimuth_samples = 8
-    elevation_angles = [30, 45, 60]
+    elevation_angles = [45]
 
     waypoints_positions = []
     waypoints_orientations = []
