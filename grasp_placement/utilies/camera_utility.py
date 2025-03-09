@@ -12,7 +12,7 @@ import sensor_msgs_py.point_cloud2 as pc2
 import os
 
 
-def process_collected_pointclouds(collected_msgs):
+def process_collected_pointclouds(collected_msgs: list):
     """
     Process the collected point cloud messages.
     The pipeline is:
@@ -27,20 +27,30 @@ def process_collected_pointclouds(collected_msgs):
         print("Warning: No collected messages to process.")
         return
 
+    pcd_folder = "/home/chris/Chris/placement_ws/src/pcds/"
+     # Make sure the folder exists; if not, create it.
+    if not os.path.exists(pcd_folder):
+        os.makedirs(pcd_folder)
+        print(f"Created folder: {pcd_folder}")
 
     # 1. Convert collected messages.
     print(f"There are {len(collected_msgs)} collected messages")
+    counter = 0
     pcds = []
+    collected_msgs.pop()
     for msg in collected_msgs:
         pcd = convert_pointcloud2_to_open3d(msg)
+        # Create a complete file path for the point cloud.
+        file_path = os.path.join(pcd_folder, f"pcd_{counter}.pcd")
+
+        o3d.io.write_point_cloud(file_path, pcd)
+        print("Processed point cloud saved to:", file_path)
+        counter += 1
         if pcd is not None:
             # Optionally downsample for speed.
             pcd = downsample_pointcloud(pcd, voxel_size=0.005)
             pcds.append(pcd)
             print(f"{len(pcds)}/{len(collected_msgs)} pcds have been processed.")
-
-
-    
 
     if not pcds:
         print("Warning: No valid point clouds after conversion.")
@@ -61,28 +71,30 @@ def process_collected_pointclouds(collected_msgs):
         return
     
 
-    # 3. Process the merged point cloud.
-    # 3b. Plane segmentation (using RANSAC).
-    print("Processing merged point cloud...")
-    print(f"This is your merged point cloud: {merged_pcd}")
-    try:
-        plane_model, inliers = merged_pcd.segment_plane(
-            distance_threshold=0.0075, ransac_n=100, num_iterations=1000
-        )
-    except Exception as e:
-        print("Error during plane segmentation:", e)
-        return
+    # # 3. Process the merged point cloud.
+    # # 3b. Plane segmentation (using RANSAC).
+    # print("Processing merged point cloud...")
+    # print(f"This is your merged point cloud: {merged_pcd}")
+    # try:
+    #     plane_model, inliers = merged_pcd.segment_plane(
+    #         distance_threshold=0.0075, ransac_n=100, num_iterations=1000
+    #     )
+    # except Exception as e:
+    #     print("Error during plane segmentation:", e)
+    #     return
     
-    if len(inliers) == 0:
-        print("Warning: No plane found. Skipping plane removal.")
-        non_plane_cloud = merged_pcd
-    else:
-        # Remove plane inliers (i.e. keep only points not belonging to the plane).
-        non_plane_cloud = merged_pcd.select_by_index(inliers, invert=True)
+    # if len(inliers) == 0:
+    #     print("Warning: No plane found. Skipping plane removal.")
+    #     non_plane_cloud = merged_pcd
+    # else:
+    #     # Remove plane inliers (i.e. keep only points not belonging to the plane).
+    #     non_plane_cloud = merged_pcd.select_by_index(inliers, invert=True)
 
     # 3c. Remove statistical outliers.
     try:
-        filtered_cloud, ind_filt = non_plane_cloud.remove_statistical_outlier(
+
+        # filtered_cloud, ind_filt = non_plane_cloud.remove_statistical_outlier(
+        filtered_cloud, ind_filt = merged_pcd.remove_statistical_outlier(
             nb_neighbors=20, std_ratio=1.5
         )
     except Exception as e:
@@ -118,15 +130,6 @@ def process_collected_pointclouds(collected_msgs):
         print("Error during normal estimation:", e)
         return
     
-    # # Optionally, if you wish to reapply the outlier indices:
-    # print("Reapplying outlier indices...")
-    # try:
-    #     processed_pcd = filtered_cloud.select_by_index(ind_filt)
-    # except Exception as e:
-    #     print("Error applying filtering indices:", e)
-    #     processed_pcd = filtered_cloud
-
-
 
     # 5. Save the processed point cloud.
     print("Saving processed point cloud...")

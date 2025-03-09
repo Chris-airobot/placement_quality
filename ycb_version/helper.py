@@ -6,7 +6,6 @@ import json
 import tf2_ros
 from rclpy.time import Time
 import struct
-from network_client import GraspClient
 from transforms3d.quaternions import quat2mat, mat2quat, qmult, qinverse
 from transforms3d.axangles import axangle2mat
 from transforms3d.euler import euler2quat, quat2euler
@@ -913,19 +912,20 @@ def spawn_random_cube(prim_path: str):
     )
     print(f"Spawned cube at {pos} with Euler angles (rad): {euler_angles_rad}")
 
-def obtain_grasps(pcd_path, port):
-    node = GraspClient()
-    raw_grasps = node.request_grasps(port, pcd_path)
+# def obtain_grasps(pcd_path, port):
+#     from network_client import GraspClient
+#     node = GraspClient()
+#     raw_grasps = node.request_grasps(port, pcd_path)
 
-    grasps = []
-    for key in sorted(raw_grasps.keys(), key=int):
-        item = raw_grasps[key]
-        position = item["position"]
-        orientation = item["orientation_wxyz"]
-        # Each grasp: [ [position], [orientation] ]
-        grasps.append([position, orientation])
+#     grasps = []
+#     for key in sorted(raw_grasps.keys(), key=int):
+#         item = raw_grasps[key]
+#         position = item["position"]
+#         orientation = item["orientation_wxyz"]
+#         # Each grasp: [ [position], [orientation] ]
+#         grasps.append([position, orientation])
 
-    return grasps
+#     return grasps
 
 
 

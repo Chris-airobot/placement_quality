@@ -53,6 +53,7 @@ class MyPickPlace(ABC, BaseTask):
         self._cube = None
         self._cube_final = None
         self._camera = None
+        self._set_camera = set_camera
         self._cube_initial_position = cube_initial_position
         self._cube_initial_orientation = cube_initial_orientation
         self._cube_target_position = target_position
@@ -134,39 +135,27 @@ class MyPickPlace(ABC, BaseTask):
         scene.add(self._robot)
 
         # set up the camera
-        # stage = omni.usd.get_context().get_stage()
-        # cameraPrim = stage.DefinePrim("/World/Franka/panda_hand/geometry/realsense/realsense_camera")
-        # # Define a new prim in file B where you want the camera to be inserted.
-
-        # assets_root_path = get_assets_root_path()
-        # usd_path = assets_root_path + "/Isaac/Robots/Franka/franka_alt_fingers.usd"
-        # cameraPrim.GetReferences().AddReference(usd_path, "/panda/panda_hand/geometry/realsense/realsense_camera")
         orientation_degrees = np.deg2rad([0, -90, 180]) # or [0, -90, 180]
         orientation = euler2quat(orientation_degrees[0], orientation_degrees[1], orientation_degrees[2])
-        self._camera = Camera(
-            prim_path="/World/Franka/panda_hand/geometry/realsense/realsense_camera",
-            name="realsense_camera",
-            translation=[0.05, 0.0, 0.05],
-            orientation=orientation,
-            resolution=[640, 480],
-        )
-                # Set the focal length (in millimeters) to match something similar to a RealSense D435.
-        self._camera.set_focal_length(0.193)
+        if self._set_camera:
+            self._camera = Camera(
+                prim_path="/World/Franka/panda_hand/geometry/realsense/realsense_camera",
+                name="realsense_camera",
+                translation=[0.05, 0.0, 0.05],
+                orientation=orientation,
+                resolution=[640, 480],
+            )
+                    # Set the focal length (in millimeters) to match something similar to a RealSense D435.
+            self._camera.set_focal_length(0.193)
 
-        # Set the clipping range. Typically, near and far clipping distances are in meters.
-        self._camera.set_clipping_range(0.0001, 1000.0)
+            # Set the clipping range. Typically, near and far clipping distances are in meters.
+            self._camera.set_clipping_range(0.0001, 1000.0)
         # stage.GetRootLayer().Save()
 
 
         self._task_objects[self._robot.name] = self._robot
         self._move_task_objects_to_their_frame()
-        # from omni.isaac.sensor import Camera
-        # import numpy as np
-        # from transforms3d.euler import euler2quat
-        # camera = Camera(prim_path="/World/Franka/panda_hand/geometry/realsense/realsense_camera")
-        # orientation_degrees = np.deg2rad([0, -90, 90]) # or [0, -90, 180]
-        # orientation = euler2quat(orientation_degrees[0], orientation_degrees[1], orientation_degrees[2])
-        # camera.set_local_pose(orientation)
+
         return
 
     @abstractmethod
