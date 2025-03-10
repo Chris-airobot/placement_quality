@@ -1,0 +1,22 @@
+{
+    "python.autoComplete.extraPaths": [
+        "/home/chris/fun_ws/install/my-test-package/lib/python3.10/site-packages",
+        "/home/chris/fun_ws/install/mobile_robot/lib/python3.10/site-packages",
+        "/home/chris/IsaacSim-ros_workspaces/humble_ws/install/isaac_ros_navigation_goal/lib/python3.10/site-packages",
+        "/home/chris/IsaacSim-ros_workspaces/humble_ws/install/isaac_ros2_messages/lib/python3.10/site-packages",
+        "/home/chris/IsaacSim-ros_workspaces/humble_ws/install/grasp_placement/lib/python3.10/site-packages",
+        "/home/chris/IsaacSim-ros_workspaces/humble_ws/install/custom_message/lib/python3.10/site-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ],
+    "python.analysis.extraPaths": [
+        "/home/chris/fun_ws/install/my-test-package/lib/python3.10/site-packages",
+        "/home/chris/fun_ws/install/mobile_robot/lib/python3.10/site-packages",
+        "/home/chris/IsaacSim-ros_workspaces/humble_ws/install/isaac_ros_navigation_goal/lib/python3.10/site-packages",
+        "/home/chris/IsaacSim-ros_workspaces/humble_ws/install/isaac_ros2_messages/lib/python3.10/site-packages",
+        "/home/chris/IsaacSim-ros_workspaces/humble_ws/install/grasp_placement/lib/python3.10/site-packages",
+        "/home/chris/IsaacSim-ros_workspaces/humble_ws/install/custom_message/lib/python3.10/site-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ]
+}

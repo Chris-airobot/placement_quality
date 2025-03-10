@@ -15,6 +15,48 @@ from geometry_msgs.msg import TransformStamped
 import random
 import math
 from omni.isaac.core.utils.prims import is_prim_path_valid
+from rclpy.node import Node
+
+
+class SimSubscriber(Node):
+    def __init__(self):
+        super().__init__("Sim_subscriber")
+        self.latest_tf = None  # Store the latest TFMessage here
+        self.latest_pcd = None # Store the latest Pointcloud here
+
+        self.buffer = tf2_ros.Buffer()
+        self.listener = tf2_ros.TransformListener(self.buffer, self)
+
+        # Create the subscription
+        self.tf_subscription = self.create_subscription(
+            TFMessage,           # Message type
+            "/tf",               # Topic name
+            self.tf_callback,    # Callback function
+            10                   # QoS
+        )
+
+        self.pcd_subscription = self.create_subscription(
+            PointCloud2,         # Message type
+            "/depth_pcl",        # Topic name
+            self.pcd_callback,   # Callback function
+            10                   # QoS
+        )
+
+        # This will hold the accumulated (merged) point cloud.
+        self.accumulated_pcd = []
+
+        # Flag to control whether to process new pointcloud messages.
+        self.pcd_callback_enabled = True
+
+    def pcd_callback(self, msg):
+        if not self.pcd_callback_enabled:
+            return
+
+        self.latest_pcd = msg
+        
+    def tf_callback(self, msg):
+        # This callback is triggered for every new TF message on /tf
+        self.latest_tf = msg
 
 
 def convert_wxyz_to_xyzw(q_wxyz):
@@ -57,23 +99,6 @@ def cube_orientation_to_ee_orientation(q_cube_init, q_ee_init, q_cube_target):
     return R_ee_target.as_quat()
 
 
-def cube_feasible_orientation():
-    random_orientations = {
-        "top_surface":      np.array([   0.0,  0.0,   np.random.uniform(-180, 180)]),     # top face up  z diff
-        "bottom_surface":   np.array([-180.0,  0.0,   np.random.uniform(-180, 180)]),     # bottom face up z diff
-        "left_surface":     np.array([  90.0,  np.random.uniform(-180, 180),   0.0]),     # left face up y diff
-        "right_surface":    np.array([ -90.0,  np.random.uniform(-180, 180),   0.0]),     # right face up y diff
-        "front_surface":    np.array([  90.0,  np.random.uniform(-180, 180),  90.0]),     # front face up y diff
-        "back_surface":     np.array([   0.0,  np.random.uniform(-180, 180), -90.0]),     # back face up y diff
-    }
-
-    # Randomly select one of the keys
-    random_surface = random.choice(list(random_orientations.keys()))
-
-    # Get the corresponding orientation
-    random_orientation = np.deg2rad(random_orientations[random_surface])
-
-    return euler2quat(*random_orientation)
 
 def surface_detection(rpy):
     local_normals = {
@@ -210,7 +235,7 @@ def tf_graph_generation():
     keys = og.Controller.Keys
 
     robot_frame_path= "/World/Franka"
-    cube_frame = "/World/Cube"
+    ycb_frame = "/World/Ycb_object"
     graph_path = "/Graphs/TF"
     # test_cube = "/World/Franka/test_cube"
     if is_prim_path_valid(graph_path):
@@ -232,7 +257,7 @@ def tf_graph_generation():
 
             keys.SET_VALUES: [
                 ("TF_Tree.inputs:topicName", "/tf"),
-                ("TF_Tree.inputs:targetPrims", [robot_frame_path, cube_frame]),
+                ("TF_Tree.inputs:targetPrims", [robot_frame_path, ycb_frame]),
                 # ("TF_Tree.inputs:targetPrims", cube_frame),
                 ("TF_Tree.inputs:queueSize", 10),
  
@@ -246,124 +271,7 @@ def tf_graph_generation():
         }
     )
 
-def compute_viewpoint(object_center, radius, azimuth_deg, elevation_deg):
-    """
-    Compute a viewpoint on a sphere given an object center, radius, azimuth, and elevation.
-    """
-    azimuth = math.radians(azimuth_deg)
-    elevation = math.radians(elevation_deg)
-    x = object_center[0] + radius * math.cos(elevation) * math.cos(azimuth)
-    y = object_center[1] + radius * math.cos(elevation) * math.sin(azimuth)
-    z = object_center[2] + radius * math.sin(elevation)
-    return np.array([x, y, z])
 
-def compute_lookat_orientation(camera_position, target_position, up_vector=np.array([0, 0, 1])):
-    """
-    Compute a quaternion (in [w, x, y, z] order) so that a camera at camera_position
-    will look at target_position. If the forward vector is nearly parallel to up_vector,
-    a fallback up vector is used to avoid degenerate cross products.
-    """
-    forward = target_position - camera_position
-    forward_norm = np.linalg.norm(forward)
-    if forward_norm < 1e-6:
-        return np.array([1, 0, 0, 0])  # No valid orientation if camera == target
-
-    forward = forward / forward_norm
-    # If forward is nearly parallel to up_vector, pick a different up.
-    if abs(np.dot(forward, up_vector)) > 0.99:
-        up_vector = np.array([0, 1, 0])  # fallback up
-
-    right = np.cross(up_vector, forward)
-    right_norm = np.linalg.norm(right)
-    if right_norm < 1e-6:
-        right = np.array([1, 0, 0])
-    else:
-        right = right / right_norm
-
-    true_up = np.cross(forward, right)
-    R_mat = np.column_stack((right, true_up, forward))
-    
-    # as_quat() returns [x, y, z, w]
-    quat_xyzw = R.from_matrix(R_mat).as_quat()
-    # Convert to [w, x, y, z]
-    quat_wxyz = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]])
-    return quat_wxyz
-
-def pcd_movements(cube_position, ee_pos, ee_ori):
-    """
-    Compute a series of viewpoints around an object, including an overhead view.
-    Args:
-        cube_position: (3,) np.ndarray: [x, y, z] position of the cube.
-        ee_pos: (3,) np.ndarray: [x, y, z] position of the end-effector.
-        ee_ori: (4,) np.ndarray: [w, x, y, z] orientation of the end-effector.
-    Returns:
-        target_positions: List of (3,) np.ndarray: [x, y, z] positions of the viewpoints.
-        target_orientations: List of (4,) np.ndarray: [w, x, y, z] orientations of the viewpoints.
-    """
-    object_center = cube_position
-    radius = 0.4  # Distance from the object for the viewpoints
-    initial_position = np.array(ee_pos)
-    initial_orientation = np.array(ee_ori)
-
-    
-
-    azimuth_samples = 4
-    elevation_angles = [45]
-
-    waypoints_positions = []
-    waypoints_orientations = []
-
-
-    for elevation_deg in elevation_angles:
-        for i in range(azimuth_samples):
-            az = (360.0 / azimuth_samples) * i
-            cam_pos = compute_viewpoint(object_center, radius, az, elevation_deg)
-            cam_orient = compute_lookat_orientation(cam_pos, object_center)
-
-            waypoints_positions.append(cam_pos)
-            waypoints_orientations.append(cam_orient)
-
-    # After all scanning viewpoints, return to the initial pose
-    waypoints_positions.append(initial_position)
-    waypoints_orientations.append(initial_orientation)
-
-    return waypoints_positions, waypoints_orientations
-
-def get_current_end_effector_pose() -> np.ndarray:
-    """
-    Return the current end-effector (grasp center, i.e. outside the robot) pose.
-    return: (3,) np.ndarray: [x, y, z] position of the grasp center.
-            (4,) np.ndarray: [w, x, y, z] orientation of the grasp center.
-    """
-
-    offset = np.array([0.0, 0.0, 0.1034])
-    from omni.isaac.dynamic_control import _dynamic_control
-    """Return the current end-effector (grasp center) position."""
-    # Acquire dynamic control interface
-    dc = _dynamic_control.acquire_dynamic_control_interface()
-    # Get rigid body handles for the two gripper fingers
-    ee_body = dc.get_rigid_body("/World/Franka/panda_hand")
-    # Query the world poses of each finger
-    ee_pose = dc.get_rigid_body_pose(ee_body)
-    panda_hand_translation = ee_pose.p 
-    panda_hand_quat = ee_pose.r
-
-    # Create a Rotation object from the panda_hand quaternion.
-    hand_rot = R.from_quat(panda_hand_quat)
-    
-    # Rotate the local offset into world coordinates.
-    offset_world = hand_rot.apply(offset)
-    
-    # Compute the tool_center position.
-    tool_center_translation = panda_hand_translation + offset_world
-    
-    # Since the relative orientation is identity ([0,0,0]), the tool_center's orientation
-    # remains the same as the panda_hand's.
-    tool_center_quat = [panda_hand_quat[3], panda_hand_quat[0], panda_hand_quat[1], panda_hand_quat[2]]
-    # print(f"Tool center translation: {tool_center_translation}")
-    # print(f"Tool center quaternion: {tool_center_quat}")
-    
-    return tool_center_translation, tool_center_quat
 
 
 
@@ -428,16 +336,6 @@ def draw_frame(
 
     # Draw the three axes.
     draw.draw_lines(start_points, end_points, colors, sizes)
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -791,7 +689,39 @@ def transform_pointcloud_to_frame(
 
 
 
+def get_current_end_effector_pose() -> np.ndarray:
+    """
+    Return the current end-effector (grasp center, i.e. outside the robot) pose.
+    return: (3,) np.ndarray: [x, y, z] position of the grasp center.
+            (4,) np.ndarray: [w, x, y, z] orientation of the grasp center.
+    """
 
+    offset = np.array([0.0, 0.0, 0.1034])
+    from omni.isaac.dynamic_control import _dynamic_control
+    """Return the current end-effector (grasp center) position."""
+    # Acquire dynamic control interface
+    dc = _dynamic_control.acquire_dynamic_control_interface()
+    # Get rigid body handles for the two gripper fingers
+    ee_body = dc.get_rigid_body("/World/Franka/panda_hand")
+    # Query the world poses of each finger
+    ee_pose = dc.get_rigid_body_pose(ee_body)
+    panda_hand_translation = ee_pose.p 
+    panda_hand_quat = ee_pose.r
+
+    # Create a Rotation object from the panda_hand quaternion.
+    hand_rot = R.from_quat(panda_hand_quat)
+    
+    # Rotate the local offset into world coordinates.
+    offset_world = hand_rot.apply(offset)
+    
+    # Compute the tool_center position.
+    tool_center_translation = panda_hand_translation + offset_world
+    
+    # Since the relative orientation is identity ([0,0,0]), the tool_center's orientation
+    # remains the same as the panda_hand's.
+    tool_center_quat = [panda_hand_quat[3], panda_hand_quat[0], panda_hand_quat[1], panda_hand_quat[2]]
+    
+    return tool_center_translation, tool_center_quat
 
 
 def get_upward_facing_marker(cube_prim_path):
@@ -812,6 +742,18 @@ def get_upward_facing_marker(cube_prim_path):
         print(f"Cube prim not found at {cube_prim_path}")
         return None
 
+    def get_world_translation(prim):
+        """
+        Computes the world translation of a prim by computing its local-to-world
+        transformation matrix and extracting its translation.
+        """
+        from pxr import UsdGeom, Gf, Usd
+
+        time=Usd.TimeCode(0)
+        xformable = UsdGeom.Xformable(prim)
+        # Compute the local-to-world transform matrix at the default time.
+        world_matrix = xformable.ComputeLocalToWorldTransform(time)
+        return world_matrix.ExtractTranslation()
 
     upward_marker = None
     max_z = -float('inf')
@@ -831,101 +773,12 @@ def get_upward_facing_marker(cube_prim_path):
     return upward_marker
 
 
-def get_world_translation(prim):
-    """
-    Computes the world translation of a prim by computing its local-to-world
-    transformation matrix and extracting its translation.
-    """
-    from pxr import UsdGeom, Gf, Usd
-
-    time=Usd.TimeCode(0)
-    xformable = UsdGeom.Xformable(prim)
-    # Compute the local-to-world transform matrix at the default time.
-    world_matrix = xformable.ComputeLocalToWorldTransform(time)
-    return world_matrix.ExtractTranslation()
 
 
-def task_randomization():
-    """
-    Generate random initial and target positions for the cube.
-    Output: cube_initial_position, cube_target_position, cube_initial_orientation, cube_target_orientation
-    """
-    ranges = [(-0.5, -0.15), (0.15, 0.5)]
-    range_choice = ranges[np.random.choice(len(ranges))]
-    
-    # Generate x and y as random values between -π and π
-    x, y = np.random.uniform(low=range_choice[0], high=range_choice[1]), np.random.uniform(low=range_choice[0], high=range_choice[1])
-    p, q = np.random.uniform(low=range_choice[0], high=range_choice[1]), np.random.uniform(low=range_choice[0], high=range_choice[1])
 
-    cube_initial_position = np.array([x, y, 0.3])
-    cube_target_position = np.array([p, q, 0.075])
-    cube_initial_orientation = cube_feasible_orientation()
-    cube_target_orientation = cube_feasible_orientation()
 
-    return cube_initial_position, cube_target_position, cube_initial_orientation, cube_target_orientation
-
-def pose_init():
-    ranges = [(-0.5, -0.15), (0.15, 0.5)]
-    range_choice = ranges[np.random.choice(len(ranges))]
-    
-    # Generate x and y as random values between -π and π
-    x, y = np.random.uniform(low=range_choice[0], high=range_choice[1]), np.random.uniform(low=range_choice[0], high=range_choice[1])
-    z = np.random.uniform(1.0, 2.0)
-
-    # Random Euler angles in degrees and convert to radians
-    euler_angles_deg = [random.uniform(0, 360) for _ in range(3)]
-    euler_angles_rad = np.deg2rad(euler_angles_deg)
-    
-    # Convert Euler angles to quaternion using your preferred function,
-    # e.g., if you have a function euler2quat that takes 3 angles:
-    quat = euler2quat(*euler_angles_rad)  # Make sure euler2quat returns in the correct order
-    pos =  np.array([x, y, z])
-
-    return pos, quat
     
 
-
-def spawn_random_cube(prim_path: str):
-    from omni.isaac.core.utils import prims
-    ranges = [(-0.5, -0.15), (0.15, 0.5)]
-    range_choice = ranges[np.random.choice(len(ranges))]
-    
-    # Generate x and y as random values between -π and π
-    x, y = np.random.uniform(low=range_choice[0], high=range_choice[1]), np.random.uniform(low=range_choice[0], high=range_choice[1])
-    
-    pos = [x,y, np.random.uniform(1.0, 2.0)]  # Random z between 0.1 and 0.5
-    # Random Euler angles in degrees and convert to radians
-    euler_angles_deg = [random.uniform(0, 360) for _ in range(3)]
-    euler_angles_rad = np.deg2rad(euler_angles_deg)
-    
-    # Convert Euler angles to quaternion using your preferred function,
-    # e.g., if you have a function euler2quat that takes 3 angles:
-    quat = euler2quat(*euler_angles_rad)  # Make sure euler2quat returns in the correct order
-
-    # Create the cube prim with a given scale (adjust as needed)
-    prims.create_prim(
-        prim_path=prim_path,
-        prim_type="Cube",
-        position=pos,
-        orientation=quat,
-        scale=[0.1, 0.1, 0.1]
-    )
-    print(f"Spawned cube at {pos} with Euler angles (rad): {euler_angles_rad}")
-
-# def obtain_grasps(pcd_path, port):
-#     from network_client import GraspClient
-#     node = GraspClient()
-#     raw_grasps = node.request_grasps(port, pcd_path)
-
-#     grasps = []
-#     for key in sorted(raw_grasps.keys(), key=int):
-#         item = raw_grasps[key]
-#         position = item["position"]
-#         orientation = item["orientation_wxyz"]
-#         # Each grasp: [ [position], [orientation] ]
-#         grasps.append([position, orientation])
-
-#     return grasps
 
 
 

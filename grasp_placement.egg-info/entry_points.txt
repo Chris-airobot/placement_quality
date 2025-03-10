@@ -1,5 +1,0 @@
-[console_scripts]
-camera_initialization = grasp_placement.camera_initialization:main
-sim_control = grasp_placement.sim_control:main
-sim_initialization = grasp_placement.sim_initialization:main
-

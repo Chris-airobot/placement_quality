@@ -1,6 +1,23 @@
 from isaacsim import SimulationApp
 
-simulation_app = SimulationApp({"headless": False})
+DISP_FPS        = 1<<0
+DISP_AXIS       = 1<<1
+DISP_RESOLUTION = 1<<3
+DISP_SKELEKETON   = 1<<9
+DISP_MESH       = 1<<10
+DISP_PROGRESS   = 1<<11
+DISP_DEV_MEM    = 1<<13
+DISP_HOST_MEM   = 1<<14
+
+CONFIG = {
+    "width": 1920,
+    "height":1080,
+    "headless": False,
+    "renderer": "RayTracedLighting",
+    "display_options": DISP_FPS|DISP_RESOLUTION|DISP_MESH|DISP_DEV_MEM|DISP_HOST_MEM,
+}
+
+simulation_app = SimulationApp(CONFIG)
 import numpy as np
 import asyncio
 import json
@@ -12,29 +29,26 @@ from tf2_msgs.msg import TFMessage
 from sensor_msgs.msg import PointCloud2
 import time
 import re
+from functools import partial
+from typing import List
+from rclpy.executors import SingleThreadedExecutor
 
 from omni.isaac.core import World
 from omni.isaac.core.utils import extensions, prims
 from omni.isaac.core.scenes import Scene
 from omni.isaac.franka import Franka
-from task import YcbTask
-from planner import YcbPlanner
 from omni.isaac.core.utils.types import ArticulationAction
-from helper import *
 from omni.isaac.core.utils.rotations import euler_angles_to_quat, quat_to_euler_angles
 from omni.isaac.sensor import ContactSensor
-from functools import partial
-from typing import List
 
-from rclpy.executors import SingleThreadedExecutor
+from task import YcbTask
+from planner import YcbPlanner
+from vision import *
+from helper import *
 
-# from grasp_placement.utilies.camera_utility import *
 # Enable ROS2 bridge extension
 extensions.enable_extension("omni.isaac.ros2_bridge")
 simulation_app.update()
-
-
-
 
 class YcbCollection:
     def __init__(self):
@@ -51,8 +65,8 @@ class YcbCollection:
 
         # Task variables
         self.sim_subscriber = None
-        self.contact = None
-        self.object_target_orientation = None  # Gripper orientation when the cube is about to be placed
+        self.contact_message = None
+        self.object_target_orientation = None  
         self.ee_grasping_orientation = None
         self.ee_placement_orientation = None 
         self.setup_start_time = None
@@ -89,12 +103,22 @@ class YcbCollection:
             gripper=self.robot.gripper,
             robot_articulation=self.robot,
         )
+        
+        # Initially hide the robot
+        self.robot.prim.GetAttribute("visibility").Set("invisible")
 
         # Robot movment setup
         self.ee_grasping_orientation = np.array([0, np.pi, 0])
         self.ee_placement_orientation = np.array([0, np.pi, 0])
 
-
+        # TF setup
+        tf_graph_generation()
+        
+    def reset(self):
+        self.world.reset()
+        self.planner.reset()
+        self.task.object_init(False)
+        self.setup_finished = False
 
 def main():
     env = YcbCollection()
@@ -114,15 +138,25 @@ def main():
                 reset_needed = False
 
             if not env.setup_finished:
+                
                 if not env.setup_start_time:
                     env.setup_start_time = time.time()
+
                 if time.time() - env.setup_start_time < 1:
+
                     # Skip sending robot commands, letting other parts of the simulation continue.
                     continue
                 else:
-                    env.task.object_pose_finalization()
-                    env.task.set_camera(env.task.get_params()["object_current_position"]["value"])
 
+                    env.task.object_pose_finalization()
+                    # Set camera to the object
+                    env.cameras = env.task.set_camera(env.task.get_params()["object_current_position"]["value"])
+                    start_cameras(env.cameras)
+                    
+                    # Make the robot visible again after setup
+                    # env.robot.prim.GetAttribute("visibility").Set("inherited")
+                    
+                    # Set up finished       
                     env.setup_finished = True
                     env.setup_start_time = None
                     print(f"set up finished")
@@ -141,8 +175,12 @@ def main():
                 grasping_orientation=env.ee_grasping_orientation,
             )
 
-            env.controller.apply_action(actions)
-            
+            # env.controller.apply_action(actions)
+        
+        if env.planner.is_done():
+            print("----------------- done picking and placing ----------------- \n\n")
+            reset_needed = True
+            env.reset()
     simulation_app.close()
 
 if __name__ == "__main__":

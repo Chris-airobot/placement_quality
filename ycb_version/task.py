@@ -19,7 +19,7 @@ import omni.graph.core as og
 import omni.syntheticdata
 from pxr import Usd, UsdGeom, Gf, UsdPhysics
 # Assuming these helper functions are defined in your project
-from helper import pose_init, euler2quat, get_current_end_effector_pose
+from helper import euler2quat, get_current_end_effector_pose
 from scipy.spatial.transform import Rotation as R
 
 
@@ -67,8 +67,8 @@ class YcbTask(BaseTask, ABC):
 
     def object_init(self, first_time: bool = True) -> None:
         """Initialize the object poses (both initial and target) using a helper function."""
-        self._object_initial_position, self._object_initial_orientation = pose_init()
-        self._object_target_position, self._object_target_orientation = pose_init()
+        self._object_initial_position, self._object_initial_orientation = self.pose_init()
+        self._object_target_position, self._object_target_orientation = self.pose_init()
         if not first_time:
             self.set_params(
                 object_position=self._object_initial_position,
@@ -146,28 +146,6 @@ class YcbTask(BaseTask, ABC):
         scene.add(self._robot)
         self._task_objects[self._robot.name] = self._robot
 
-
-        # Set up the camera if enabled.
-        # if self._set_camera:
-        #     self._cameras = self.set_camera()
-        #     for cam in self._cameras:
-        #         scene.add(cam)
-                # self._task_objects[cam.name] = cam
-        # orientation_degrees = np.deg2rad([0, -90, 180])
-        # orientation = euler2quat(orientation_degrees[0], orientation_degrees[1], orientation_degrees[2])
-        # if self._set_camera:
-        #     self._camera = Camera(
-        #         prim_path="/World/Franka/panda_hand/geometry/realsense/realsense_camera",
-        #         name="realsense_camera",
-        #         translation=[0.05, 0.0, 0.05],
-        #         orientation=orientation,
-        #         resolution=[640, 480],
-        #     )
-        #     # Set camera parameters similar to a RealSense D435.
-        #     self._camera.set_focal_length(0.193)
-        #     self._camera.set_clipping_range(0.0001, 1000.0)
-
-        # Move task objects to their designated frames.
         self._move_task_objects_to_their_frame()
         return
 
@@ -188,77 +166,104 @@ class YcbTask(BaseTask, ABC):
     
 
     def set_camera(self, object_position):
-        def look_at(from_pos, to_pos, up=[0, 0, 1]):
-            """
-            Compute a quaternion (in WXYZ order) that rotates from the camera position 
-            to look at the target position, using the given up vector.
-            """
-            from_pos = np.array(from_pos)
-            to_pos = np.array(to_pos)
-            up = np.array(up)
+        """
+        Set up cameras in a circular pattern, each pointing at the object from different angles.
+        Each camera is positioned 120 degrees apart around the object and tilted to look at the object center.
+        
+        Args:
+            object_position: The position of the object to look at
             
-            # Compute forward direction (normalized)
-            forward = to_pos - from_pos
-            forward_norm = np.linalg.norm(forward)
-            if forward_norm < 1e-6:
-                forward_norm = 1.0
-            forward = forward / forward_norm
-            
-            # Compute right and true up vectors
-            right = np.cross(up, forward)
-            right_norm = np.linalg.norm(right)
-            if right_norm < 1e-6:
-                right_norm = 1.0
-            right = right / right_norm
-            
-            true_up = np.cross(forward, right)
-            
-            # Build a rotation matrix with columns [right, true_up, forward]
-            rot_matrix = np.column_stack((right, true_up, forward))
-            
-            # Use SciPy to robustly convert the rotation matrix to a quaternion.
-            # SciPy's as_quat() returns [x, y, z, w] by default.
-            quat_xyzw = R.from_matrix(rot_matrix).as_quat()
-            # Rearrange to get WXYZ order.
-            quat_wxyz = np.concatenate(([quat_xyzw[3]], quat_xyzw[:3]))
-            return quat_wxyz.tolist()
+        Returns:
+            List of camera objects
+        """
+        # Store cameras for later use
+        self._cameras = []
+        
+        # If camera setup is disabled, return early
+        if not self._set_camera:
+            return self._cameras
 
-        distance = 3.0      # Distance of cameras from the object.
-        offset_z = 1.0      # Height offset for the cameras.
-
-        camera_positions = [
-            [object_position[0], object_position[1] - distance, object_position[2] + offset_z],  # Front view
-            [object_position[0] - distance, object_position[1], object_position[2] + offset_z],  # Left view
-            [object_position[0] + distance, object_position[1], object_position[2] + offset_z]   # Right view
-        ]
-
-        # Define camera configuration (unique prim paths and names).
+        # Camera parameters
+        radius = 0.5       # Horizontal distance from object center
+        height = 0.3       # Height above the object
+        
+        # Define camera positions in a circle around the object (120 degrees apart)
+        angles = [0, 120, 240]  # in degrees, spaced 120 degrees apart
+        
+        # Define camera configuration
         camera_configs = [
-            {"name": "camera_front", "prim_path": "/World/camera_front"},
-            {"name": "camera_left",  "prim_path": "/World/camera_left"},
-            {"name": "camera_right", "prim_path": "/World/camera_right"}
+            {"name": "camera_1", "prim_path": "/World/camera_1"},
+            {"name": "camera_2", "prim_path": "/World/camera_2"},
+            {"name": "camera_3", "prim_path": "/World/camera_3"},
         ]
 
-        cameras = []
-        for pos, config in zip(camera_positions, camera_configs):
-            # Compute the orientation (in WXYZ order) so the camera looks at the object.
-            quat = look_at(pos, self._object_initial_position)
+        # Create cameras with positions and orientations that point at the object
+        for i, (angle, config) in enumerate(zip(angles, camera_configs)):
+            # Convert angle to radians
+            angle_rad = np.radians(angle)
             
-            # Create the camera with the computed position and orientation.
+            # Calculate position on the circle with some height
+            x = object_position[0] + radius * np.cos(angle_rad)
+            y = object_position[1] + radius * np.sin(angle_rad)
+            z = object_position[2] + height
+            camera_position = [x, y, z]
+            
+            # Calculate the direction vector from camera to object
+            direction = np.array(object_position) - np.array(camera_position)
+            
+            # Normalize the direction vector
+            direction = direction / np.linalg.norm(direction)
+            
+            # Create a rotation matrix that aligns the camera's forward direction with the direction vector
+            # We need to find a rotation that maps [0,0,-1] (camera forward in USD) to our direction vector
+            
+            # First, calculate the rotation axis and angle using cross product and dot product
+            forward = np.array([0, 0, -1])  # Camera forward direction in USD
+            rotation_axis = np.cross(forward, direction)
+            
+            # If the vectors are parallel, we need a different approach
+            if np.allclose(rotation_axis, 0):
+                if np.dot(forward, direction) > 0:  # Same direction
+                    rotation_quat = [1, 0, 0, 0]  # Identity quaternion
+                else:  # Opposite direction
+                    rotation_quat = [0, 1, 0, 0]  # 180 degree rotation around X
+            else:
+                # Normalize the rotation axis
+                rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
+                
+                # Calculate the rotation angle
+                cos_angle = np.dot(forward, direction)
+                angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
+                
+                # Convert to quaternion (axis-angle to quaternion)
+                sin_half_angle = np.sin(angle / 2)
+                cos_half_angle = np.cos(angle / 2)
+                rotation_quat = [
+                    cos_half_angle,
+                    rotation_axis[0] * sin_half_angle,
+                    rotation_axis[1] * sin_half_angle,
+                    rotation_axis[2] * sin_half_angle
+                ]
+            
+            # Create the camera
             cam = Camera(
                 prim_path=config["prim_path"],
                 name=config["name"],
-                translation=pos,
-                orientation=quat,  # Orientation in WXYZ order.
+                position=camera_position,
+                orientation=rotation_quat,
                 resolution=[640, 480],
             )
-            # Set a wide field of view (e.g., 90 degrees) to cover a large scene.
-            # cam.set_field_of_view(90.0)
-            # Set clipping range if necessary.
+            cam.set_world_pose(position=camera_position, orientation=rotation_quat, camera_axes="usd")
+            
+            # Set clipping range
             cam.set_clipping_range(0.01, 1000.0)
             
-            cameras.append(cam)
-        return cameras
+            self._cameras.append(cam)
+            
+            # Add camera to task objects for tracking
+            self._task_objects[config["name"]] = cam
+            
+        return self._cameras
 
 
 
@@ -288,6 +293,7 @@ class YcbTask(BaseTask, ABC):
             return
 
         for face, (translation, label) in markers.items():
+            
             marker_path = object_prim.GetPath().AppendChild(f"marker_{face}")
             marker = UsdGeom.Xform.Define(stage, marker_path)
             marker.AddTranslateOp().Set(translation)
@@ -296,20 +302,6 @@ class YcbTask(BaseTask, ABC):
             sphere.GetRadiusAttr().Set(0.03)
         return
 
-    def object_pose_finalization(self) -> None:
-        """
-        Finalize the object poses by updating parameters and moving the final object off-screen.
-        """
-        object_position, object_orientation = self._object.get_world_pose()
-        object_target_position, object_target_orientation = self._object_final.get_world_pose()
-        self.set_params(
-            object_position=object_position,
-            object_orientation=object_orientation,
-            object_target_position=object_target_position,
-            object_target_orientation=object_target_orientation,
-        )
-        self._object_final.set_world_pose(position=[1000, 1000, 0.5], orientation=object_target_orientation)
-        return
 
     def set_params(
         self,
@@ -377,3 +369,39 @@ class YcbTask(BaseTask, ABC):
     def is_done(self) -> bool:
         """Determine if the task is finished (to be implemented by the user)."""
         raise NotImplementedError
+
+
+    
+    def pose_init(self):
+        ranges = [(-0.5, -0.15), (0.15, 0.5)]
+        range_choice = ranges[np.random.choice(len(ranges))]
+        
+        # Generate x and y as random values between -π and π
+        x, y = np.random.uniform(low=range_choice[0], high=range_choice[1]), np.random.uniform(low=range_choice[0], high=range_choice[1])
+        z = np.random.uniform(1.0, 2.0)
+
+        # Random Euler angles in degrees and convert to radians
+        euler_angles_deg = [random.uniform(0, 360) for _ in range(3)]
+        euler_angles_rad = np.deg2rad(euler_angles_deg)
+        
+        # Convert Euler angles to quaternion using your preferred function,
+        # e.g., if you have a function euler2quat that takes 3 angles:
+        quat = euler2quat(*euler_angles_rad)  # Make sure euler2quat returns in the correct order
+        pos =  np.array([x, y, z])
+
+        return pos, quat
+    
+    def object_pose_finalization(self) -> None:
+        """
+        Finalize the object poses by updating parameters and moving the final object off-screen.
+        """
+        object_position, object_orientation = self._object.get_world_pose()
+        object_target_position, object_target_orientation = self._object_final.get_world_pose()
+        self.set_params(
+            object_position=object_position,
+            object_orientation=object_orientation,
+            object_target_position=object_target_position,
+            object_target_orientation=object_target_orientation,
+        )
+        self._object_final.set_world_pose(position=[1000, 1000, 0.5], orientation=object_target_orientation)
+        return
