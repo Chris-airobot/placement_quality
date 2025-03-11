@@ -76,8 +76,10 @@ class YcbCollection:
         self.object_collision = False
         self.setup_finished = False
         self.object_grasped = False
-
-
+        self.waiting_for_pcds = False
+        self.cameras_started = False
+        self.tf_buffer_ready = False
+        self.tf_wait_start_time = None
 
     def start(self):
         # Initialize ROS2 node
@@ -129,7 +131,13 @@ def main():
     # pcd_finished = False
 
     while simulation_app.is_running():
+        # Process any pending ROS callbacks
+        rclpy.spin_once(env.sim_subscriber, timeout_sec=0)
+        
         env.world.step(render=True)
+        if env.sim_subscriber.latest_tf is None:
+            continue
+
         if env.world.is_stopped() and not reset_needed:
             reset_needed = True
         if env.world.is_playing():
@@ -143,23 +151,75 @@ def main():
                     env.setup_start_time = time.time()
 
                 if time.time() - env.setup_start_time < 1:
-
                     # Skip sending robot commands, letting other parts of the simulation continue.
                     continue
                 else:
+                    # Initialize setup sequence if not already started
+                    if not env.cameras_started:
+                        env.task.object_pose_finalization()
+                        # Set camera to the object
+                        env.cameras = env.task.set_camera(env.task.get_params()["object_current_position"]["value"])
+                        start_cameras(env.cameras)
+                        
+                        # Make the robot visible again after setup
+                        env.robot.prim.GetAttribute("visibility").Set("inherited")
+                        env.cameras_started = True
+                        env.waiting_for_pcds = True
+                        env.tf_wait_start_time = time.time()
+                        print("Cameras started, waiting for point clouds and TF data...")
+                        continue
 
-                    env.task.object_pose_finalization()
-                    # Set camera to the object
-                    env.cameras = env.task.set_camera(env.task.get_params()["object_current_position"]["value"])
-                    start_cameras(env.cameras)
-                    
-                    # Make the robot visible again after setup
-                    # env.robot.prim.GetAttribute("visibility").Set("inherited")
-                    
-                    # Set up finished       
-                    env.setup_finished = True
-                    env.setup_start_time = None
-                    print(f"set up finished")
+                    # First ensure TF buffer is populated
+                    if not env.tf_buffer_ready:
+                        # Wait for TF buffer to be populated (give it a few seconds)
+                        if env.sim_subscriber.latest_tf is not None:
+                            current_time = time.time()
+                            # Wait at least 2 seconds for TF buffer to be populated
+                            if current_time - env.tf_wait_start_time > 2.0:
+                                # Check if the required transforms exist
+                                try:
+                                    # Print available frames in TF buffer for debugging
+                                    print(f"Available frames in TF buffer: {env.sim_subscriber.buffer.all_frames_as_string()}")
+                                    
+                                    # Check if the required transforms exist
+                                    camera1_exists = env.sim_subscriber.check_transform_exists("world", "camera_1")
+                                    camera2_exists = env.sim_subscriber.check_transform_exists("world", "camera_2")
+                                    camera3_exists = env.sim_subscriber.check_transform_exists("world", "camera_3")
+                                    
+                                    if camera1_exists and camera2_exists and camera3_exists:
+                                        env.tf_buffer_ready = True
+                                        print("TF buffer is now populated with required transforms")
+                                    else:
+                                        print("Not all required transforms are available yet")
+                                        continue
+                                except Exception as e:
+                                    print(f"Your tf info: {env.sim_subscriber.latest_tf}")
+                                    print(f"Still waiting for TF data: {e}")
+                                    # Continue to next iteration to process more TF messages
+                                    continue
+                            else:
+                                print(f"Waiting for TF buffer to be populated ({current_time - env.tf_wait_start_time:.1f}/20.0 seconds)")
+                                continue
+                        else:
+                            print("Waiting for initial TF message...")
+                            continue
+
+                    # Check if we're waiting for point clouds
+                    if env.waiting_for_pcds:
+                        pcds = env.sim_subscriber.get_latest_pcds()
+                        if pcds["pcd1"] is not None and pcds["pcd2"] is not None and pcds["pcd3"] is not None:
+                            print("All point clouds received!")
+                            # Print TF buffer frames for debugging
+                            print(f"Available frames in TF buffer: {env.sim_subscriber.buffer.all_frames_as_string()}")
+                            merged_pcd = merge_and_save_pointclouds(pcds, env.sim_subscriber.buffer)
+                            print("Merged point cloud saved successfully")
+                            env.waiting_for_pcds = False
+                            env.setup_finished = True
+                            env.setup_start_time = None
+                            print("Setup finished")
+                        else:
+                            print(f"Still waiting for point clouds: {pcds}")
+                            continue
 
             observations = env.world.get_observations()
             task_params = env.task.get_params()

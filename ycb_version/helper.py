@@ -16,18 +16,22 @@ import random
 import math
 from omni.isaac.core.utils.prims import is_prim_path_valid
 from rclpy.node import Node
-
+import rclpy
 
 class SimSubscriber(Node):
-    def __init__(self):
+    def __init__(self, buffer_size=100.0):
         super().__init__("Sim_subscriber")
         self.latest_tf = None  # Store the latest TFMessage here
-        self.latest_pcd = None # Store the latest Pointcloud here
+        
+        # Store the latest pointclouds here
+        self.latest_pcd1 = None
+        self.latest_pcd2 = None
+        self.latest_pcd3 = None
 
-        self.buffer = tf2_ros.Buffer()
+        self.buffer = tf2_ros.Buffer(rclpy.duration.Duration(seconds=buffer_size))
         self.listener = tf2_ros.TransformListener(self.buffer, self)
 
-        # Create the subscription
+        # Create the TF subscription
         self.tf_subscription = self.create_subscription(
             TFMessage,           # Message type
             "/tf",               # Topic name
@@ -35,28 +39,75 @@ class SimSubscriber(Node):
             10                   # QoS
         )
 
-        self.pcd_subscription = self.create_subscription(
-            PointCloud2,         # Message type
-            "/depth_pcl",        # Topic name
-            self.pcd_callback,   # Callback function
-            10                   # QoS
+        # Import message_filters for synchronization
+        import message_filters
+        
+        # Create subscribers for the three PCD topics
+        self.pcd_sub1 = message_filters.Subscriber(self, PointCloud2, "/cam0/depth_pcl")
+        self.pcd_sub2 = message_filters.Subscriber(self, PointCloud2, "/cam1/depth_pcl")
+        self.pcd_sub3 = message_filters.Subscriber(self, PointCloud2, "/cam2/depth_pcl")
+        
+        # Create a time synchronizer with a queue size of 10 and a time tolerance of 0.1 seconds
+        self.ts = message_filters.ApproximateTimeSynchronizer(
+            [self.pcd_sub1, self.pcd_sub2, self.pcd_sub3], 
+            queue_size=10, 
+            slop=0.1
         )
-
-        # This will hold the accumulated (merged) point cloud.
-        self.accumulated_pcd = []
+        
+        # Register the callback for synchronized messages
+        self.ts.registerCallback(self.synchronized_pcd_callback)
 
         # Flag to control whether to process new pointcloud messages.
         self.pcd_callback_enabled = True
 
-    def pcd_callback(self, msg):
+    def synchronized_pcd_callback(self, pcd1_msg, pcd2_msg, pcd3_msg):
+        """Callback for synchronized pointcloud messages from all three topics"""
         if not self.pcd_callback_enabled:
             return
 
-        self.latest_pcd = msg
+        self.latest_pcd1 = pcd1_msg
+        self.latest_pcd2 = pcd2_msg
+        self.latest_pcd3 = pcd3_msg
+        
+        # You can process the synchronized point clouds here
+        # self.get_logger().info("Received synchronized point clouds")
+        
+        # Optionally merge the point clouds if needed
+        # self.merge_point_clouds(pcd1_msg, pcd2_msg, pcd3_msg)
         
     def tf_callback(self, msg):
         # This callback is triggered for every new TF message on /tf
         self.latest_tf = msg
+        
+        # The TransformListener should automatically handle adding transforms to the buffer,
+        # but we can try to explicitly add them as well
+        if self.latest_tf is not None and len(self.latest_tf.transforms) > 0:
+            for transform in self.latest_tf.transforms:
+                print(f"Received transform from {transform.header.frame_id} to {transform.child_frame_id}")
+                try:
+                    # Explicitly set the transform in the buffer
+                    self.buffer.set_transform(transform, "default_authority")
+                    print(f"Successfully added transform from {transform.header.frame_id} to {transform.child_frame_id} to buffer")
+                except Exception as e:
+                    print(f"Error adding transform to buffer: {e}")
+        
+    def get_latest_pcds(self):
+        """Return the latest synchronized point clouds"""
+        return {
+            "pcd1": self.latest_pcd1,
+            "pcd2": self.latest_pcd2,
+            "pcd3": self.latest_pcd3
+        }
+        
+    def check_transform_exists(self, target_frame, source_frame):
+        """Check if a transform exists in the buffer"""
+        try:
+            self.buffer.lookup_transform(target_frame, source_frame, rclpy.time.Time())
+            return True
+        except Exception as e:
+            print(f"Transform from {source_frame} to {target_frame} does not exist: {e}")
+            return False
+
 
 
 def convert_wxyz_to_xyzw(q_wxyz):
@@ -550,13 +601,14 @@ def transform_pointcloud_to_frame(
     # 1. Find the Transform from cloud_in's frame to target_frame
     # ---------------------------------------------------
     source_frame = cloud_in.header.frame_id
-
+    print(f"your source frame is {source_frame}")
+    print(f"your target frame is {target_frame}")
     # We assume tf_msg.transforms has the needed transform directly
     transform_stamped: TransformStamped = tf_buffer.lookup_transform(
         target_frame=target_frame,
         source_frame=source_frame,
         time=Time())  # "latest" transform
-
+    print(f"your transform stamped is {transform_stamped}")
     if transform_stamped is None:
         raise ValueError(f"No direct transform from '{source_frame}' to '{target_frame}' found in TFMessage.")
 
@@ -786,6 +838,112 @@ def view_pcd(file_path):
     # Load and visualize the point cloud
     pcd = o3d.io.read_point_cloud(file_path)
     o3d.visualization.draw_geometries([pcd])
+
+def merge_and_save_pointclouds(pcds_dict, tf_buffer, output_path="/home/chris/Chris/placement_ws/src/merged_pointcloud.pcd"):
+    """
+    Merges point clouds from multiple cameras after transforming them to the world frame.
+    
+    Args:
+        pcds_dict (dict): Dictionary containing the three point clouds from different cameras
+        tf_buffer (tf2_ros.Buffer): TF buffer containing transform information
+        output_path (str): Path where to save the merged point cloud
+        
+    Returns:
+        o3d.geometry.PointCloud: The merged point cloud in world frame
+    """
+    print("Now you are about to merge point clouds")
+    import open3d as o3d
+    
+    # First transform all point clouds to the world frame
+    transformed_pcds = []
+    
+    # Print available frames in TF buffer for debugging
+    print(f"Available frames in TF buffer: {tf_buffer.all_frames_as_string()}")
+    
+    for name, pcd_msg in pcds_dict.items():
+        if pcd_msg is None:
+            print(f"Warning: {name} is None, skipping")
+            continue
+            
+        # Get the source frame from the point cloud message
+        source_frame = pcd_msg.header.frame_id
+        print(f"your source frame is {source_frame}")
+        print(f"your target frame is world")
+        
+        # Check if the transform exists before attempting to use it
+        try:
+            # First check if the transform exists
+            transform = tf_buffer.lookup_transform("world", source_frame, rclpy.time.Time())
+            print(f"your transform stamped is {transform}")
+            
+            # Transform the point cloud to world frame
+            world_pcd_msg = transform_pointcloud_to_frame(pcd_msg, tf_buffer, target_frame="world")
+            
+            # Convert ROS PointCloud2 to Open3D point cloud
+            o3d_pcd = pointcloud2_to_o3d(world_pcd_msg)
+            
+            # Downsample to reduce size and noise
+            o3d_pcd = o3d_pcd.voxel_down_sample(voxel_size=0.005)
+            
+            transformed_pcds.append(o3d_pcd)
+            print(f"Transformed {name} to world frame: {len(o3d_pcd.points)} points")
+            print("Transformation complete")
+        except Exception as e:
+            print(f"Error transforming {name}: {e}")
+    
+    if not transformed_pcds:
+        print("No valid point clouds to merge")
+        # Create an empty point cloud to avoid errors
+        empty_pcd = o3d.geometry.PointCloud()
+        o3d.io.write_point_cloud(output_path, empty_pcd)
+        print(f"Empty point cloud saved to {output_path}")
+        return empty_pcd
+    
+    # Merge all point clouds
+    merged_pcd = transformed_pcds[0]
+    for pcd in transformed_pcds[1:]:
+        merged_pcd += pcd
+    
+    # Remove statistical outliers
+    try:
+        filtered_pcd, _ = merged_pcd.remove_statistical_outlier(
+            nb_neighbors=20, 
+            std_ratio=1.5
+        )
+    except Exception as e:
+        print(f"Error removing outliers: {e}")
+        filtered_pcd = merged_pcd
+    
+    # Filter out points inside the robot's bounding box
+    # The robot is at the origin in world frame
+    box_center = [0.0, 0.0, 0.5]  # Center of robot in world frame
+    box_size = [0.6, 0.6, 1.0]    # Size of box to remove robot points
+    
+    # Convert Open3D point cloud to numpy array for filtering
+    points_np = np.asarray(filtered_pcd.points)
+    
+    # Create a mask for points outside the robot bounding box
+    c = np.array(box_center)
+    s = np.array(box_size) * 0.5  # half-extends
+    box_min = c - s
+    box_max = c + s
+    
+    # Find points outside the box
+    outside_mask = ~np.all((points_np >= box_min) & (points_np <= box_max), axis=1)
+    
+    # Create a new point cloud with only the outside points
+    filtered_points = points_np[outside_mask]
+    filtered_pcd_no_robot = o3d.geometry.PointCloud()
+    filtered_pcd_no_robot.points = o3d.utility.Vector3dVector(filtered_points)
+    
+    # Save the merged and filtered point cloud
+    try:
+        o3d.io.write_point_cloud(output_path, filtered_pcd_no_robot)
+        print(f"Merged point cloud saved to {output_path}")
+    except Exception as e:
+        print(f"Error saving point cloud: {e}")
+    
+    return filtered_pcd_no_robot
 
 if __name__ == "__main__":
     # # # Example Usage

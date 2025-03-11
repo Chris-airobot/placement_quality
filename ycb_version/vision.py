@@ -375,11 +375,11 @@ def publish_camera_tf(camera: Camera):
                     ("PublishTF_"+camera_frame_id+".inputs:topicName", "/tf"),
                     # Note if topic_name is changed to something else besides "/tf",
                     # it will not be captured by the ROS tf broadcaster.
-                    ("PublishRawTF_"+camera_frame_id+"_world.inputs:topicName", "/tf"),
-                    ("PublishRawTF_"+camera_frame_id+"_world.inputs:parentFrameId", camera_frame_id),
-                    ("PublishRawTF_"+camera_frame_id+"_world.inputs:childFrameId", camera_frame_id+"_world"),
-                    # Static transform from ROS camera convention to world (+Z up, +X forward) convention:
-                    ("PublishRawTF_"+camera_frame_id+"_world.inputs:rotation", [0.5, -0.5, 0.5, 0.5]),
+                    # ("PublishRawTF_"+camera_frame_id+"_world.inputs:topicName", "/tf"),
+                    # ("PublishRawTF_"+camera_frame_id+"_world.inputs:parentFrameId", camera_frame_id),
+                    # ("PublishRawTF_"+camera_frame_id+"_world.inputs:childFrameId", camera_frame_id+"_world"),
+                    # # Static transform from ROS camera convention to world (+Z up, +X forward) convention:
+                    # ("PublishRawTF_"+camera_frame_id+"_world.inputs:rotation", [0.5, -0.5, 0.5, 0.5]),
                 ],
                 og.Controller.Keys.CONNECT: [
                     (ros_camera_graph_path+"/OnTick.outputs:tick",
@@ -516,19 +516,14 @@ def camera_graph_generation(
 
 
 
-
-
-
-
-
-def start_camera(camera: Camera, enable_pcd=False):
-    # publish_camera_tf(camera)
-    if enable_pcd:
-        camera_graph_generation(camera)
-    # publish_camera_info(camera, approx_freq)
-    # publish_rgb(camera, approx_freq)
-    # publish_depth(camera, approx_freq)
-    # publish_pointcloud_from_depth(camera, approx_freq)
+# def start_camera(camera: Camera, enable_pcd=False):
+#     # publish_camera_tf(camera)
+#     if enable_pcd:
+#         camera_graph_generation(camera)
+#     # publish_camera_info(camera, approx_freq)
+#     # publish_rgb(camera, approx_freq)
+#     # publish_depth(camera, approx_freq)
+#     # publish_pointcloud_from_depth(camera, approx_freq)
 
 def suppress_cycle_warnings():
     """
@@ -631,25 +626,25 @@ def setup_multi_camera_graph(
                     {
                         og.Controller.Keys.CREATE_NODES: [
                             (f"PublishTF_{camera_frame_id}", "omni.isaac.ros2_bridge.ROS2PublishTransformTree"),
-                            (f"PublishRawTF_{camera_frame_id}_world", "omni.isaac.ros2_bridge.ROS2PublishRawTransformTree"),
+                            # (f"PublishRawTF_{camera_frame_id}_world", "omni.isaac.ros2_bridge.ROS2PublishRawTransformTree"),
                         ],
                         og.Controller.Keys.SET_VALUES: [
                             (f"PublishTF_{camera_frame_id}.inputs:topicName", "/tf"),
-                            (f"PublishRawTF_{camera_frame_id}_world.inputs:topicName", "/tf"),
-                            (f"PublishRawTF_{camera_frame_id}_world.inputs:parentFrameId", camera_frame_id),
-                            (f"PublishRawTF_{camera_frame_id}_world.inputs:childFrameId", f"{camera_frame_id}_world"),
-                            # Static transform from ROS camera convention to world (+Z up, +X forward) convention:
-                            (f"PublishRawTF_{camera_frame_id}_world.inputs:rotation", [0.5, -0.5, 0.5, 0.5]),
+                            # (f"PublishRawTF_{camera_frame_id}_world.inputs:topicName", "/tf"),
+                            # (f"PublishRawTF_{camera_frame_id}_world.inputs:parentFrameId", camera_frame_id),
+                            # (f"PublishRawTF_{camera_frame_id}_world.inputs:childFrameId", f"{camera_frame_id}_world"),
+                            # # Static transform from ROS camera convention to world (+Z up, +X forward) convention:
+                            # (f"PublishRawTF_{camera_frame_id}_world.inputs:rotation", [0.5, -0.5, 0.5, 0.5]),
                         ],
                         og.Controller.Keys.CONNECT: [
                             (f"{tf_graph_path}/OnTick.outputs:tick",
                                 f"PublishTF_{camera_frame_id}.inputs:execIn"),
-                            (f"{tf_graph_path}/OnTick.outputs:tick",
-                                f"PublishRawTF_{camera_frame_id}_world.inputs:execIn"),
+                            # (f"{tf_graph_path}/OnTick.outputs:tick",
+                            #     f"PublishRawTF_{camera_frame_id}_world.inputs:execIn"),
                             (f"{tf_graph_path}/IsaacClock.outputs:simulationTime",
                                 f"PublishTF_{camera_frame_id}.inputs:timeStamp"),
-                            (f"{tf_graph_path}/IsaacClock.outputs:simulationTime",
-                                f"PublishRawTF_{camera_frame_id}_world.inputs:timeStamp"),
+                            # (f"{tf_graph_path}/IsaacClock.outputs:simulationTime",
+                            #     f"PublishRawTF_{camera_frame_id}_world.inputs:timeStamp"),
                         ],
                     },
                 )
