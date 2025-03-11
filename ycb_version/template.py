@@ -17,8 +17,8 @@ from omni.isaac.core import World
 from omni.isaac.core.utils import extensions, prims
 from omni.isaac.core.scenes import Scene
 from omni.isaac.franka import Franka
-from task import YcbTask
-from planner import YcbPlanner
+from placement_quality.ycb_version.simulation.task import YcbTask
+from placement_quality.ycb_version.simulation.planner import YcbPlanner
 from omni.isaac.core.utils.types import ArticulationAction
 from helper import *
 from omni.isaac.core.utils.rotations import euler_angles_to_quat, quat_to_euler_angles

@@ -14,16 +14,13 @@ from sensor_msgs.msg import PointCloud2
 from geometry_msgs.msg import TransformStamped
 import random
 import math
-from omni.isaac.core.utils.prims import is_prim_path_valid
 from rclpy.node import Node
 import rclpy
 
 class SimSubscriber(Node):
     def __init__(self, buffer_size=100.0):
         super().__init__("Sim_subscriber")
-        self.latest_tf = None  # Store the latest TFMessage here
-        
-        # Store the latest pointclouds here
+        self.latest_tf = None
         self.latest_pcd1 = None
         self.latest_pcd2 = None
         self.latest_pcd3 = None
@@ -31,68 +28,44 @@ class SimSubscriber(Node):
         self.buffer = tf2_ros.Buffer(rclpy.duration.Duration(seconds=buffer_size))
         self.listener = tf2_ros.TransformListener(self.buffer, self)
 
-        # Create the TF subscription
         self.tf_subscription = self.create_subscription(
-            TFMessage,           # Message type
-            "/tf",               # Topic name
-            self.tf_callback,    # Callback function
-            10                   # QoS
+            TFMessage,
+            "/tf",
+            self.tf_callback,
+            10
         )
 
-        # Import message_filters for synchronization
         import message_filters
-        
-        # Create subscribers for the three PCD topics
         self.pcd_sub1 = message_filters.Subscriber(self, PointCloud2, "/cam0/depth_pcl")
         self.pcd_sub2 = message_filters.Subscriber(self, PointCloud2, "/cam1/depth_pcl")
         self.pcd_sub3 = message_filters.Subscriber(self, PointCloud2, "/cam2/depth_pcl")
         
-        # Create a time synchronizer with a queue size of 10 and a time tolerance of 0.1 seconds
         self.ts = message_filters.ApproximateTimeSynchronizer(
             [self.pcd_sub1, self.pcd_sub2, self.pcd_sub3], 
             queue_size=10, 
             slop=0.1
         )
         
-        # Register the callback for synchronized messages
         self.ts.registerCallback(self.synchronized_pcd_callback)
-
-        # Flag to control whether to process new pointcloud messages.
         self.pcd_callback_enabled = True
 
     def synchronized_pcd_callback(self, pcd1_msg, pcd2_msg, pcd3_msg):
-        """Callback for synchronized pointcloud messages from all three topics"""
         if not self.pcd_callback_enabled:
             return
-
         self.latest_pcd1 = pcd1_msg
         self.latest_pcd2 = pcd2_msg
         self.latest_pcd3 = pcd3_msg
         
-        # You can process the synchronized point clouds here
-        # self.get_logger().info("Received synchronized point clouds")
-        
-        # Optionally merge the point clouds if needed
-        # self.merge_point_clouds(pcd1_msg, pcd2_msg, pcd3_msg)
-        
     def tf_callback(self, msg):
-        # This callback is triggered for every new TF message on /tf
         self.latest_tf = msg
-        
-        # The TransformListener should automatically handle adding transforms to the buffer,
-        # but we can try to explicitly add them as well
         if self.latest_tf is not None and len(self.latest_tf.transforms) > 0:
             for transform in self.latest_tf.transforms:
-                print(f"Received transform from {transform.header.frame_id} to {transform.child_frame_id}")
                 try:
-                    # Explicitly set the transform in the buffer
                     self.buffer.set_transform(transform, "default_authority")
-                    print(f"Successfully added transform from {transform.header.frame_id} to {transform.child_frame_id} to buffer")
-                except Exception as e:
-                    print(f"Error adding transform to buffer: {e}")
+                except Exception:
+                    pass
         
     def get_latest_pcds(self):
-        """Return the latest synchronized point clouds"""
         return {
             "pcd1": self.latest_pcd1,
             "pcd2": self.latest_pcd2,
@@ -100,12 +73,10 @@ class SimSubscriber(Node):
         }
         
     def check_transform_exists(self, target_frame, source_frame):
-        """Check if a transform exists in the buffer"""
         try:
             self.buffer.lookup_transform(target_frame, source_frame, rclpy.time.Time())
             return True
-        except Exception as e:
-            print(f"Transform from {source_frame} to {target_frame} does not exist: {e}")
+        except Exception:
             return False
 
 
@@ -282,9 +253,9 @@ def projection(q_current_cube, q_current_ee, q_desired_ee):
 
 def tf_graph_generation():
     import omni.graph.core as og
+    from omni.isaac.core.utils.prims import is_prim_path_valid
 
     keys = og.Controller.Keys
-
     robot_frame_path= "/World/Franka"
     ycb_frame = "/World/Ycb_object"
     graph_path = "/Graphs/TF"
@@ -586,49 +557,36 @@ def transform_pointcloud_to_frame(
     target_frame: str="panda_link0"
 ) -> PointCloud2:
     """
-    Transforms a PointCloud2 from its current frame (cloud_in.header.frame_id)
-    into 'target_frame', using the transform data in tf_msg.
+    Transforms a PointCloud2 from its current frame to target_frame.
 
     Args:
         cloud_in (PointCloud2): The input point cloud.
-        tf_msg (TFMessage): A TFMessage containing one or more transforms.
-        target_frame (str): Name of the desired target frame, e.g. "panda_link0".
+        tf_buffer (tf2_ros.Buffer): Buffer containing transform information.
+        target_frame (str): Name of the desired target frame.
 
     Returns:
         PointCloud2: A new point cloud in the target frame.
     """
-    # ---------------------------------------------------
-    # 1. Find the Transform from cloud_in's frame to target_frame
-    # ---------------------------------------------------
     source_frame = cloud_in.header.frame_id
-    print(f"your source frame is {source_frame}")
-    print(f"your target frame is {target_frame}")
-    # We assume tf_msg.transforms has the needed transform directly
     transform_stamped: TransformStamped = tf_buffer.lookup_transform(
         target_frame=target_frame,
         source_frame=source_frame,
-        time=Time())  # "latest" transform
-    print(f"your transform stamped is {transform_stamped}")
-    if transform_stamped is None:
-        raise ValueError(f"No direct transform from '{source_frame}' to '{target_frame}' found in TFMessage.")
+        time=Time())
 
-    # Extract translation
+    if transform_stamped is None:
+        raise ValueError(f"No direct transform from '{source_frame}' to '{target_frame}' found.")
+
+    # Extract transform components
     tx = transform_stamped.transform.translation.x
     ty = transform_stamped.transform.translation.y
     tz = transform_stamped.transform.translation.z
 
-    # Extract rotation (quaternion)
     qx = transform_stamped.transform.rotation.x
     qy = transform_stamped.transform.rotation.y
     qz = transform_stamped.transform.rotation.z
     qw = transform_stamped.transform.rotation.w
 
-    # ---------------------------------------------------
-    # 2. Build a 4x4 transform matrix
-    # ---------------------------------------------------
-    # Rotation from quaternion
-    # https://en.wikipedia.org/wiki/Rotation_matrix#Quaternion
-    # Construct the rotation part of the matrix:
+    # Build transform matrix
     rx = 1 - 2*(qy**2 + qz**2)
     ry = 2*(qx*qy - qz*qw)
     rz = 2*(qx*qz + qy*qw)
@@ -648,15 +606,8 @@ def transform_pointcloud_to_frame(
         [ 0,  0,  0,  1]
     ], dtype=np.float64)
 
-    # ---------------------------------------------------
-    # 3. Parse points from cloud_in into a Nx? array
-    #    We'll handle x,y,z at least, and keep other fields as-is.
-    # ---------------------------------------------------
-    # Identify offsets for x, y, z
-    offset_x = offset_y = offset_z = None
-    # We keep track of other fields too, so we can copy them unmodified
-    fields_dict = {}  # {field_name: (offset, datatype, count)}
-
+    # Parse point cloud data
+    fields_dict = {}
     for f in cloud_in.fields:
         fields_dict[f.name] = (f.offset, f.datatype, f.count)
         if f.name == 'x':
@@ -670,41 +621,12 @@ def transform_pointcloud_to_frame(
         raise ValueError("PointCloud2 is missing x, y, or z fields.")
 
     point_step = cloud_in.point_step
-    row_step = cloud_in.row_step
     data_bytes = cloud_in.data
-
     num_points = cloud_in.width * cloud_in.height
-
-    # We'll build a new bytearray for the output data
     out_data = bytearray(len(data_bytes))
+    out_data[:] = data_bytes[:]
 
-    # For each point, transform x,y,z
-    for i in range(num_points):
-        point_offset = i * point_step
-
-        # Read x,y,z from the input
-        x = struct.unpack_from('f', data_bytes, point_offset + offset_x)[0]
-        y = struct.unpack_from('f', data_bytes, point_offset + offset_y)[0]
-        z = struct.unpack_from('f', data_bytes, point_offset + offset_z)[0]
-
-        # Make it homogeneous
-        pt_hom = np.array([x, y, z, 1.0], dtype=np.float64)
-
-        # Apply the transform
-        pt_trans = transform_mat @ pt_hom
-        x_out = pt_trans[0]
-        y_out = pt_trans[1]
-        z_out = pt_trans[2]
-
-        # Store x_out,y_out,z_out into the new data
-        struct.pack_into('f', out_data, point_offset + offset_x, x_out)
-        struct.pack_into('f', out_data, point_offset + offset_y, y_out)
-        struct.pack_into('f', out_data, point_offset + offset_z, z_out)
-
-    # We'll do a small fix: first copy everything, then transform x,y,z in the loop above
-    out_data[:] = data_bytes[:]  # copy entire buffer
-    # Then the loop modifies x,y,z in place
-
+    # Transform each point
     for i in range(num_points):
         point_offset = i * point_step
         x = struct.unpack_from('f', data_bytes, point_offset + offset_x)[0]
@@ -719,13 +641,10 @@ def transform_pointcloud_to_frame(
         struct.pack_into('f', out_data, point_offset + offset_y, y_out)
         struct.pack_into('f', out_data, point_offset + offset_z, z_out)
 
-    # ---------------------------------------------------
-    # 4. Construct a new PointCloud2 with the same metadata
-    #    but updated frame & data
-    # ---------------------------------------------------
+    # Create output message
     cloud_out = PointCloud2()
     cloud_out.header.stamp = cloud_in.header.stamp
-    cloud_out.header.frame_id = target_frame  # new frame
+    cloud_out.header.frame_id = target_frame
     cloud_out.height = cloud_in.height
     cloud_out.width = cloud_in.width
     cloud_out.fields = cloud_in.fields
@@ -733,10 +652,8 @@ def transform_pointcloud_to_frame(
     cloud_out.point_step = cloud_in.point_step
     cloud_out.row_step = cloud_in.row_step
     cloud_out.is_dense = cloud_in.is_dense
-
-    # set the new data
     cloud_out.data = bytes(out_data)
-    print("Transformation complete")
+
     return cloud_out
 
 
@@ -825,132 +742,310 @@ def get_upward_facing_marker(cube_prim_path):
     return upward_marker
 
 
-
-
-
-
+def view_pcd(file_path, show_normals=False):
+    """
+    Load and visualize a point cloud file.
     
+    Args:
+        file_path (str): Path to the point cloud file
+        show_normals (bool): Whether to visualize normals
+        
+    Returns:
+        o3d.geometry.PointCloud: The loaded point cloud
+    """
+    import open3d as o3d
+    
+    try:
+        # Load the point cloud
+        pcd = o3d.io.read_point_cloud(file_path)
+        
+        if len(pcd.points) == 0:
+            print(f"Point cloud at {file_path} is empty")
+            return None
+            
+        # Create visualization objects
+        vis_objects = [pcd]
+        
+        # Add coordinate frame for reference
+        coordinate_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(
+            size=0.1, origin=[0, 0, 0]
+        )
+        vis_objects.append(coordinate_frame)
+        
+        # Visualize normals if requested and available
+        if show_normals and pcd.has_normals():
+            # Create a new point cloud with fewer points for normal visualization
+            normals_pcd = o3d.geometry.PointCloud()
+            # Downsample for clearer normal visualization
+            downsampled = pcd.voxel_down_sample(voxel_size=0.02)
+            normals_pcd.points = downsampled.points
+            normals_pcd.normals = downsampled.normals
+            
+            # Visualize the point cloud with normals
+            o3d.visualization.draw_geometries([pcd, coordinate_frame], 
+                                             point_show_normal=True)
+        else:
+            # Visualize the point cloud
+            o3d.visualization.draw_geometries(vis_objects)
+            
+        return pcd
+    except Exception as e:
+        print(f"Error visualizing point cloud: {e}")
+        return None
 
+def compare_point_clouds(file_path1, file_path2, titles=None):
+    """
+    Load and compare two point clouds side by side.
+    
+    Args:
+        file_path1 (str): Path to the first point cloud file
+        file_path2 (str): Path to the second point cloud file
+        titles (list): Optional titles for the point clouds
+        
+    Returns:
+        tuple: The two loaded point clouds
+    """
+    import open3d as o3d
+    import numpy as np
+    
+    try:
+        # Load the point clouds
+        pcd1 = o3d.io.read_point_cloud(file_path1)
+        pcd2 = o3d.io.read_point_cloud(file_path2)
+        
+        if len(pcd1.points) == 0 or len(pcd2.points) == 0:
+            print("One or both point clouds are empty")
+            return None, None
+            
+        # Create coordinate frames for reference
+        coordinate_frame1 = o3d.geometry.TriangleMesh.create_coordinate_frame(
+            size=0.1, origin=[0, 0, 0]
+        )
+        coordinate_frame2 = o3d.geometry.TriangleMesh.create_coordinate_frame(
+            size=0.1, origin=[0, 0, 0]
+        )
+        
+        # Paint the point clouds different colors for easier comparison
+        pcd1.paint_uniform_color([1, 0.706, 0])  # Yellow
+        pcd2.paint_uniform_color([0, 0.651, 0.929])  # Blue
+        
+        # Create a custom visualization window
+        vis1 = o3d.visualization.Visualizer()
+        vis1.create_window(window_name=titles[0] if titles else "Point Cloud 1", width=800, height=600, left=0, top=0)
+        vis1.add_geometry(pcd1)
+        vis1.add_geometry(coordinate_frame1)
+        
+        vis2 = o3d.visualization.Visualizer()
+        vis2.create_window(window_name=titles[1] if titles else "Point Cloud 2", width=800, height=600, left=800, top=0)
+        vis2.add_geometry(pcd2)
+        vis2.add_geometry(coordinate_frame2)
+        
+        # Set up the camera viewpoint
+        view_control1 = vis1.get_view_control()
+        view_control2 = vis2.get_view_control()
+        
+        # Run the visualization
+        while True:
+            vis1.update_geometry(pcd1)
+            vis2.update_geometry(pcd2)
+            
+            if not vis1.poll_events() or not vis2.poll_events():
+                break
+                
+            vis1.update_renderer()
+            vis2.update_renderer()
+            
+        vis1.destroy_window()
+        vis2.destroy_window()
+        
+        return pcd1, pcd2
+    except Exception as e:
+        print(f"Error comparing point clouds: {e}")
+        return None, None
 
-
-
-def view_pcd(file_path):
-    # Load and visualize the point cloud
-    pcd = o3d.io.read_point_cloud(file_path)
-    o3d.visualization.draw_geometries([pcd])
+def process_pointcloud(pcd, remove_plane=True):
+    """
+    Process a point cloud with advanced filtering and normal estimation.
+    
+    Args:
+        pcd (o3d.geometry.PointCloud): Input point cloud
+        remove_plane (bool): Whether to remove the dominant plane
+        
+    Returns:
+        o3d.geometry.PointCloud: Processed point cloud
+    """
+    import open3d as o3d
+    import numpy as np
+    
+    if pcd is None or len(pcd.points) == 0:
+        return pcd
+    
+    # 1. Remove the dominant plane (e.g., table surface)
+    if remove_plane:
+        try:
+            plane_model, inliers = pcd.segment_plane(
+                distance_threshold=0.01, 
+                ransac_n=100, 
+                num_iterations=1000
+            )
+            if len(inliers) > 0:
+                # Remove plane inliers (keep only points not belonging to the plane)
+                pcd = pcd.select_by_index(inliers, invert=True)
+        except Exception:
+            pass
+    
+    # 2. Remove statistical outliers
+    try:
+        filtered_pcd, _ = pcd.remove_statistical_outlier(
+            nb_neighbors=20, 
+            std_ratio=1.5
+        )
+        if len(filtered_pcd.points) > 0:
+            pcd = filtered_pcd
+    except Exception:
+        pass
+    
+    # 3. Normal estimation with translation adjustments
+    try:
+        # Compute bounding box and translate to center the object
+        obj_bbox = pcd.get_axis_aligned_bounding_box()
+        center = obj_bbox.get_center()
+        pcd.translate(-center)
+        
+        # Apply a small upward translation to improve normal estimation
+        pcd.translate(np.array([0, 0, 0.05]))
+        
+        # Estimate normals
+        pcd.estimate_normals(
+            fast_normal_computation=True,
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30)
+        )
+        pcd.normalize_normals()
+        pcd.orient_normals_towards_camera_location(camera_location=np.array([0, 0, 0]))
+        
+        # Flip normals if needed
+        normals = np.asarray(pcd.normals)
+        pcd.normals = o3d.utility.Vector3dVector(-normals)
+        
+        # Reverse the translation
+        pcd.translate(np.array([0, 0, -0.05]))
+        pcd.translate(center)
+    except Exception:
+        pass
+    
+    return pcd
 
 def merge_and_save_pointclouds(pcds_dict, tf_buffer, output_path="/home/chris/Chris/placement_ws/src/merged_pointcloud.pcd"):
     """
     Merges point clouds from multiple cameras after transforming them to the world frame.
+    Saves both the raw merged point cloud and a processed version.
     
     Args:
-        pcds_dict (dict): Dictionary containing the three point clouds from different cameras
+        pcds_dict (dict): Dictionary containing point clouds from different cameras
         tf_buffer (tf2_ros.Buffer): TF buffer containing transform information
         output_path (str): Path where to save the merged point cloud
         
     Returns:
-        o3d.geometry.PointCloud: The merged point cloud in world frame
+        tuple: (raw_pcd, processed_pcd) The raw and processed point clouds
     """
-    print("Now you are about to merge point clouds")
     import open3d as o3d
-    
-    # First transform all point clouds to the world frame
     transformed_pcds = []
-    
-    # Print available frames in TF buffer for debugging
-    print(f"Available frames in TF buffer: {tf_buffer.all_frames_as_string()}")
     
     for name, pcd_msg in pcds_dict.items():
         if pcd_msg is None:
-            print(f"Warning: {name} is None, skipping")
             continue
             
-        # Get the source frame from the point cloud message
-        source_frame = pcd_msg.header.frame_id
-        print(f"your source frame is {source_frame}")
-        print(f"your target frame is world")
-        
-        # Check if the transform exists before attempting to use it
         try:
-            # First check if the transform exists
-            transform = tf_buffer.lookup_transform("world", source_frame, rclpy.time.Time())
-            print(f"your transform stamped is {transform}")
-            
-            # Transform the point cloud to world frame
+            transform = tf_buffer.lookup_transform("world", pcd_msg.header.frame_id, rclpy.time.Time())
             world_pcd_msg = transform_pointcloud_to_frame(pcd_msg, tf_buffer, target_frame="world")
-            
-            # Convert ROS PointCloud2 to Open3D point cloud
             o3d_pcd = pointcloud2_to_o3d(world_pcd_msg)
-            
-            # Downsample to reduce size and noise
             o3d_pcd = o3d_pcd.voxel_down_sample(voxel_size=0.005)
-            
             transformed_pcds.append(o3d_pcd)
-            print(f"Transformed {name} to world frame: {len(o3d_pcd.points)} points")
-            print("Transformation complete")
-        except Exception as e:
-            print(f"Error transforming {name}: {e}")
+        except Exception:
+            continue
     
     if not transformed_pcds:
-        print("No valid point clouds to merge")
-        # Create an empty point cloud to avoid errors
         empty_pcd = o3d.geometry.PointCloud()
         o3d.io.write_point_cloud(output_path, empty_pcd)
-        print(f"Empty point cloud saved to {output_path}")
-        return empty_pcd
+        return empty_pcd, empty_pcd
     
-    # Merge all point clouds
+    # Merge point clouds
     merged_pcd = transformed_pcds[0]
     for pcd in transformed_pcds[1:]:
         merged_pcd += pcd
     
-    # Remove statistical outliers
-    try:
-        filtered_pcd, _ = merged_pcd.remove_statistical_outlier(
-            nb_neighbors=20, 
-            std_ratio=1.5
-        )
-    except Exception as e:
-        print(f"Error removing outliers: {e}")
-        filtered_pcd = merged_pcd
+    # Filter robot points
+    box_center = [0.0, 0.0, 0.5]
+    box_size = [0.6, 0.6, 1.0]
+    points_np = np.asarray(merged_pcd.points)
     
-    # Filter out points inside the robot's bounding box
-    # The robot is at the origin in world frame
-    box_center = [0.0, 0.0, 0.5]  # Center of robot in world frame
-    box_size = [0.6, 0.6, 1.0]    # Size of box to remove robot points
-    
-    # Convert Open3D point cloud to numpy array for filtering
-    points_np = np.asarray(filtered_pcd.points)
-    
-    # Create a mask for points outside the robot bounding box
     c = np.array(box_center)
-    s = np.array(box_size) * 0.5  # half-extends
+    s = np.array(box_size) * 0.5
     box_min = c - s
     box_max = c + s
     
-    # Find points outside the box
     outside_mask = ~np.all((points_np >= box_min) & (points_np <= box_max), axis=1)
-    
-    # Create a new point cloud with only the outside points
     filtered_points = points_np[outside_mask]
-    filtered_pcd_no_robot = o3d.geometry.PointCloud()
-    filtered_pcd_no_robot.points = o3d.utility.Vector3dVector(filtered_points)
     
-    # Save the merged and filtered point cloud
+    raw_pcd = o3d.geometry.PointCloud()
+    raw_pcd.points = o3d.utility.Vector3dVector(filtered_points)
+    
+    # Save the raw merged point cloud
+    raw_output_path = output_path.replace(".pcd", "_raw.pcd")
     try:
-        o3d.io.write_point_cloud(output_path, filtered_pcd_no_robot)
-        print(f"Merged point cloud saved to {output_path}")
-    except Exception as e:
-        print(f"Error saving point cloud: {e}")
+        o3d.io.write_point_cloud(raw_output_path, raw_pcd)
+    except Exception:
+        pass
     
-    return filtered_pcd_no_robot
+    # Process the point cloud
+    processed_pcd = process_pointcloud(raw_pcd)
+    
+    # Save the processed point cloud
+    try:
+        o3d.io.write_point_cloud(output_path, processed_pcd)
+    except Exception:
+        pass
+    
+    return raw_pcd, processed_pcd
+
+def process_existing_pointcloud(input_path="/home/chris/Chris/placement_ws/src/merged_pointcloud.pcd", 
+                               output_path="/home/chris/Chris/placement_ws/src/processed_pointcloud.pcd"):
+    """
+    Process an existing point cloud file with advanced filtering and normal estimation.
+    
+    Args:
+        input_path (str): Path to the input point cloud file
+        output_path (str): Path to save the processed point cloud
+        
+    Returns:
+        o3d.geometry.PointCloud: Processed point cloud
+    """
+    import open3d as o3d
+    
+    try:
+        # Load the point cloud
+        pcd = o3d.io.read_point_cloud(input_path)
+        
+        if len(pcd.points) == 0:
+            return None
+            
+        # Process the point cloud
+        processed_pcd = process_pointcloud(pcd)
+        
+        # Save the processed point cloud
+        o3d.io.write_point_cloud(output_path, processed_pcd)
+        
+        return processed_pcd
+    except Exception as e:
+        print(f"Error processing point cloud: {e}")
+        return None
 
 if __name__ == "__main__":
     # # # Example Usage
-    # file_path = "/home/chris/Chris/placement_ws/src/data/pcd_0/pointcloud.pcd"
-    # view_pcd(file_path)   
+    file_path = "/home/chris/Chris/placement_ws/src/merged_pointcloud_raw.pcd"
+    view_pcd(file_path)   
     # data_analysis("/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
-    print(len(orientation_creation()))
+    # print(len(orientation_creation()))
     
     # Suppose you have an Nx3 cloud (world frame), e.g.:
     # cloud_world = np.random.rand(1000, 3) - 0.5  # random points in [-0.5, 0.5]^3

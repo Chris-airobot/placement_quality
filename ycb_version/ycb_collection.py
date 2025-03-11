@@ -28,6 +28,7 @@ from rclpy.node import Node
 from tf2_msgs.msg import TFMessage
 from sensor_msgs.msg import PointCloud2
 import time
+import datetime 
 import re
 from functools import partial
 from typing import List
@@ -41,14 +42,19 @@ from omni.isaac.core.utils.types import ArticulationAction
 from omni.isaac.core.utils.rotations import euler_angles_to_quat, quat_to_euler_angles
 from omni.isaac.sensor import ContactSensor
 
-from task import YcbTask
-from planner import YcbPlanner
+from placement_quality.ycb_version.simulation.task import YcbTask
+from placement_quality.ycb_version.simulation.planner import YcbPlanner
+from placement_quality.ycb_version.simulation.logger import YcbLogger
 from vision import *
 from helper import *
 
 # Enable ROS2 bridge extension
 extensions.enable_extension("omni.isaac.ros2_bridge")
 simulation_app.update()
+
+base_dir = "/home/chris/Chris/placement_ws/src/data/YCB_data/"
+time_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+DIR_PATH = os.path.join(base_dir, f"run_{time_str}/")
 
 class YcbCollection:
     def __init__(self):
@@ -70,16 +76,25 @@ class YcbCollection:
         self.ee_grasping_orientation = None
         self.ee_placement_orientation = None 
         self.setup_start_time = None
+        self.tf_wait_start_time = None
 
+        # Replay/Record variables
+        self.grasp_counter = 0
+        self.placement_counter = 0
+        
         # Condition variables 
+        self.replay_finished = True
         self.enable_pcd = True
-        self.object_collision = False
         self.setup_finished = False
-        self.object_grasped = False
         self.waiting_for_pcds = False
         self.cameras_started = False
         self.tf_buffer_ready = False
-        self.tf_wait_start_time = None
+        self.grasping_failure = False
+
+        # Object variables
+        self.object_grasped = False
+        self.object_collision = False
+
 
     def start(self):
         # Initialize ROS2 node
@@ -125,7 +140,7 @@ class YcbCollection:
 def main():
     env = YcbCollection()
     env.start()
-    
+    logger = YcbLogger(env, DIR_PATH)
     # One grasp corresponding to many placements
     reset_needed = False        # Used when grasp is done 
     # pcd_finished = False
@@ -176,50 +191,34 @@ def main():
                             current_time = time.time()
                             # Wait at least 2 seconds for TF buffer to be populated
                             if current_time - env.tf_wait_start_time > 2.0:
-                                # Check if the required transforms exist
                                 try:
-                                    # Print available frames in TF buffer for debugging
-                                    print(f"Available frames in TF buffer: {env.sim_subscriber.buffer.all_frames_as_string()}")
-                                    
-                                    # Check if the required transforms exist
                                     camera1_exists = env.sim_subscriber.check_transform_exists("world", "camera_1")
                                     camera2_exists = env.sim_subscriber.check_transform_exists("world", "camera_2")
                                     camera3_exists = env.sim_subscriber.check_transform_exists("world", "camera_3")
                                     
                                     if camera1_exists and camera2_exists and camera3_exists:
                                         env.tf_buffer_ready = True
-                                        print("TF buffer is now populated with required transforms")
-                                    else:
-                                        print("Not all required transforms are available yet")
-                                        continue
-                                except Exception as e:
-                                    print(f"Your tf info: {env.sim_subscriber.latest_tf}")
-                                    print(f"Still waiting for TF data: {e}")
-                                    # Continue to next iteration to process more TF messages
-                                    continue
-                            else:
-                                print(f"Waiting for TF buffer to be populated ({current_time - env.tf_wait_start_time:.1f}/20.0 seconds)")
+                                except Exception:
+                                    pass
                                 continue
-                        else:
-                            print("Waiting for initial TF message...")
-                            continue
-
+                                
                     # Check if we're waiting for point clouds
                     if env.waiting_for_pcds:
                         pcds = env.sim_subscriber.get_latest_pcds()
                         if pcds["pcd1"] is not None and pcds["pcd2"] is not None and pcds["pcd3"] is not None:
                             print("All point clouds received!")
-                            # Print TF buffer frames for debugging
-                            print(f"Available frames in TF buffer: {env.sim_subscriber.buffer.all_frames_as_string()}")
-                            merged_pcd = merge_and_save_pointclouds(pcds, env.sim_subscriber.buffer)
-                            print("Merged point cloud saved successfully")
+                            raw_pcd, processed_pcd = merge_and_save_pointclouds(pcds, env.sim_subscriber.buffer)
+                            
+                            if raw_pcd is not None and processed_pcd is not None:
+                                print("Point clouds merged and processed successfully!")
+                                print("Raw point cloud saved to: merged_pointcloud_raw.pcd")
+                                print("Processed point cloud saved to: merged_pointcloud.pcd")
+                            
                             env.waiting_for_pcds = False
                             env.setup_finished = True
                             env.setup_start_time = None
-                            print("Setup finished")
-                        else:
-                            print(f"Still waiting for point clouds: {pcds}")
-                            continue
+
+                        continue
 
             observations = env.world.get_observations()
             task_params = env.task.get_params()
@@ -241,6 +240,7 @@ def main():
             print("----------------- done picking and placing ----------------- \n\n")
             reset_needed = True
             env.reset()
+            
     simulation_app.close()
 
 if __name__ == "__main__":
