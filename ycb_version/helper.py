@@ -146,7 +146,7 @@ def surface_detection(rpy):
     return int(upward_face)
 
 
-def extract_grasping(input_file_path):
+def extract_replay_data(input_file_path):
     # Load the original JSON data
   output_file_path = os.path.dirname(input_file_path) + '/Grasping.json'  # Path to save the filtered file
 
@@ -935,7 +935,7 @@ def process_pointcloud(pcd, remove_plane=True):
     
     return pcd
 
-def merge_and_save_pointclouds(pcds_dict, tf_buffer, output_path="/home/chris/Chris/placement_ws/src/merged_pointcloud.pcd"):
+def merge_and_save_pointclouds(pcds_dict, tf_buffer, output_path="/home/chris/Chris/placement_ws/src/data/point_cloud_data/merged_pointcloud.pcd"):
     """
     Merges point clouds from multiple cameras after transforming them to the world frame.
     Saves both the raw merged point cloud and a processed version.
@@ -1042,7 +1042,7 @@ def process_existing_pointcloud(input_path="/home/chris/Chris/placement_ws/src/m
 
 if __name__ == "__main__":
     # # # Example Usage
-    file_path = "/home/chris/Chris/placement_ws/src/merged_pointcloud_raw.pcd"
+    file_path = "/home/chris/Chris/placement_ws/src/data/point_cloud_data/merged_pointcloud.pcd"
     view_pcd(file_path)   
     # data_analysis("/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
     # print(len(orientation_creation()))

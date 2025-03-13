@@ -21,6 +21,18 @@ class YcbPlanner(BaseController):
     (i.e. the robot's movement execution using an RMPFlowController) and the 
     high-level motion planning/state machine.
 
+    - Phase 0: Move end_effector above the cube center at the 'end_effector_initial_height'.
+    - Phase 1: Lower end_effector down to encircle the target cube
+    - Phase 2: Wait for Robot's inertia to settle.
+    - Phase 3: close grip.
+    - Phase 4: Move end_effector up again, keeping the grip tight (lifting the block).
+    - Phase 5: Smoothly move the end_effector toward the goal xy, keeping the height constant.
+    - Phase 6: Move end_effector vertically toward goal height at the 'end_effector_initial_height'.
+    - Phase 7: loosen the grip.
+    - Phase 8: Move end_effector vertically up again at the 'end_effector_initial_height'
+    - Phase 9: Move end_effector towards the old xy position.
+
+
     Args:
         name (str): Identifier for the controller.
         gripper (ParallelGripper): Gripper controller for open/close actions.

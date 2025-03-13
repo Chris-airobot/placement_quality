@@ -1,6 +1,6 @@
 from tf2_msgs.msg import TFMessage
 from sensor_msgs.msg import PointCloud2
-from helper import SimSubscriber
+from helper import SimSubscriber, process_tf_message, get_upward_facing_marker, extract_replay_data
 from ycb_collection import YcbCollection
 from omni.isaac.core.scenes import Scene
 import numpy as np
@@ -8,7 +8,7 @@ from omni.isaac.core.utils.types import ArticulationAction
 import os
 import glob
 import asyncio
-
+import json
 
 
 class YcbLogger:
@@ -21,6 +21,14 @@ class YcbLogger:
         self.controller = self.env.controller
         self.contact_sensors = self.env.contact_sensors
         self.dir_path = dir_path
+
+    def log_grasping(self):
+        # Logging sections
+        if self.env.log_start:
+            self._on_logging_event(True, self.env.sim_subscriber)
+            self.env.log_start = False
+
+        return 
 
     def _on_logging_event(self, val, tf_node: SimSubscriber):
             print(f"----------------- Grasping {self.env.grasp_counter} Placement {self.env.placement_counter} Start -----------------")
@@ -117,6 +125,24 @@ class YcbLogger:
             file_pattern = os.path.join(self.dir_path, f"Grasping_{self.env.grasp_counter}/Placement_*.json")
             file_list = glob.glob(file_pattern)
 
-            extract_grasping(file_list[0])
+            extract_replay_data(file_list[0])
         asyncio.ensure_future(self._on_replay_scene_event_async(file_path))
         return True
+    
+    def record_grasping(self):
+            # Recording section
+        if not self.env.log_recorded:
+            file_path = self.dir_path + f"Grasping_{self.env.grasp_counter}/Placement_{self.env.placement_counter}_{self.env.grasping_failure}.json"
+
+            # Ensure the parent directories exist
+            directory = os.path.dirname(file_path)
+            os.makedirs(directory, exist_ok=True)
+
+            # Check if the file exists; if not, create it
+            if not os.path.exists(file_path):
+                # Open the file in write mode and create an empty JSON structure
+                with open(file_path, 'w') as file:
+                    json.dump({}, file)
+            self._on_save_data_event(file_path)
+            recorded = True
+        return recorded
