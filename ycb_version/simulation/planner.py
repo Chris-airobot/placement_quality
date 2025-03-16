@@ -157,7 +157,7 @@ class YcbPlanner(BaseController):
 
         self._t += self._events_dt[self._event]
         if stage_time_limit is None:
-            stage_time_limit = 1000.0
+            stage_time_limit = 2
             if self._t >= stage_time_limit or self.is_stage_task_done(self._current_ee_target_position, self._position_threshold):
                 self._event += 1
                 self._t = 0

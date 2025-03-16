@@ -20,11 +20,13 @@ import omni.replicator.core as rep
 import omni.syntheticdata as sd
 import sys
 import carb
+import warp
 
 modules = [
     "carb",
     "omni.isaac.core.utils",
-    "omni.isaac.core_nodes"
+    "omni.isaac.core_nodes",
+    "warp"
 ]
 
 for module_name in modules:

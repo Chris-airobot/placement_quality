@@ -45,8 +45,10 @@ from omni.isaac.sensor import ContactSensor
 from simulation.task import YcbTask
 from simulation.planner import YcbPlanner
 from simulation.logger import YcbLogger
+from simulation.simulator import YcbCollection
 from vision import *
 from helper import *
+
 
 # Enable ROS2 bridge extension
 extensions.enable_extension("omni.isaac.ros2_bridge")
@@ -56,167 +58,7 @@ base_dir = "/home/chris/Chris/placement_ws/src/data/YCB_data/"
 time_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 DIR_PATH = os.path.join(base_dir, f"run_{time_str}/")
 
-class YcbCollection:
-    def __init__(self):
-        # Basic variables
-        self.world = None
-        self.object = None
-        self.planner = None
-        self.controller = None
-        self.robot = None
-        self.cameras = None
-        self.task = None
-        self.data_logger = None
-        self.contact_sensors = None
 
-        # Task variables
-        self.sim_subscriber = None
-        self.contact_message = None
-        self.object_target_orientation = None  
-        self.ee_grasping_orientation = None
-        self.ee_placement_orientation = None 
-        
-        # Counters and timers
-        self.grasp_counter = 0
-        self.placement_counter = 0
-        self.setup_start_time = None
-        self.tf_wait_start_time = None
-        
-        # State tracking
-        self.state = "INIT"  # States: INIT, SETUP, GRASP, PLACE, REPLAY, RESET
-        
-        # Object state tracking
-        self.object_grasped = False
-        self.object_collision = False
-        self.grasping_failure = False
-        
-        # Data logging state
-        self.logging_active = False
-        self.data_recorded = False
-
-    def start(self):
-        # Initialize ROS2 node
-        rclpy.init()
-        self.sim_subscriber = SimSubscriber()
-
-        # Create an executor
-        executor = SingleThreadedExecutor()
-        executor.add_node(self.sim_subscriber)
-
-        # Simulation Environment Setup
-        self.world: World = World(stage_units_in_meters=1.0)
-        self.data_logger = self.world.get_data_logger()
-        self.task = YcbTask(set_camera=True)
-        self.world.add_task(self.task)
-        self.world.reset()
-        
-        # Robot and planner setup
-        self.robot: Franka = self.world.scene.get_object(self.task.get_params()["robot_name"]["value"])
-        self.controller = self.robot.get_articulation_controller()
-        self.planner = YcbPlanner(
-            name="ycb_planner",
-            gripper=self.robot.gripper,
-            robot_articulation=self.robot,
-        )
-        
-        # Initially hide the robot
-        self.robot.prim.GetAttribute("visibility").Set("invisible")
-
-        # Robot movement setup
-        self.ee_grasping_orientation = np.array([0, np.pi, 0])
-        self.ee_placement_orientation = np.array([0, np.pi, 0])
-
-        # TF setup
-        tf_graph_generation()
-        
-        # Update state to begin setup
-        self.state = "SETUP"
-        
-    def reset(self):
-        """Reset the simulation environment"""
-        self.world.reset()
-        self.planner.reset()
-        self.task.object_init(False)
-        
-        # Reset state flags
-        self.state = "SETUP"
-        self.logging_active = False
-        self.data_recorded = False
-        
-        # Keep counters as they are - they need to be handled by the main loop
-        
-    def setup_environment(self):
-        """Handle environment setup phase"""
-        # Initialize setup timer if needed
-        if not self.setup_start_time:
-            self.setup_start_time = time.time()
-            return False
-            
-        # Wait a moment before proceeding with setup
-        if time.time() - self.setup_start_time < 1:
-            return False
-            
-        # Initialize cameras and object
-        self.task.object_pose_finalization()
-        self.cameras = self.task.set_camera(self.task.get_params()["object_current_position"]["value"])
-        start_cameras(self.cameras)
-        
-        self.tf_wait_start_time = time.time()
-        print("Cameras started, waiting for point clouds and TF data...")
-        
-        # Reset setup timer
-        self.setup_start_time = None
-        return True
-        
-    def wait_for_tf_buffer(self):
-        """Wait for TF buffer to be populated"""
-        if self.sim_subscriber.latest_tf is None:
-            return False
-            
-        # Ensure we wait at least 2 seconds for TF buffer
-        current_time = time.time()
-        if current_time - self.tf_wait_start_time < 2.0:
-            return False
-            
-        try:
-            camera1_exists = self.sim_subscriber.check_transform_exists("world", "camera_1")
-            camera2_exists = self.sim_subscriber.check_transform_exists("world", "camera_2")
-            camera3_exists = self.sim_subscriber.check_transform_exists("world", "camera_3")
-            
-            if camera1_exists and camera2_exists and camera3_exists:
-                return True
-        except Exception:
-            pass
-            
-        return False
-        
-    def wait_for_point_clouds(self):
-        """Wait for and process point clouds from all cameras"""
-        pcds = self.sim_subscriber.get_latest_pcds()
-        if pcds["pcd1"] is None or pcds["pcd2"] is None or pcds["pcd3"] is None:
-            return False
-            
-        print("All point clouds received!")
-        raw_pcd, processed_pcd = merge_and_save_pointclouds(pcds, self.sim_subscriber.buffer)
-        
-        if raw_pcd is not None and processed_pcd is not None:
-            print("Point clouds merged and processed successfully!")
-            print("Raw point cloud saved to: merged_pointcloud_raw.pcd")
-            print("Processed point cloud saved to: merged_pointcloud.pcd")
-        
-        # Make the robot visible again after setup
-        self.robot.prim.GetAttribute("visibility").Set("inherited")
-        print("Setup finished, robot visible again")
-        return True
-        
-    def check_grasp_success(self):
-        """Check if the grasp was successful"""
-        if self.planner.get_current_event() == 4 and self.placement_counter <= 1:
-            # Gripper is fully closed but didn't grasp the object
-            if np.floor(self.robot._gripper.get_joint_positions()[0] * 100) == 0:
-                self.grasping_failure = True
-                return False
-        return True
 
 def main():
     env = YcbCollection()
@@ -276,7 +118,7 @@ def main():
                     
             elif setup_phase == 2:
                 # Wait for point clouds
-                if env.wait_for_point_clouds():
+                if env.wait_for_point_clouds(DIR_PATH):
                     setup_phase = 0  # Reset for next time
                     
                     # Move to grasp state if we're just starting
@@ -300,7 +142,6 @@ def main():
                 orientation = env.ee_grasping_orientation
                 
                 picking_position = observations[task_params["object_name"]["value"]]["object_current_position"]
-                picking_position[2] += 0.1
                 
                 # Generate actions for the robot
                 actions = env.planner.forward(
@@ -318,7 +159,7 @@ def main():
                 # Check if grasp failed
                 if not env.check_grasp_success():
                     print("Grasp failed, resetting environment")
-                    logger.record_grasping(DIR_PATH)
+                    logger.record_grasping()
                     env.reset()
                     env.grasp_counter += 1  # Increment grasp counter for new attempt
                     continue
@@ -345,7 +186,7 @@ def main():
                     if env.planner.is_done():
                         print("----------------- First grasp and placement complete -----------------")
                         # Record the successful trajectory
-                        logger.record_grasping(DIR_PATH)
+                        logger.record_grasping()
                         env.data_recorded = True
                         
                         # Increment the placement counter and move to replay state
@@ -387,8 +228,10 @@ def main():
                 task_params = env.task.get_params()
                 
                 # Use orientation for placement
-                picking_position = observations[task_params["object_name"]["value"]]["object_current_position"]
-                picking_position[2] += 0.1
+                # picking_position = observations[task_params["object_name"]["value"]]["object_current_position"]
+                # picking_position[2] += 0.1
+                picking_position = env.current_grasp_pose[0]
+                orientation = env.current_grasp_pose[1]
                 
                 # Generate actions for placement
                 actions = env.planner.forward(
@@ -397,7 +240,7 @@ def main():
                     current_joint_positions=observations[task_params["robot_name"]["value"]]["joint_positions"],
                     end_effector_offset=None,
                     placement_orientation=env.ee_placement_orientation,  
-                    grasping_orientation=env.ee_grasping_orientation,
+                    grasping_orientation=orientation,
                 )
                 
                 # Apply the actions to the robot
@@ -415,7 +258,7 @@ def main():
                 if env.planner.is_done():
                     print(f"----------------- Placement {env.placement_counter} complete ----------------- \n\n")
                     # Record the placement data
-                    logger.record_grasping(DIR_PATH)
+                    logger.record_grasping()
                     env.data_recorded = True
                     
                     # Reset object state for next iteration

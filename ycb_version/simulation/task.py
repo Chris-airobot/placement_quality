@@ -86,7 +86,10 @@ class YcbTask(BaseTask, ABC):
 
         # Select a random object from the YCB dataset.
         selected_object = random.choice(usd_files)
+        selected_object = "025_mug.usd"
         usd_path = ROOT_PATH + selected_object
+        # Updated path
+        # usd_path = get_assets_root_path() + "/Isaac/Props/YCB/Axis_Aligned_Physics/006_mustard_bottle.usd"
 
         def create_object_prim(prim_path, usd_path):
             object_prim = add_reference_to_stage(usd_path=usd_path, prim_path=prim_path)
@@ -100,17 +103,12 @@ class YcbTask(BaseTask, ABC):
             initial_name="/World/Ycb_object", is_unique_fn=lambda x: not is_prim_path_valid(x)
         )
         object_name = find_unique_string_name(
-            initial_name="object", is_unique_fn=lambda x: not scene.object_exists(x)
+            initial_name="ycb_object", is_unique_fn=lambda x: not scene.object_exists(x)
         )
     
         create_object_prim(initial_object_prim_path, usd_path)
 
         # Use a wrapper to wrap the object in a XFormPrim.
-        ## Attention: it probably has some problems with the pose settings, if it does:
-        ## use something like: xform = UsdGeom.Xform.Define(stage, "/xform")
-        ## xform.AddTranslateOp().Set(Gf.Vec3d(2.0, -2.0, 1.0))
-        ## xform.AddRotateXYZOp().Set(Gf.Vec3d(20, 30, 40))
-        ## xform.AddScaleOp().Set(Gf.Vec3d(2.0, 3.0, 4.0))
         self._object = XFormPrim(
             prim_path=initial_object_prim_path,
             name=object_name,
@@ -118,12 +116,15 @@ class YcbTask(BaseTask, ABC):
             orientation=self._object_initial_orientation,
         )
 
+        # Add the object to the scene
+        scene.add(self._object)
+
         # Create the final object.
         final_object_prim_path = find_unique_string_name(
             initial_name="/World/Ycb_final", is_unique_fn=lambda x: not is_prim_path_valid(x)
         )
         final_object_name = find_unique_string_name(
-            initial_name="object", is_unique_fn=lambda x: not scene.object_exists(x)
+            initial_name="final_object", is_unique_fn=lambda x: not scene.object_exists(x)
         )
         create_object_prim(final_object_prim_path, usd_path)
 
@@ -134,6 +135,8 @@ class YcbTask(BaseTask, ABC):
             orientation=self._object_target_orientation,
         )
 
+        # Add the final object to the scene
+        scene.add(self._object_final)
 
         # Attach face markers to the initial object.
         # self.attach_face_markers(initial_object_prim_path)
@@ -167,8 +170,8 @@ class YcbTask(BaseTask, ABC):
 
     def set_camera(self, object_position):
         """
-        Set up cameras in a circular pattern, each pointing at the object from different angles.
-        Each camera is positioned 120 degrees apart around the object and tilted to look at the object center.
+        Set up an optimized 3-camera system with strategic positioning for maximum coverage.
+        Cameras are positioned to capture all sides of the object except the bottom.
         
         Args:
             object_position: The position of the object to look at
@@ -183,29 +186,31 @@ class YcbTask(BaseTask, ABC):
         if not self._set_camera:
             return self._cameras
 
-        # Camera parameters
-        radius = 0.5       # Horizontal distance from object center
-        height = 0.3       # Height above the object
+        # Improved camera parameters - increased radius for better field of view
+        radius = 0.3       # Increased distance from 0.6 to 1.0
         
-        # Define camera positions in a circle around the object (120 degrees apart)
-        angles = [0, 120, 240]  # in degrees, spaced 120 degrees apart
-        
-        # Define camera configuration
+        # Strategic camera positioning:
+        # 1. Two cameras at opposite sides with slight elevation (45°)
+        # 2. One top-down camera at 45° angle for upper surface coverage
         camera_configs = [
-            {"name": "camera_1", "prim_path": "/World/camera_1"},
-            {"name": "camera_2", "prim_path": "/World/camera_2"},
-            {"name": "camera_3", "prim_path": "/World/camera_3"},
+            {"name": "camera_side1", "prim_path": "/World/camera_side1", 
+             "angle_horizontal": 0, "angle_vertical": 45},
+            {"name": "camera_side2", "prim_path": "/World/camera_side2", 
+             "angle_horizontal": 180, "angle_vertical": 45},
+            {"name": "camera_top", "prim_path": "/World/camera_top", 
+             "angle_horizontal": 90, "angle_vertical": 45},
         ]
 
         # Create cameras with positions and orientations that point at the object
-        for i, (angle, config) in enumerate(zip(angles, camera_configs)):
-            # Convert angle to radians
-            angle_rad = np.radians(angle)
+        for config in camera_configs:
+            # Convert angles to radians
+            h_angle_rad = np.radians(config["angle_horizontal"])
+            v_angle_rad = np.radians(config["angle_vertical"])
             
-            # Calculate position on the circle with some height
-            x = object_position[0] + radius * np.cos(angle_rad)
-            y = object_position[1] + radius * np.sin(angle_rad)
-            z = object_position[2] + height
+            # Calculate position using spherical coordinates
+            x = object_position[0] + radius * np.cos(h_angle_rad) * np.cos(v_angle_rad)
+            y = object_position[1] + radius * np.sin(h_angle_rad) * np.cos(v_angle_rad)
+            z = object_position[2] + radius * np.sin(v_angle_rad)
             camera_position = [x, y, z]
             
             # Calculate the direction vector from camera to object
@@ -214,10 +219,7 @@ class YcbTask(BaseTask, ABC):
             # Normalize the direction vector
             direction = direction / np.linalg.norm(direction)
             
-            # Create a rotation matrix that aligns the camera's forward direction with the direction vector
-            # We need to find a rotation that maps [0,0,-1] (camera forward in USD) to our direction vector
-            
-            # First, calculate the rotation axis and angle using cross product and dot product
+            # Create a rotation that aligns the camera's forward direction with the direction vector
             forward = np.array([0, 0, -1])  # Camera forward direction in USD
             rotation_axis = np.cross(forward, direction)
             
@@ -245,7 +247,7 @@ class YcbTask(BaseTask, ABC):
                     rotation_axis[2] * sin_half_angle
                 ]
             
-            # Create the camera
+            # Create the camera with only valid parameters
             cam = Camera(
                 prim_path=config["prim_path"],
                 name=config["name"],
@@ -253,20 +255,114 @@ class YcbTask(BaseTask, ABC):
                 orientation=rotation_quat,
                 resolution=[640, 480],
             )
+            
+            # Set the camera's world pose
             cam.set_world_pose(position=camera_position, orientation=rotation_quat, camera_axes="usd")
             
             # Set clipping range
             cam.set_clipping_range(0.01, 1000.0)
             
-            self._cameras.append(cam)
+            # Set horizontal aperture for wider field of view
+            stage = omni.usd.get_context().get_stage()
+            camera_prim = stage.GetPrimAtPath(cam.prim_path)
+            if camera_prim:
+                camera_prim.GetAttribute("horizontalAperture").Set(36.0)  # 36mm is a wide-angle setting
+                camera_prim.GetAttribute("verticalAperture").Set(24.0)    # Maintain aspect ratio
+                camera_prim.GetAttribute("focalLength").Set(24.0)         # Standard focal length
+                camera_prim.GetAttribute("focusDistance").Set(radius)     # Focus at object distance
             
             # Add camera to task objects for tracking
             self._task_objects[config["name"]] = cam
+            self._cameras.append(cam)
+            
+            # Apply noise to the camera using Warp and Replicator
+            # self._add_warp_noise_to_camera(cam)
             
         return self._cameras
 
+    def _add_warp_noise_to_camera(self, camera):
+        """
+        Add realistic noise to the camera using Warp and Replicator.
+        Based on the official Isaac Sim example but without ROS dependency.
+        
+        Args:
+            camera: The camera object to add noise to
+        """
+        try:
+            import warp as wp
+            import omni.replicator.core as rep
+            
+            # Define GPU Noise Kernel
+            if not hasattr(self, "_noise_kernel_registered"):
+                @wp.kernel
+                def image_gaussian_noise_warp(
+                    data_in, 
+                    data_out, 
+                    seed: int, 
+                    sigma: float = 0.1
+                ):
+                    i, j = wp.tid()
+                    dim_i = data_out.shape[0]
+                    dim_j = data_out.shape[1]
+                    pixel_id = i * dim_i + j
+                    state_r = wp.rand_init(seed, pixel_id + (dim_i * dim_j * 0))
+                    state_g = wp.rand_init(seed, pixel_id + (dim_i * dim_j * 1))
+                    state_b = wp.rand_init(seed, pixel_id + (dim_i * dim_j * 2))
 
-
+                    data_out[i, j, 0] = wp.uint8(float(data_in[i, j, 0]) + (255.0 * sigma * wp.randn(state_r)))
+                    data_out[i, j, 1] = wp.uint8(float(data_in[i, j, 1]) + (255.0 * sigma * wp.randn(state_g)))
+                    data_out[i, j, 2] = wp.uint8(float(data_in[i, j, 2]) + (255.0 * sigma * wp.randn(state_b)))
+                
+                # Register the noise annotator
+                rep.annotators.register(
+                    name="rgb_gaussian_noise",
+                    annotator=rep.annotators.augment_compose(
+                        source_annotator=rep.annotators.get("rgb", device="cuda"),
+                        augmentations=[
+                            rep.annotators.Augmentation.from_function(
+                                image_gaussian_noise_warp, sigma=0.1, seed=1234, data_out_shape=(-1, -1, 3)
+                            ),
+                        ],
+                    ),
+                )
+                
+                # Mark that we've registered the kernel
+                self._noise_kernel_registered = True
+            
+            # Get the render product for this camera
+            render_product = camera._render_product
+            
+            # Apply the noise annotator to this camera's render product
+            if render_product:
+                # Create a writer for this camera
+                writer_name = f"NoiseWriter_{camera.name}"
+                
+                # Register a custom writer that applies our noise
+                if writer_name not in rep.WriterRegistry._writers:
+                    rep.writers.register(
+                        name=writer_name,
+                        writer=rep.writers.BaseWriter(
+                            annotators=["rgb_gaussian_noise"],
+                        )
+                    )
+                
+                # Get the writer and attach it to the render product
+                writer = rep.writers.get(writer_name)
+                writer.attach([render_product])
+                
+                # Store the writer reference to prevent garbage collection
+                if not hasattr(self, "_noise_writers"):
+                    self._noise_writers = {}
+                self._noise_writers[camera.name] = writer
+                
+                print(f"Successfully added noise to camera {camera.name}")
+            else:
+                print(f"No render product found for camera {camera.name}")
+            
+        except ImportError as e:
+            print(f"Could not import required modules for camera noise: {e}")
+        except Exception as e:
+            print(f"Failed to add warp noise to camera: {e}")
 
     def attach_face_markers(self, object_prim_path: str, object_size: float = 1.0, offset: float = 0.05) -> None:
         """

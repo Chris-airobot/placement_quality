@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import os
+
 import open3d as o3d
 import json
 import tf2_ros
@@ -14,8 +15,10 @@ from sensor_msgs.msg import PointCloud2
 from geometry_msgs.msg import TransformStamped
 import random
 import math
+from gpd_container import GraspClient
 from rclpy.node import Node
 import rclpy
+from tf2_ros import Buffer, TransformListener
 
 class SimSubscriber(Node):
     def __init__(self, buffer_size=100.0):
@@ -25,8 +28,8 @@ class SimSubscriber(Node):
         self.latest_pcd2 = None
         self.latest_pcd3 = None
 
-        self.buffer = tf2_ros.Buffer(rclpy.duration.Duration(seconds=buffer_size))
-        self.listener = tf2_ros.TransformListener(self.buffer, self)
+        self.buffer = Buffer(rclpy.duration.Duration(seconds=buffer_size))
+        self.listener = TransformListener(self.buffer, self)
 
         self.tf_subscription = self.create_subscription(
             TFMessage,
@@ -80,6 +83,62 @@ class SimSubscriber(Node):
             return False
 
 
+def obtain_grasps(pcd, port):
+    node = GraspClient()
+    raw_grasps = node.request_grasps(pcd, port)
+
+    grasps = []
+    for key in sorted(raw_grasps.keys(), key=int):
+        item = raw_grasps[key]
+        position = item["position"]
+        orientation = item["orientation_wxyz"]
+        # Each grasp: [ [position], [orientation] ]
+        grasps.append([position, orientation])
+
+    return grasps
+
+def suppress_warnings():
+    """
+    Comprehensive function to suppress all types of warnings in Isaac Sim.
+    Must be called AFTER SimulationApp is initialized.
+    """
+    # App-level warnings
+    import carb.settings
+    settings = carb.settings.get_settings()
+    settings.set("/app/enableDeveloperWarnings", False)
+    settings.set("/app/scripting/ignoreWarningDialog", True)
+    
+    # Console UI warnings
+    settings.set("/exts/omni.kit.window.console/logFilter/verbose", False)
+    settings.set("/exts/omni.kit.window.console/logFilter/info", False)
+    settings.set("/exts/omni.kit.window.console/logFilter/warning", False)
+    settings.set("/exts/omni.kit.window.console/logFilter/error", False)
+    settings.set("/exts/omni.kit.window.console/logFilter/fatal", False)
+    
+    # Log settings (replicate command line args in code)
+    settings.set("/log/level", "error")  # Global log level
+    settings.set("/log/fileLogLevel", "error")
+    settings.set("/log/outputStreamLevel", "error")
+    settings.set("/log/debugConsoleLevel", "error")
+    settings.set("/log/enabled", False)
+    
+    # Additional specific loggers that cause warnings
+    settings.set("/log/level/omni.graph.core.plugin", 4)  # CRITICAL level (4)
+    settings.set("/log/level/omni.syntheticdata.plugin", 4)
+    settings.set("/log/level/omni.timeline.plugin", 4)
+    settings.set("/log/level/omni.isaac", 4)
+    settings.set("/log/level/omni.replicator", 4)
+    
+    # Environment variable approach
+    import os
+    os.environ["CARB_LOG_LEVEL"] = "4"  # CRITICAL level
+    
+    # Python warnings
+    import warnings
+    warnings.filterwarnings("ignore")
+    
+    print("Warnings successfully suppressed")
+    return
 
 def convert_wxyz_to_xyzw(q_wxyz):
     """Convert a quaternion from [w, x, y, z] format to [x, y, z, w] format."""
@@ -362,7 +421,7 @@ def draw_frame(
 
 
 def process_tf_message(tf_message: TFMessage):
-    allowed_frames = {"world", "panda_link0", "panda_hand", "Cube"}
+    allowed_frames = {"world", "panda_link0", "panda_hand", "object"}
     # Extract the frames and transformations
     tf_data = []
     for transform in tf_message.transforms:
@@ -389,150 +448,6 @@ def process_tf_message(tf_message: TFMessage):
     return tf_data
 
 
-def downsample_points(points: np.ndarray, voxel_size: float = 0.0025) -> np.ndarray:
-    """
-    Downsample a Nx4 or Nx3 point cloud using Open3D's voxel grid filter.
-    This reduces the file size and solves many 'voxelized cloud: 0' issues in PCL.
-    """
-    # Create Open3D PointCloud
-    pcd = o3d.geometry.PointCloud()
-    if points.shape[1] == 3:
-        pcd.points = o3d.utility.Vector3dVector(points[:, :3])
-    else:  # Nx4, ignoring last column for geometry
-        pcd.points = o3d.utility.Vector3dVector(points[:, :3])
-
-    # Downsample
-    down_pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
-    # Convert back to NumPy (only x,y,z)
-    down_xyz = np.asarray(down_pcd.points)
-
-    # If original data had 4 columns, reattach the 'rgb' (0.0f or something):
-    # We'll do a simple approach: everything gets the same 4th column
-    if points.shape[1] == 4:
-        # For now set all 'rgb' to 0.0. If you want to preserve color,
-        # you'd need a more advanced approach, e.g. approximate nearest neighbors
-        # in the original data.
-        downsampled = np.zeros((down_xyz.shape[0], 4), dtype=np.float32)
-        downsampled[:, :3] = down_xyz
-        return downsampled
-    else:
-        return down_xyz
-
-
-def filter_points_in_bounding_box(points, box_center, box_size):
-    """
-    Removes points that lie **inside** a specified axis-aligned bounding box.
-
-    Args:
-        points (np.ndarray): Nx4 array of [x, y, z, rgb].
-        box_center (list/tuple): [cx, cy, cz] for the center of the box.
-        box_size (list/tuple): [sx, sy, sz] for the full box dimensions.
-                               (orientation = 0,0,0, so axis-aligned)
-
-    Returns:
-        np.ndarray: Filtered Nx4 array, with points inside the box removed.
-    """
-    c = np.array(box_center, dtype=np.float32)
-    s = np.array(box_size, dtype=np.float32) * 0.5  # half-extends
-    box_min = c - s
-    box_max = c + s
-
-    pts_xyz = points[:, :3]  # Nx3
-    inside_mask = np.all((pts_xyz >= box_min) & (pts_xyz <= box_max), axis=1)
-
-    # Keep points that are **outside** the box
-    return points[~inside_mask]
-
-
-def save_pointcloud(msg: PointCloud2, root) -> str:
-    """
-    Saves a ROS PointCloud2 (with x,y,z,[rgb]) to an ASCII PCD file.
-    The file includes a voxel-based downsampling step to reduce size.
-
-    The output path is:  root/Pcd_{pcd_counter}/pointcloud.pcd
-    """
-    # 1) Create the directory
-    # dir_name = os.path.join(root, f"Pcd_{pcd_counter}")
-    # os.makedirs(dir_name, exist_ok=True)
-
-    # 2) Fixed filename: "pointcloud.pcd"
-    file_path = os.path.join(root, "pointcloud.pcd")
-
-    # 3) Identify offsets for x,y,z,rgb
-    offset_x = offset_y = offset_z = None
-    offset_rgb = None
-    for field in msg.fields:
-        if field.name == "x":
-            offset_x = field.offset
-        elif field.name == "y":
-            offset_y = field.offset
-        elif field.name == "z":
-            offset_z = field.offset
-        elif field.name in ("rgb", "rgba"):
-            offset_rgb = field.offset
-
-    if offset_x is None or offset_y is None or offset_z is None:
-        raise ValueError("PointCloud2 does not contain x, y, z fields!")
-
-    # 4) Convert data to (N,4) float32 array: [x y z rgb]
-    num_points = len(msg.data) // msg.point_step
-    points = np.zeros((num_points, 4), dtype=np.float32)
-
-    for i in range(num_points):
-        start = i * msg.point_step
-        x = struct.unpack_from("f", msg.data, start + offset_x)[0]
-        y = struct.unpack_from("f", msg.data, start + offset_y)[0]
-        z = struct.unpack_from("f", msg.data, start + offset_z)[0]
-
-        if offset_rgb is not None:
-            # read raw 32 bits as float or int
-            rgb_uint = struct.unpack_from("I", msg.data, start + offset_rgb)[0]
-            # store as float so we can put it in 'rgb' column
-            points[i] = [x, y, z, float(rgb_uint)]
-        else:
-            points[i] = [x, y, z, 0.0]
-
-
-    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-    # [A] FILTER OUT POINTS INSIDE THE ROBOT'S BOUNDING BOX
-    # NOTE: Make sure points are in the same coordinate frame as the bounding box
-    box_center = [-0.04, 0.0, 0.0]  # center of the robot bounding box in "world" frame
-    box_size   = [0.24, 0.20, 1] # size in x,y,z
-    points_filtered = filter_points_in_bounding_box(points, box_center, box_size)
-    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-
-
-
-
-    # 5) Downsample to reduce size (voxel_size=0.01 => 1cm grid; adjust as needed)
-    points_down = downsample_points(points_filtered, voxel_size=0.005)
-
-    # 6) Build ASCII PCD header
-    # NOTE: We now do "TYPE F F F F" for the 4 fields, so that PCL's voxel/crop
-    #       filter doesn't reject them. (Instead of 'I' for rgb.)
-    header = (
-        "# .PCD v.7 - Point Cloud Data file format\n"
-        "VERSION .7\n"
-        "FIELDS x y z rgb\n"
-        "SIZE 4 4 4 4\n"
-        "TYPE F F F F\n"  # <--- we changed the last field to F
-        "COUNT 1 1 1 1\n"
-        f"WIDTH {points_down.shape[0]}\n"
-        "HEIGHT 1\n"
-        f"POINTS {points_down.shape[0]}\n"
-        "DATA ascii\n"
-    )
-
-    # 7) Write ASCII data: x, y, z, rgb
-    with open(file_path, "w") as f:
-        f.write(header)
-        for i in range(points_down.shape[0]):
-            x, y, z, rgbf = points_down[i]
-            # Here we treat the last column as float
-            f.write(f"{x:.6f} {y:.6f} {z:.6f} {rgbf:.6f}\n")
-
-    print(f"[INFO] Saved ASCII PCD to {file_path}: {points_down.shape[0]} points (down from {num_points}).")
-    return file_path
 
 def pointcloud2_to_o3d(pcd_ros):
     import sensor_msgs_py.point_cloud2 as pc2
@@ -804,10 +719,7 @@ def compare_point_clouds(file_path1, file_path2, titles=None):
         
     Returns:
         tuple: The two loaded point clouds
-    """
-    import open3d as o3d
-    import numpy as np
-    
+    """    
     try:
         # Load the point clouds
         pcd1 = o3d.io.read_point_cloud(file_path1)
@@ -874,9 +786,6 @@ def process_pointcloud(pcd, remove_plane=True):
     Returns:
         o3d.geometry.PointCloud: Processed point cloud
     """
-    import open3d as o3d
-    import numpy as np
-    
     if pcd is None or len(pcd.points) == 0:
         return pcd
     
@@ -935,7 +844,7 @@ def process_pointcloud(pcd, remove_plane=True):
     
     return pcd
 
-def merge_and_save_pointclouds(pcds_dict, tf_buffer, output_path="/home/chris/Chris/placement_ws/src/data/point_cloud_data/merged_pointcloud.pcd"):
+def merge_and_save_pointclouds(pcds_dict: dict, tf_buffer: Buffer, output_path="/home/chris/Chris/placement_ws/src/pcds/pointcloud.pcd"):
     """
     Merges point clouds from multiple cameras after transforming them to the world frame.
     Saves both the raw merged point cloud and a processed version.
@@ -948,7 +857,6 @@ def merge_and_save_pointclouds(pcds_dict, tf_buffer, output_path="/home/chris/Ch
     Returns:
         tuple: (raw_pcd, processed_pcd) The raw and processed point clouds
     """
-    import open3d as o3d
     transformed_pcds = []
     
     for name, pcd_msg in pcds_dict.items():
@@ -994,22 +902,23 @@ def merge_and_save_pointclouds(pcds_dict, tf_buffer, output_path="/home/chris/Ch
     raw_output_path = output_path.replace(".pcd", "_raw.pcd")
     try:
         o3d.io.write_point_cloud(raw_output_path, raw_pcd)
+        print("Point clouds merged successfully!")
     except Exception:
         pass
     
     # Process the point cloud
     processed_pcd = process_pointcloud(raw_pcd)
-    
     # Save the processed point cloud
     try:
         o3d.io.write_point_cloud(output_path, processed_pcd)
+        print("Processed point cloud processed successfully!")
     except Exception:
         pass
     
     return raw_pcd, processed_pcd
 
-def process_existing_pointcloud(input_path="/home/chris/Chris/placement_ws/src/merged_pointcloud.pcd", 
-                               output_path="/home/chris/Chris/placement_ws/src/processed_pointcloud.pcd"):
+def process_existing_pointcloud(input_path="/home/chris/Chris/placement_ws/src/pcds/pointcloud_raw.pcd", 
+                               output_path="/home/chris/Chris/placement_ws/src/pcds/pointcloud.pcd"):
     """
     Process an existing point cloud file with advanced filtering and normal estimation.
     
@@ -1042,8 +951,9 @@ def process_existing_pointcloud(input_path="/home/chris/Chris/placement_ws/src/m
 
 if __name__ == "__main__":
     # # # Example Usage
-    file_path = "/home/chris/Chris/placement_ws/src/data/point_cloud_data/merged_pointcloud.pcd"
+    file_path = "/home/chris/Chris/placement_ws/src/pcds/pointcloud.pcd"
     view_pcd(file_path)   
+    # process_existing_pointcloud()
     # data_analysis("/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
     # print(len(orientation_creation()))
     
