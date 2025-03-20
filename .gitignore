@@ -1,1 +1,3 @@
-docker_files/
+docker_files/ros_ws/devel/
+docker_files/ros_ws/build/
+docker_files/gpd/

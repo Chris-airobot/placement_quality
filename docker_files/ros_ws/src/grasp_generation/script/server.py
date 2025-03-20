@@ -18,7 +18,7 @@ import numpy as np
 import pyquaternion
  
 HOST = ''        # Typically bind to all interfaces inside the container
-PORT = 12346     # Choose any free port
+PORT = 12346    # Choose any free port
  
 # For gpd_ros, the topic that outputs the grasp poses are "clustered_grasps"
  
@@ -80,11 +80,11 @@ class Grasp:
  
             rot = np.zeros((3, 3))
             # grasp approach direction
-            rot[:, 2] = self.vector3ToNumpy(grasp.approach)
+            rot[:, 0] = self.vector3ToNumpy(grasp.approach)
             # hand closing direction
-            rot[:, 0] = self.vector3ToNumpy(grasp.binormal)
+            rot[:, 1]= self.vector3ToNumpy(grasp.binormal)
             # hand axis
-            rot[:, 1] = self.vector3ToNumpy(grasp.axis)
+            rot[:, 2] = self.vector3ToNumpy(grasp.axis)
             
             
             # Turn the roll pitch yaw thing into the quaternion axis
@@ -111,7 +111,7 @@ class Grasp:
         """
         header = Header()
         header.stamp = rospy.Time.now()
-        header.frame_id = "map"  # Replace with your frame ID
+        header.frame_id = "world"  # Replace with your frame ID
  
         # Extract points from JSON
         points = [

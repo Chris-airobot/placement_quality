@@ -6,7 +6,7 @@ import socket
 import json
 import struct
 import rospy
-from geometry_msgs.msg import PoseArray, Vector3, Point
+from geometry_msgs.msg import PoseArray, Vector3, Point, Pose, Quaternion
 from gpd_ros.msg import GraspConfig, GraspConfigList
  
 from sensor_msgs.msg import PointCloud2, PointField
@@ -34,13 +34,18 @@ class Grasp:
         # Publish the point cloud data into topic that GPD package which receives the input
         self.grasps_pub = rospy.Publisher("/gpd_input", PointCloud2, queue_size=1)
         
+        # Add a publisher for point cloud visualization in RViz
+        self.cloud_viz_pub = rospy.Publisher("/point_cloud_viz", PointCloud2, queue_size=1)
+        
         # Subscribe to the gpd topic and get the grasp gesture data, save it into the grasp_list through call_back function
         self.gpd_sub = rospy.Subscriber("/detect_grasps/clustered_grasps", GraspConfigList, self.save_grasps)
         self.grasp_list: Union[List[GraspConfig], None] = None
         
         # Topic for visualization of the grasp pose
         self.pose_pub = rospy.Publisher("/pose_viz", PoseArray, queue_size=1)
- 
+        
+        # Store the calculated pose array
+        self.saved_pose_array = None
 
         rospy.sleep(1)
  
@@ -68,7 +73,11 @@ class Grasp:
         # Sort all grasps based on the gpd_ros's msg: GraspConfigList.grasps.score.data            
         self.grasp_list.sort(key=lambda x: x.score.data, reverse=True)
  
- 
+        # Create a PoseArray for visualization in RViz
+        pose_array = PoseArray()
+        pose_array.header.frame_id = "map"  # Changed from "world" to "map" to match RViz default
+        pose_array.header.stamp = rospy.Time.now()
+
         ### Pay attention here, the axis of the gripper
         for grasp in self.grasp_list:
             
@@ -92,10 +101,18 @@ class Grasp:
                 "orientation_wxyz": [quat[0], quat[1], quat[2], quat[3]]
             }
             
-            # grasp_pose = Pose(
-            #     position=pos,
-            #     orientation=Quaternion(x=quat[1], y=quat[2], z=quat[3], w=quat[0]),
-            # )
+            # Create a Pose for RViz visualization
+            grasp_pose = Pose(
+                position=pos,
+                orientation=Quaternion(x=quat[1], y=quat[2], z=quat[3], w=quat[0]),
+            )
+            pose_array.poses.append(grasp_pose)
+        
+        # Store the pose array for continuous publishing
+        self.saved_pose_array = pose_array
+        
+        # Publish the pose array for visualization
+        self.pose_pub.publish(pose_array)
         
         return grasp_dict
  
@@ -103,7 +120,7 @@ class Grasp:
  
     def read_pcd_file(self, file_path):
         """
-        Reads an ASCII PCD file with fields [x y z rgb] and converts it to a ROS PointCloud2 message.
+        Reads a PCD file using Open3D and converts it to a ROS PointCloud2 message.
 
         Parameters:
             file_path (str): Path to the PCD file.
@@ -111,55 +128,63 @@ class Grasp:
         Returns:
             PointCloud2: The converted ROS PointCloud2 message.
         """
-        # 1. Read the PCD file
-        with open(file_path, 'r') as file:
-            lines = file.readlines()
+        # Read the PCD file using Open3D
+        pcd = o3d.io.read_point_cloud(file_path)
+        
+        # Extract points and colors if available
+        points = np.asarray(pcd.points, dtype=np.float32)
+        
+        # Check if we have colors
+        if pcd.has_colors():
+            # Convert RGB [0-1] to uint32 format
+            colors = np.asarray(pcd.colors, dtype=np.float32)
+            colors_uint32 = (colors * 255).astype(np.uint8)
+            rgb_uint32 = colors_uint32[:, 0] << 16 | colors_uint32[:, 1] << 8 | colors_uint32[:, 2]
+            rgb_uint32 = rgb_uint32.astype(np.uint32)
+            
+            # Combine points and colors
+            cloud_data = np.zeros(points.shape[0], dtype=[
+                ('x', np.float32),
+                ('y', np.float32),
+                ('z', np.float32),
+                ('rgb', np.uint32)
+            ])
+            cloud_data['x'] = points[:, 0]
+            cloud_data['y'] = points[:, 1]
+            cloud_data['z'] = points[:, 2]
+            cloud_data['rgb'] = rgb_uint32
+            
+            fields = [
+                PointField('x', 0, PointField.FLOAT32, 1),
+                PointField('y', 4, PointField.FLOAT32, 1),
+                PointField('z', 8, PointField.FLOAT32, 1),
+                PointField('rgb', 12, PointField.UINT32, 1)
+            ]
+        else:
+            # Points only
+            cloud_data = np.zeros(points.shape[0], dtype=[
+                ('x', np.float32),
+                ('y', np.float32),
+                ('z', np.float32)
+            ])
+            cloud_data['x'] = points[:, 0]
+            cloud_data['y'] = points[:, 1]
+            cloud_data['z'] = points[:, 2]
+            
+            fields = [
+                PointField('x', 0, PointField.FLOAT32, 1),
+                PointField('y', 4, PointField.FLOAT32, 1),
+                PointField('z', 8, PointField.FLOAT32, 1)
+            ]
 
-        # 2. Parse header to find where the data starts
-        data_start_idx = 0
-        for i, line in enumerate(lines):
-            if line.startswith('DATA'):
-                data_start_idx = i + 1
-                break
-
-        # 3. Parse data lines into a list of points
-        points = []
-        for line in lines[data_start_idx:]:
-            values = line.strip().split()
-            if len(values) < 4:
-                continue  # Skip incomplete lines
-            x, y, z = map(float, values[:3])
-            rgb = int(float(values[3]))
-            points.append([x, y, z, rgb])
-
-        # Convert to NumPy array
-        points_np = np.array(points, dtype=np.float32)  # Shape: (N, 4)
-
-        # 4. Define PointCloud2 fields
-        fields = [
-            PointField('x', 0, PointField.FLOAT32, 1),
-            PointField('y', 4, PointField.FLOAT32, 1),
-            PointField('z', 8, PointField.FLOAT32, 1),
-            PointField('rgb', 12, PointField.UINT32, 1),  # 'rgb' as UINT32
-        ]
-
-        # 5. Create the header
+        # Create header
         header = Header()
-        header.stamp = rospy.Time.now()  # Requires rospy to be initialized
-        header.frame_id = "map"  # Change to your appropriate TF frame
+        header.stamp = rospy.Time.now()
+        header.frame_id = "map"  # Changed from "world" to "map" to match RViz default
 
-        # 6. Create the PointCloud2 message
-        cloud_msg = PointCloud2()
-        cloud_msg.header = header
-        cloud_msg.height = 1
-        cloud_msg.width = points_np.shape[0]
-        cloud_msg.is_dense = False
-        cloud_msg.is_bigendian = False
-        cloud_msg.fields = fields
-        cloud_msg.point_step = 16  # 4 fields * 4 bytes each
-        cloud_msg.row_step = cloud_msg.point_step * cloud_msg.width
-        cloud_msg.data = points_np.tobytes()
-
+        # Create PointCloud2 message
+        cloud_msg = point_cloud2.create_cloud(header, fields, cloud_data)
+        
         return cloud_msg
     
  
@@ -169,9 +194,7 @@ class Grasp:
  
         rospy.loginfo("ROS 1 Container Server: Listening on port %d", PORT)
         
-            
-            
-        file_path = "/home/pointcloud.pcd"
+        file_path = "/home/pointcloud_raw.pcd"
         # file_path = "/home/gpd/tutorials/krylon.pcd"
         
         # file_path = "/home/pointcloud.pcd"
@@ -181,11 +204,43 @@ class Grasp:
         # Process point cloud data to generate grasps
         self.grasp_list = None
 
+        # Publish point cloud for GPD processing
         self.grasps_pub.publish(pcd)
         
-        # Build the response
-        response_dict = self.find_grasps(start_time)
-        rospy.spin()
+        # Also publish the point cloud for visualization in RViz
+        self.cloud_viz_pub.publish(pcd)
+        
+        rospy.loginfo("Published point cloud to /gpd_input and /point_cloud_viz")
+        
+        # Set up rate for continuous publishing
+        rate = rospy.Rate(10)  # 10Hz refresh rate
+        
+        grasp_detected = False
+        
+        while not rospy.is_shutdown():
+            # Always publish the point cloud for visualization
+            self.cloud_viz_pub.publish(pcd)
+            
+            # Check if we have grasp poses and calculate them once
+            if self.grasp_list is not None and not grasp_detected:
+                rospy.loginfo(f"Received {len(self.grasp_list)} grasp poses")
+                # Calculate grasp poses and store them
+                response_dict = self.find_grasps(start_time)
+                grasp_detected = True
+                rospy.loginfo("Grasp poses published to /pose_viz for RViz visualization")
+            
+            # Continue to publish already calculated grasp poses
+            if grasp_detected and self.saved_pose_array is not None:
+                print("publishing grasp poses")
+                # Update the timestamp for visualization
+                self.saved_pose_array.header.stamp = rospy.Time.now()
+                # Republish the saved pose array
+                self.pose_pub.publish(self.saved_pose_array)
+            
+            # Make sure to sleep to maintain the publishing rate
+            rate.sleep()
+        
+        rospy.loginfo("Node is shutting down")
 
                     
 
