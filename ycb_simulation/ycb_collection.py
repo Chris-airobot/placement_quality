@@ -65,6 +65,8 @@ def main():
             return False
 
     while simulation_app.is_running():
+        if env.grasp_counter >= 10:
+            exit()
         # Handle simulation step
         try:
             env.world.step(render=True)

@@ -74,3 +74,6 @@ For the robot in the lab, IP address is **192.168.1.209**, i.e. Type "192.168.1.
         -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
         my-ros1-x11:latest
 
+7. Cluster usage:
+- Connections:
+    - ssh tianyuanl@gandalf-dev.it.deakin.edu.au
