@@ -1,3 +1,7 @@
 docker_files/ros_ws/devel/
 docker_files/ros_ws/build/
 docker_files/gpd/
+
+# Ignore Python compiled files
+__pycache__/
+*.pyc
