@@ -55,11 +55,25 @@ For the robot in the lab, IP address is **192.168.1.209**, i.e. Type "192.168.1.
 
 3. The configuration may still not work, i.e. ros2 command pops up an error saying some configuration errors even after completing step 2
 - Solutions: **open up one terminal that set the environment first (export FASTRTPS_DEFAULT_PROFILES_FILE=...), then start the isaac sim.** No idea why it's not working even I put that in the *extra arg* of isaac sim 
-4. For running Graspnet, it requires different cuda versions
-- Solutions: 
-    - rm -rf /usr/local/cuda    # delete link
-    - sudo ln -s /usr/local/cuda-11.0 /usr/local/cuda    # build new-link
-    -nvcc --version    # check cuda version
+4. Docker:
+- Docker image build
+    - docker build --build-arg GITHUB_TOKEN=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 -t my_isaac_ros_image .
+
+
+- Docker container command
+    - docker run --name my_isaac_ros_container \
+        --runtime=nvidia --gpus all \
+        -e "ACCEPT_EULA=Y" \
+        -e "PRIVACY_CONSENT=Y" \
+        --network=host \
+        -v /home/sohil/Chris/placement_ws/src/data:/home/chris/Chris/placement_ws/src/data:rw \
+        -it --entrypoint bash my_isaac_ros_image
+
+- Docker for grasping
+    - docker build -t my_ros_noetic_image .
+    - docker run -it   -v /home/sohil/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/grasp_generation:/home/ros_ws/src/grasp_generation:rw   my_ros_noetic_image
+
+
 5. If Vscode does not recognize some certain packages
 - Solutions:
     - import the package, then print(package.\_\_file__)
@@ -77,17 +91,3 @@ For the robot in the lab, IP address is **192.168.1.209**, i.e. Type "192.168.1.
 7. Cluster usage:
 - Connections:
     - ssh tianyuanl@gandalf-dev.it.deakin.edu.au
-
-8. Docker:
-- Docker image build
-    - docker build --build-arg GITHUB_TOKEN=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 -t my_isaac_ros_image .
-
-
-- Docker container command
-    - docker run --name my_isaac_ros_container \
-        --runtime=nvidia --gpus all \
-        -e "ACCEPT_EULA=Y" \
-        -e "PRIVACY_CONSENT=Y" \
-        --network=host \
-        -v /home/sohil/Chris/placement_ws/src/data:/home/chris/Chris/placement_ws/src/data:rw \
-        -it --entrypoint bash my_isaac_ros_image
