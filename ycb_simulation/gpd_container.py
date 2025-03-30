@@ -7,12 +7,13 @@ import json
 import struct
 import numpy as np
 import open3d as o3d
+import time
 
 class GraspClient(Node):
     def __init__(self):
         super().__init__('grasp_client')
  
-    def request_grasps(self, pcd, port=12346):
+    def request_grasps(self, tcp_msg, port=12345):
         # The IP/hostname should match how you can access the container
         # For Docker on the same machine, you might use 'localhost' + port-mapping
         # Or you might have a specific container IP address (e.g. 172.17.x.x)
@@ -20,8 +21,6 @@ class GraspClient(Node):
         PORT = port
  
         # Construct some sample point cloud info (JSON-serializable dict)
-        # pointcloud_data = self.format_pcd(pcd)
-        pointcloud_data = self.format_o3d_pcd(pcd)
  
         self.get_logger().info(f"Connecting to container server at {HOST}:{PORT}")
  
@@ -30,7 +29,7 @@ class GraspClient(Node):
             s.connect((HOST, PORT))
  
             # Send the pointcloud data in JSON
-            send_str = json.dumps({"pointcloud": pointcloud_data})
+            send_str = json.dumps(tcp_msg)
             send_data = send_str.encode('utf-8')
             send_len = struct.pack('>I', len(send_data))
             s.sendall(send_len + send_data)
@@ -52,39 +51,7 @@ class GraspClient(Node):
         #     pos = g.get('position', [0,0,0])
         #     ori = g.get('orientation', [0,0,0,1])
         #     self.get_logger().info(f"Grasp #{i}: position={pos}, orientation={ori}")
-    def format_o3d_pcd(self, o3d_pcd):
-        """
-        Converts an Open3D point cloud into a JSON-friendly format.
-        Each point is represented as a dictionary with x, y, z, and rgb fields.
-        """
-        points = np.asarray(o3d_pcd.points)
-        data = []
-        
-        # Check if point cloud has colors
-        if o3d_pcd.has_colors():
-            colors = np.asarray(o3d_pcd.colors)
-            for i in range(len(points)):
-                # Convert RGB [0-1] to int
-                r, g, b = colors[i]
-                rgb_int = int((r*255) << 16 | (g*255) << 8 | (b*255))
-                data.append({
-                    "x": float(points[i][0]),
-                    "y": float(points[i][1]),
-                    "z": float(points[i][2]),
-                    "rgb": rgb_int
-                })
-        else:
-            # If no colors, use a default RGB value
-            default_rgb = 0xFFFFFF  # white
-            for i in range(len(points)):
-                data.append({
-                    "x": float(points[i][0]),
-                    "y": float(points[i][1]),
-                    "z": float(points[i][2]),
-                    "rgb": default_rgb
-                })
-        
-        return data
+
  
     def format_pcd(self, file_path):
         """
@@ -115,11 +82,20 @@ class GraspClient(Node):
  
  
 def main(args=None):
-    file_path = "/home/chris/Chris/placement_ws/src/data/pcd_0/pointcloud.pcd"
+    file_path = "/home/chris/Chris/placement_ws/src/data/YCB_data/run_20250323_223832/Pcd_0/pointcloud_raw.pcd"
     # file_path = "/home/chris/Chris/placement_ws/src/krylon.pcd"
     rclpy.init(args=args)
     node = GraspClient()
-    node.request_grasps(file_path)
+    # Load the PCD file using Open3D
+    pcd = o3d.io.read_point_cloud(file_path)
+    print(f"Publishing point cloud to container server for the first time")
+    grasps = node.request_grasps(pcd, 1234)
+    print(f"Your first data: {grasps}")
+    print("--------------------------------")
+    time.sleep(10)
+    print(f"Publishing point cloud to container server for the second time")
+    grasps = node.request_grasps(pcd, 1234)
+    print(f"Your second data: {grasps}")
     rclpy.shutdown()
  
 if __name__ == '__main__':

@@ -18,12 +18,14 @@ from omni.isaac.franka import Franka
 from omni.isaac.core.utils.types import ArticulationAction
 from omni.isaac.core.utils.rotations import euler_angles_to_quat, quat_to_euler_angles
 from omni.isaac.sensor import ContactSensor
+import omni
 
 from simulation.task import YcbTask
 from simulation.planner import YcbPlanner
 
-from utils.vision import *
-from utils.helper import *
+from ycb_simulation.utils.vision import *
+from ycb_simulation.utils.helper import *
+
 
 class YcbCollection:
     def __init__(self):
@@ -35,8 +37,8 @@ class YcbCollection:
         self.robot = None
         self.cameras = None
         self.task = None
-        self.data_logger = None
         self.contact_sensors = None
+        self.stage = omni.usd.get_context().get_stage()
 
         # Task variables
         self.sim_subscriber = None
@@ -51,6 +53,7 @@ class YcbCollection:
         self.grasp_counter = 0
         self.placement_counter = 0
         self.pcd_counter = 0
+        self.stabilize_counter = 30
         self.setup_start_time = None
         self.tf_wait_start_time = None
         
@@ -58,18 +61,18 @@ class YcbCollection:
         self.state = "INIT"  # States: INIT, SETUP, GRASP, PLACE, REPLAY, RESET
         
         # Object state tracking
-        self.object_grasped = False
+        self.object_grasped = None
         self.object_collision = False
-        self.grasping_failure = False
         
         # Data logging state
-        self.logging_active = False
+        self.start_logging = True
         self.data_recorded = False
+
 
     def start(self):
         # Initialize ROS2 node
         rclpy.init()
-        self.sim_subscriber = SimSubscriber()
+        self.sim_subscriber = SimSubscriber(visualization=True)
 
         # Create an executor
         executor = SingleThreadedExecutor()
@@ -77,7 +80,6 @@ class YcbCollection:
 
         # Simulation Environment Setup
         self.world: World = World(stage_units_in_meters=1.0)
-        self.data_logger = self.world.get_data_logger()
         self.task = YcbTask(set_camera=True)
         self.world.add_task(self.task)
         self.world.reset()
@@ -90,19 +92,57 @@ class YcbCollection:
             gripper=self.robot.gripper,
             robot_articulation=self.robot,
         )
-        
+
+        prim_names = [
+            "Franka/panda_link0",
+            "Franka/panda_link1",
+            "Franka/panda_link2",
+            "Franka/panda_link3",
+            "Franka/panda_link4",
+            "Franka/panda_link5",
+            "Franka/panda_link6",
+            "Franka/panda_link7",
+            "Franka/panda_link8",
+            "Franka/panda_hand",
+            "Franka/panda_leftfinger",
+            "Franka/panda_rightfinger",
+            "Ycb_object"
+        ]
+
+        self.contact_sensors = []
+        for i, link_name in enumerate(prim_names):
+            sensor: ContactSensor = self.world.scene.add(
+                ContactSensor(
+                    prim_path=f"/World/{link_name}/contact_sensor",
+                    name=f"contact_sensor_{i}",
+                    frequency=60,
+                    min_threshold=0.0,
+                    max_threshold=1e7,
+                    radius=-1,
+                )
+            )
+            # Use raw contact data if desired
+            sensor.add_raw_contact_data_to_frame()
+            self.contact_sensors.append(sensor)
+
+        self.world.reset()
+
+        # Contact report for links
+        self.world.add_physics_callback("contact_sensor_callback", self.on_sensor_contact_report)
+
         # Initially hide the robot
         self.robot.prim.GetAttribute("visibility").Set("invisible")
 
         # Robot movement setup
-        self.ee_grasping_orientation = np.array([0, np.pi, 0])
-        self.ee_placement_orientation = np.array([0, np.pi, 0])
+        euler_angles = [random.uniform(0, 360) for _ in range(3)]
+        self.ee_placement_orientation = R.from_euler('xyz', euler_angles, degrees=True).as_quat()
 
         # TF setup
         tf_graph_generation()
         
         # Update state to begin setup
         self.state = "SETUP"
+        
         
     def reset(self):
         """Reset the simulation environment"""
@@ -114,10 +154,29 @@ class YcbCollection:
         # Reset state flags
         self.state = "SETUP"
         self.robot.prim.GetAttribute("visibility").Set("invisible")
-        self.logging_active = False
+        self.start_logging = True
         self.data_recorded = False
+        self.object_grasped = None
         
-        # Keep counters as they are - they need to be handled by the main loop
+    def soft_reset(self, state="REPLAY"):
+        """Soft reset the simulation environment"""
+        print("Soft resetting simulation environment")
+        self.world.reset()
+        self.planner.reset()
+        self.task._object.set_world_pose(position=self.task._buffer[0], orientation=self.task._buffer[1])
+        self.start_logging = True
+        self.data_recorded = False
+        self.object_grasped = None
+        object_target_position, object_target_orientation = self.task.pose_init()
+        self.task._object_final.set_world_pose(position=object_target_position, orientation=object_target_orientation)
+
+        self.state = state
+        # self.task._object_final.set_world_pose(position=self.task._buffer[2], orientation=self.task._buffer[3])
+        # self.stage.RemovePrim("/World/Ycb_final")
+
+        # self.task.object_init(False)
+
+        
         
     def setup_environment(self):
         """Handle environment setup phase"""
@@ -171,15 +230,51 @@ class YcbCollection:
             return False
             
         print("All point clouds received!")
+
+        # Create a msg of CloudIndexed.msg
+
+        self.pcd_counter += 1
         pcd_path = path + f"Pcd_{self.pcd_counter}/pointcloud.pcd"
-        raw_pcd, processed_pcd = merge_and_save_pointclouds(pcds, self.sim_subscriber.buffer, pcd_path)
+        tcp_msg = merge_and_save_pointclouds(pcds, self.sim_subscriber.buffer, pcd_path)
         
-        if raw_pcd is not None and processed_pcd is not None:
-            print(f"Raw point cloud saved to: {pcd_path}")
-            self.pcd_counter += 1
-            self.grasp_poses = obtain_grasps(raw_pcd, 12346)
+        if tcp_msg["cloud_sources"]["cloud"] is not None:
+            # Update the camera view points
+            for camera in self.cameras:
+                camera_position, _ = camera.get_world_pose()
+                tcp_msg["cloud_sources"]["view_points"].append(
+                    {
+                        "x": camera_position[0],
+                        "y": camera_position[1],
+                        "z": camera_position[2]
+                    }
+                )
+            self.grasp_poses = obtain_grasps(tcp_msg, 12345)
+
+            task_params = self.task.get_params()
+            valid_grasp_poses = []
+            distance_threshold = 0.1  # Threshold in meters - adjust as needed
+            
+            for grasp in self.grasp_poses:
+                transformed_pose = transform_relative_pose(grasp, [0, 0, 0.062])
+                pos_error = np.linalg.norm(transformed_pose[0] - task_params["object_current_position"]["value"])
+                
+                # Only keep grasp poses within the threshold
+                if pos_error <= distance_threshold:
+                    valid_grasp_poses.append(transformed_pose)
+            
+            self.grasp_poses = valid_grasp_poses
+             # If no valid grasp poses found, return False to trigger restart
+            if not self.grasp_poses:
+                self.current_grasp_pose = -1
+                print("No valid grasp poses found within threshold. Restarting simulation...")
+                return False
+            # Update grasp poses list with only valid poses
+            
             self.current_grasp_pose = self.grasp_poses.pop(0)
-            draw_frame(self.current_grasp_pose[0], self.current_grasp_pose[1])
+            
+           
+            
+            # Keep the original visualization for Isaac Sim
             self.grasp_counter = 1
         
         # Make the robot visible again after setup
@@ -187,11 +282,87 @@ class YcbCollection:
         print("Setup finished, robot visible again")
         return True
         
+
+    def on_sensor_contact_report(self, dt):
+        """Physics-step callback: checks all sensors, sets self.contact_message accordingly."""
+        contacts_list = []  # track if at least one sensor had contact
+
+        for sensor in self.contact_sensors:
+            frame_data = sensor.get_current_frame()
+            if frame_data["in_contact"]:
+                # We have contact! Extract the bodies, force, etc.
+                for c in frame_data["contacts"]:
+                    body0_short = c["body0"].split("/")[-1]
+                    body1_short = c["body1"].split("/")[-1]
+                    if "panda" in body0_short  and "panda" in body1_short:
+                        continue
+                    # Optionally, you can store additional details like force, time, etc.
+                    contacts_list.append({
+                        "body0": body0_short,
+                        "body1": body1_short,
+                        "time": frame_data.get("time"),
+                        "physics_step": frame_data.get("physics_step"),
+                        "current_event": self.planner.get_current_event()
+                    })
+
+        # If, after checking all sensors, none had contact, reset self.contact_message to None
+        # print(f"This is the contact message: {contacts_list}")
+        self.contact_message = contacts_list if contacts_list else None
+
+
+
     def check_grasp_success(self):
         """Check if the grasp was successful"""
-        if self.planner.get_current_event() == 4 and self.placement_counter <= 1:
-            # Gripper is fully closed but didn't grasp the object
-            if np.floor(self.robot._gripper.get_joint_positions()[0] * 100) == 0:
-                self.grasping_failure = True
-                return False
+        # print(f"You are in the grasp success check")
+        POSITION_THRESHOLD = 0.1  # 1cm threshold for object movement
+        
+        # Check if gripper is fully closed (no object grasped)
+        if np.floor(self.robot._gripper.get_joint_positions()[0] * 100) == 0:
+            # print("Gripper is fully closed, didn't grasp object")
+            self.object_grasped = "FAILED"
+            return False
+            
+        # If we don't have object position tracked yet, store current position
+        # if not hasattr(self, 'last_object_position'):
+        #     object_position, _ = self.task._object.get_world_pose()
+        #     self.last_object_position = np.array(object_position)
+        #     self.last_check_time = time.time()
+            
+        # else:
+        #     # Get current object position
+        #     current_position, _ = self.task._object.get_world_pose()
+        #     current_position = np.array(current_position)
+        #     current_time = time.time()
+            
+        #     # Check if enough time has passed to evaluate
+        #     if current_time - self.last_check_time > 0.1:  # Check every 100ms
+        #         # Calculate position change
+        #         position_delta = np.linalg.norm(current_position - self.last_object_position)
+                
+        #         # Update stored position
+        #         self.last_object_position = current_position
+        #         self.last_check_time = current_time
+                
+        #         # If object moved too much while being grasped, it slipped
+        #         if position_delta > POSITION_THRESHOLD:
+        #             print("Object moved too much while being grasped, it slipped")
+        #             self.object_grasped = "SLIPPED"
+        #             return False
+        
+        # # If we have contact sensors, verify object is still making contact
+        # if self.contact_message is not None:
+        #     contact_detected = False
+        #     for msg in self.contact_message:
+        #         if ('finger' in msg["body0"] and "Ycb" in msg["body1"]) or \
+        #            ('finger' in msg["body1"] and "Ycb" in msg["body0"]):
+        #             contact_detected = True
+        #             break
+              
+        #     if not contact_detected:
+        #         self.object_grasped = "SLIPPED"
+        #         return False
+        
+        self.object_grasped = "SUCCESS"
+        print("Object grasped successfully")
         return True
+    

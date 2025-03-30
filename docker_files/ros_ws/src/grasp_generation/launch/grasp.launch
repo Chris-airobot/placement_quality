@@ -1,10 +1,10 @@
 <launch>
-    <node name="detect_grasps" pkg="gpd_ros" type="detect_grasps" output="screen">
-        <param name="cloud_type" value="0" />
+    <!-- <node name="detect_grasps" pkg="gpd_ros" type="detect_grasps" output="screen">
+        <param name="cloud_type" value="1" />
         <param name="cloud_topic" value="/gpd_input" />
         <param name="config_file" value="/home/ros_ws/src/grasp_generation/config/ros_eigen_params.cfg" />
         <param name="rviz_topic" value="plot_grasps" />
-    </node>
+    </node> -->
  
         <!-- Launch the Python server script -->
     <!-- <node name="grasp_server" pkg="grasp_generation" type="main.py" output="screen"> -->

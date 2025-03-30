@@ -4,9 +4,10 @@ import sys
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
+# Use the correct relative import path
+from ycb_simulation.utils.helper import SimSubscriber, process_tf_message, extract_replay_data
 
-from utils.helper import SimSubscriber, process_tf_message, extract_replay_data
-from simulation.simulator import YcbCollection
+from ycb_simulation.simulation.simulator import YcbCollection
 import numpy as np
 import glob
 import asyncio
@@ -26,13 +27,13 @@ class YcbLogger:
 
     def log_grasping(self):
         # Logging sections
-        if not self.env.logging_active:
+        if self.env.start_logging:
             self._on_logging_event(True, self.env.sim_subscriber)
-            self.env.logging_active = True
+            self.env.start_logging = False
 
-        return 
+        
 
-    def _on_logging_event(self, val, tf_node: SimSubscriber):
+    def _on_logging_event(self, val, ros2_node: SimSubscriber):
         from omni.isaac.franka import Franka
         from omni.isaac.core.scenes import Scene
         
@@ -44,8 +45,8 @@ class YcbLogger:
             object_name = self.task_params["object_name"]["value"]
             target_position: np.ndarray = self.task_params["object_target_position"]["value"]
             target_orientation: np.ndarray = self.task_params["object_target_orientation"]["value"]
-            if tf_node.latest_tf is not None:
-                tf_data = process_tf_message(tf_node.latest_tf)
+            if ros2_node.all_transforms is not None:
+                tf_data = process_tf_message(ros2_node.all_transforms)
             else:
                 tf_data = None
             # A data logging function is called at every time step index if the data logger is started already.
@@ -101,9 +102,9 @@ class YcbLogger:
 
     def _on_replay_scene_step(self, step_size):
         from omni.isaac.core.utils.types import ArticulationAction
-
+        print(f"Replaying step {self.world.current_time_step_index} of {self.data_logger.get_num_of_data_frames()}")
         if self.world.current_time_step_index < self.data_logger.get_num_of_data_frames():
-            object_name = self.task_params["object_name"]["value"]
+            object_name = self.env.task.get_params()["object_name"]["value"]
             data_frame = self.data_logger.get_data_frame(data_frame_index=self.world.current_time_step_index)
             self.controller.apply_action(
                 ArticulationAction(joint_positions=data_frame.data["applied_joint_positions"])
@@ -129,17 +130,19 @@ class YcbLogger:
 
         # If the replay data does not exist, create one
         if not os.path.exists(file_path):
+            print(f"File does not exist: {file_path}, preparing to extract data from Placement files")
             file_pattern = os.path.join(self.dir_path, f"Pcd_{self.env.pcd_counter}/Grasping_{self.env.grasp_counter}/Placement_*.json")
             file_list = glob.glob(file_pattern)
 
             extract_replay_data(file_list[0])
+        print(f"File found, starting to replay")
         asyncio.ensure_future(self._on_replay_scene_event_async(file_path))
         return True
     
     def record_grasping(self):
             # Recording section
         if not self.env.data_recorded:
-            file_path = self.dir_path + f"Pcd_{self.env.pcd_counter}/Grasping_{self.env.grasp_counter}/Placement_{self.env.placement_counter}_{self.env.grasping_failure}.json"
+            file_path = self.dir_path + f"Pcd_{self.env.pcd_counter}/Grasping_{self.env.grasp_counter}/Placement_{self.env.placement_counter}.json"
 
             # Ensure the parent directories exist
             directory = os.path.dirname(file_path)
@@ -151,5 +154,5 @@ class YcbLogger:
                 with open(file_path, 'w') as file:
                     json.dump({}, file)
             self._on_save_data_event(file_path)
-            recorded = True
-        return recorded
+            self.env.data_recorded = True
+        # return recorded

@@ -17,7 +17,7 @@ module_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if module_path not in sys.path:
     sys.path.append(module_path)
 
-from learning_models.dataset import MyStabilityDataset
+from models.dataset import MyStabilityDataset
 
 def data_split(data_path="/home/chris/Chris/placement_ws/src/data/processed_data/data.json"):
     # Define paths

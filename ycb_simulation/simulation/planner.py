@@ -11,7 +11,7 @@ from omni.isaac.core.articulations import Articulation
 from omni.isaac.manipulators.grippers.parallel_gripper import ParallelGripper
 from omni.isaac.manipulators.grippers.gripper import Gripper
 from scipy.spatial.transform import Rotation, Slerp
-from utils.helper import get_current_end_effector_pose,convert_wxyz_to_xyzw
+from ycb_simulation.utils.helper import get_current_end_effector_pose,convert_wxyz_to_xyzw
 
 
 
@@ -90,7 +90,7 @@ class YcbPlanner(BaseController):
         placing_position: np.ndarray,
         current_joint_positions: np.ndarray,
         end_effector_offset: typing.Optional[np.ndarray] = None,
-        grasping_orientation: typing.Optional[np.ndarray] = None,
+        picking_orientation: typing.Optional[np.ndarray] = None,
         placement_orientation: typing.Optional[np.ndarray] = None,
     ) -> ArticulationAction:
         """
@@ -99,7 +99,7 @@ class YcbPlanner(BaseController):
         Depending on the event (phase), this method computes the target joint positions.
         """
         end_effector_offset = np.array([0, 0, 0]) if end_effector_offset is None else end_effector_offset
-        grasping_orientation = np.array([0.0, np.pi, 0.0]) if grasping_orientation is None else grasping_orientation
+        picking_orientation = np.array([0.0, np.pi, 0.0]) if picking_orientation is None else picking_orientation
         placement_orientation = np.array([0.0, np.pi, 0.0]) if placement_orientation is None else placement_orientation
 
         stage_time_limit = None
@@ -144,11 +144,11 @@ class YcbPlanner(BaseController):
                 self._current_ee_target_position = placing_position
 
             # Convert Euler angles to quaternions if necessary.
-            if len(grasping_orientation) == 3:
-                grasping_orientation = euler_angles_to_quat(grasping_orientation)
+            if len(picking_orientation) == 3:
+                picking_orientation = euler_angles_to_quat(picking_orientation)
             if len(placement_orientation) == 3:
                 placement_orientation = euler_angles_to_quat(placement_orientation)
-            interpolated_orientation = self._get_slerp_quat(grasping_orientation, placement_orientation)
+            interpolated_orientation = self._get_slerp_quat(picking_orientation, placement_orientation)
 
             target_joint_positions = self._cspace_controller.forward(
                 target_end_effector_position=position_target, 
@@ -157,8 +157,9 @@ class YcbPlanner(BaseController):
 
         self._t += self._events_dt[self._event]
         if stage_time_limit is None:
-            stage_time_limit = 2
+            stage_time_limit = 1.5
             if self._t >= stage_time_limit or self.is_stage_task_done(self._current_ee_target_position, self._position_threshold):
+            # if self._t >= stage_time_limit:
                 self._event += 1
                 self._t = 0
         else:
@@ -174,6 +175,7 @@ class YcbPlanner(BaseController):
         """
         current_position, current_orientation = get_current_end_effector_pose()
         if ee_target_position is not None:
+            # print(f"position error: {np.linalg.norm(current_position - ee_target_position)}")
             pos_error = np.linalg.norm(current_position - ee_target_position)
             return pos_error < threshold
         return False

@@ -5,6 +5,9 @@ from omni.isaac.core_nodes.scripts.utils import set_target_prims
 import time
 import carb.settings
 import os
+import numpy as np
+import open3d as o3d
+from scipy.spatial import KDTree
 
 
 def start_cameras(cameras: list, enable_pcd=False, topic_prefix=""):
@@ -243,4 +246,56 @@ def setup_multi_camera_graph(
     
     print(f"Successfully set up multi-camera graph for {len(cameras)} cameras")
     return
+
+
+def compute_grasp_indices(pcd, voxel_size=0.01, normal_radius=0.03, min_neighbors=10):
+    """
+    Compute indices in the point cloud that are likely grasp candidates.
+    
+    Args:
+        pcd: Open3D PointCloud object
+        voxel_size: Size for downsampling
+        normal_radius: Radius for normal estimation
+        min_neighbors: Minimum number of points in local neighborhood
+        
+    Returns:
+        List of indices in the original point cloud suitable for grasp sampling
+    """
+    # Ensure we have normals
+    if not pcd.has_normals():
+        pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(
+            radius=normal_radius, max_nn=30))
+    
+    # Downsample point cloud to get candidate points
+    downsampled_pcd = pcd.voxel_down_sample(voxel_size)
+    
+    # Get points and normals
+    points = np.asarray(pcd.points)
+    normals = np.asarray(pcd.normals)
+    down_points = np.asarray(downsampled_pcd.points)
+    
+    # Build KD-tree for original points
+    tree = KDTree(points)
+    
+    # For each downsampled point, find its index in the original cloud
+    # and check if it has enough neighbors
+    indices = []
+    for i, point in enumerate(down_points):
+        # Find the closest point in the original cloud (should be exact or very close)
+        dist, idx = tree.query(point, k=1)
+        orig_idx = idx
+        
+        # Count neighbors within a radius
+        indices_nn = tree.query_ball_point(point, r=normal_radius)
+        
+        # Check if there are enough neighbors and if normal points somewhat upward
+        if len(indices_nn) >= min_neighbors and normals[orig_idx][2] > -0.3:
+            indices.append(orig_idx)
+    
+    # If we have too many indices, further downsample
+    if len(indices) > 500:  # Adjust based on your needs and gpd requirements
+        step = len(indices) // 500
+        indices = indices[::step]
+    
+    return indices
 

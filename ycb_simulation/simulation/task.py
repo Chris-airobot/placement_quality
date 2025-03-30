@@ -19,7 +19,7 @@ import omni.graph.core as og
 import omni.syntheticdata
 from pxr import Usd, UsdGeom, Gf, UsdPhysics
 # Assuming these helper functions are defined in your project
-from utils.helper import euler2quat, get_current_end_effector_pose
+from ycb_simulation.utils.helper import euler2quat, get_current_end_effector_pose
 from scipy.spatial.transform import Rotation as R
 
 
@@ -58,6 +58,7 @@ class YcbTask(BaseTask, ABC):
         self._object_initial_orientation = object_initial_orientation
         self._object_target_position = object_target_position
         self._object_target_orientation = object_target_orientation
+        self._buffer = None
         # self._dc_interface = _dynamic_control.acquire_dynamic_control_interface()
 
         # Initialize object poses if not provided.
@@ -114,6 +115,7 @@ class YcbTask(BaseTask, ABC):
             name=object_name,
             translation=self._object_initial_position,
             orientation=self._object_initial_orientation,
+            scale=[0.8, 0.8, 0.8]
         )
 
         # Add the object to the scene
@@ -133,6 +135,7 @@ class YcbTask(BaseTask, ABC):
             name=final_object_name,
             translation=self._object_target_position,
             orientation=self._object_target_orientation,
+            scale=[0.8, 0.8, 0.8]
         )
 
         # Add the final object to the scene
@@ -419,10 +422,11 @@ class YcbTask(BaseTask, ABC):
         """Return current task parameters."""
         params_representation = dict()
         position, orientation = self._object.get_world_pose()
+        final_position, final_orientation = self._object_final.get_world_pose()
         params_representation["object_current_position"] = {"value": position, "modifiable": True}
         params_representation["object_current_orientation"] = {"value": orientation, "modifiable": True}
-        params_representation["object_target_position"] = {"value": self._object_target_position, "modifiable": True}
-        params_representation["object_target_orientation"] = {"value": self._object_target_orientation, "modifiable": True}
+        params_representation["object_target_position"] = {"value": final_position, "modifiable": True}
+        params_representation["object_target_orientation"] = {"value": final_orientation, "modifiable": True}
         params_representation["object_name"] = {"value": self._object.name, "modifiable": False}
         params_representation["robot_name"] = {"value": self._robot.name, "modifiable": False}
         return params_representation
@@ -492,12 +496,14 @@ class YcbTask(BaseTask, ABC):
         Finalize the object poses by updating parameters and moving the final object off-screen.
         """
         object_position, object_orientation = self._object.get_world_pose()
-        object_target_position, object_target_orientation = self._object_final.get_world_pose()
+        self._object_target_position, self._object_target_orientation = self._object_final.get_world_pose()
         self.set_params(
             object_position=object_position,
             object_orientation=object_orientation,
-            object_target_position=object_target_position,
-            object_target_orientation=object_target_orientation,
+            object_target_position=self._object_target_position,
+            object_target_orientation=self._object_target_orientation,
         )
-        self._object_final.set_world_pose(position=[1000, 1000, 0.5], orientation=object_target_orientation)
+        self._buffer = [object_position, object_orientation, self._object_target_position, self._object_target_orientation]
+        # self._object_final.set_world_pose(position=[1000, 1000, 0.5], orientation=self._object_target_orientation)
+        self._object_final.prim.GetAttribute("visibility").Set("invisible")
         return

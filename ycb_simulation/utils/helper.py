@@ -15,13 +15,14 @@ from sensor_msgs.msg import PointCloud2
 from geometry_msgs.msg import TransformStamped
 import random
 import math
-from gpd_container import GraspClient
+# from gpd_container import GraspClient
 from rclpy.node import Node
 import rclpy
 from tf2_ros import Buffer, TransformListener
+from visualization_msgs.msg import Marker, MarkerArray
 
 class SimSubscriber(Node):
-    def __init__(self, buffer_size=100.0):
+    def __init__(self, buffer_size=100.0, visualization=False):
         super().__init__("Sim_subscriber")
         self.latest_tf = None
         self.latest_pcd1 = None
@@ -51,6 +52,17 @@ class SimSubscriber(Node):
         
         self.ts.registerCallback(self.synchronized_pcd_callback)
         self.pcd_callback_enabled = True
+        if visualization:
+            # Add publishers for visualization
+            self.pcd_pub = self.create_publisher(PointCloud2, '/visualization/raw_pcd', 10)
+            self.grasp_pub = self.create_publisher(MarkerArray, '/visualization/grasp_pose', 10)
+        
+            # Timer for continuous publishing
+            self.viz_timer = self.create_timer(0.1, self.publish_visualization)
+            
+            # Store raw point cloud
+            self.raw_pcd = None
+            self.current_grasp_pose = None
 
     def synchronized_pcd_callback(self, pcd1_msg, pcd2_msg, pcd3_msg):
         if not self.pcd_callback_enabled:
@@ -62,9 +74,12 @@ class SimSubscriber(Node):
     def tf_callback(self, msg):
         self.latest_tf = msg
         if self.latest_tf is not None and len(self.latest_tf.transforms) > 0:
+            if not hasattr(self, 'all_transforms'):
+                self.all_transforms = {}
             for transform in self.latest_tf.transforms:
                 try:
                     self.buffer.set_transform(transform, "default_authority")
+                    self.all_transforms[transform.child_frame_id] = transform
                 except Exception:
                     pass
         
@@ -82,10 +97,155 @@ class SimSubscriber(Node):
         except Exception:
             return False
 
+    def set_raw_pcd(self, raw_pcd):
+        """Set the raw point cloud data"""
+        self.raw_pcd = raw_pcd
+    
+    def set_grasp_pose(self, grasp_pose):
+        """Set the current grasp pose"""
+        self.current_grasp_pose = grasp_pose
+    
+    def publish_visualization(self):
+        """Publish point cloud and grasp pose to RViz"""
+        # Publish point cloud if available
+        if self.raw_pcd is not None:
+            print("Publishing point cloud to RViz")
+            import numpy as np
+            from sensor_msgs.msg import PointCloud2, PointField
+            import std_msgs.msg
+            
+            # Convert Open3D point cloud to ROS PointCloud2 message
+            points = np.asarray(self.raw_pcd.points)
+            
+            # Create point cloud message
+            msg = PointCloud2()
+            msg.header = std_msgs.msg.Header()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = "world"  # Set appropriate frame
+            
+            # Set point cloud fields
+            msg.height = 1
+            msg.width = points.shape[0]
+            
+            # Define fields (x, y, z)
+            fields = [
+                PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+                PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+                PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1)
+            ]
+            msg.fields = fields
+            
+            # Set other properties
+            msg.is_bigendian = False
+            msg.point_step = 12  # 3 * float32 (4 bytes)
+            msg.row_step = msg.point_step * points.shape[0]
+            msg.is_dense = True
+            
+            # Convert points to byte array
+            msg.data = points.astype(np.float32).tobytes()
+            
+            self.pcd_pub.publish(msg)
+        
+        # Publish grasp pose as axis if available
+        if self.current_grasp_pose is not None:
+            from visualization_msgs.msg import Marker, MarkerArray
+            from geometry_msgs.msg import Pose, Point, Quaternion, Vector3
+            import numpy as np
+            print("Publishing markerarray to RViz")
+            
+            marker_array = MarkerArray()
+            
+            # Convert list format to Pose message
+            # current_grasp_pose is [position[x,y,z], orientation[w,x,y,z]]
+            position = self.current_grasp_pose[0]
+            orientation = self.current_grasp_pose[1]
+            
+            # Create base pose
+            pose_msg = Pose()
+            pose_msg.position = Point(x=position[0], y=position[1], z=position[2])
+            pose_msg.orientation = Quaternion(w=orientation[0], x=orientation[1], y=orientation[2], z=orientation[3])
+            
+            # Colors for each axis (RGB)
+            colors = [
+                (1.0, 0.0, 0.0),  # X-axis: Red
+                (0.0, 1.0, 0.0),  # Y-axis: Green
+                (0.0, 0.0, 1.0)   # Z-axis: Blue
+            ]
+            
+            # Axis directions
+            directions = [
+                Vector3(x=1.0, y=0.0, z=0.0),  # X-axis
+                Vector3(x=0.0, y=1.0, z=0.0),  # Y-axis
+                Vector3(x=0.0, y=0.0, z=1.0)   # Z-axis
+            ]
+            
+            # Create a marker for each axis
+            for i in range(3):
+                marker = Marker()
+                marker.header.frame_id = "world"
+                marker.header.stamp = self.get_clock().now().to_msg()
+                marker.ns = f"axis_{i}"
+                marker.id = i
+                marker.type = Marker.ARROW
+                marker.action = Marker.ADD
+                
+                # Set scale - length and width of the arrow
+                marker.scale.x = 0.005  # Length
+                marker.scale.y = 0.01  # Width
+                marker.scale.z = 0.0  # Height
+                
+                # Set color for this axis
+                marker.color.r = colors[i][0]
+                marker.color.g = colors[i][1]
+                marker.color.b = colors[i][2]
+                marker.color.a = 1.0
+                
+                # Set starting pose
+                marker.pose = pose_msg
+                
+                # Set direction for this axis
+                marker.points = []
+                start_point = Point(x=0.0, y=0.0, z=0.0)
+                
+                # End point in the direction of the axis
+                end_point = Point(
+                    x=directions[i].x * 0.2,
+                    y=directions[i].y * 0.2,
+                    z=directions[i].z * 0.2
+                )
+                
+                marker.points.append(start_point)
+                marker.points.append(end_point)
+                
+                marker_array.markers.append(marker)
+            
+            self.grasp_pub.publish(marker_array)
 
-def obtain_grasps(pcd, port):
+
+def convert_numpy_to_python(obj):
+    """Convert numpy types to Python native types for JSON serialization."""
+    import numpy as np
+    
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, (np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, 
+                          np.int64, np.uint8, np.uint16, np.uint32, np.uint64)):
+        return int(obj)
+    elif isinstance(obj, (np.float_, np.float16, np.float32, np.float64)):
+        return float(obj)
+    elif isinstance(obj, (np.bool_)):
+        return bool(obj)
+    elif isinstance(obj, dict):
+        return {key: convert_numpy_to_python(value) for key, value in obj.items()}
+    elif isinstance(obj, list) or isinstance(obj, tuple):
+        return [convert_numpy_to_python(item) for item in obj]
+    return obj
+
+def obtain_grasps(tcp_msg, port):
+    from gpd_container import GraspClient
     node = GraspClient()
-    raw_grasps = node.request_grasps(pcd, port)
+    serializable_msg = convert_numpy_to_python(tcp_msg)
+    raw_grasps = node.request_grasps(serializable_msg, port)
 
     grasps = []
     for key in sorted(raw_grasps.keys(), key=int):
@@ -97,48 +257,47 @@ def obtain_grasps(pcd, port):
 
     return grasps
 
-def suppress_warnings():
+
+def generate_grasp_poses(object_pose, object_dims, num_poses):
     """
-    Comprehensive function to suppress all types of warnings in Isaac Sim.
-    Must be called AFTER SimulationApp is initialized.
+    Generate a list of random grasp poses for an object.
+    
+    Parameters:
+      object_pose: List with two elements:
+                   [0] -> position: [x, y, z] (object center in world coordinates)
+                   [1] -> orientation: [x, y, z, w] (object rotation as a quaternion)
+      object_dims: list with measured dimensions [0.085, -0.07, 0.035].
+                   We take the absolute values to define the box's extents.
+      num_poses:   Number of random grasp poses to generate.
+                   
+    Returns:
+      A list of grasp poses. Each grasp pose is a list with two elements:
+        [0] -> position: Grasp position in world coordinates.
+        [1] -> orientation: Grasp orientation as a quaternion (random).
     """
-    # App-level warnings
-    import carb.settings
-    settings = carb.settings.get_settings()
-    settings.set("/app/enableDeveloperWarnings", False)
-    settings.set("/app/scripting/ignoreWarningDialog", True)
+    # Use absolute values for dimensions (width, depth, height)
+    width, depth, height = abs(object_dims[0]), abs(object_dims[1]), abs(object_dims[2])
     
-    # Console UI warnings
-    settings.set("/exts/omni.kit.window.console/logFilter/verbose", False)
-    settings.set("/exts/omni.kit.window.console/logFilter/info", False)
-    settings.set("/exts/omni.kit.window.console/logFilter/warning", False)
-    settings.set("/exts/omni.kit.window.console/logFilter/error", False)
-    settings.set("/exts/omni.kit.window.console/logFilter/fatal", False)
+    poses = []
+    for _ in range(num_poses):
+        # Sample a random point on the top surface of the box (in the object's local frame)
+        local_x = random.uniform(-width/2, width/2)
+        local_y = random.uniform(-depth/2, depth/2)
+        local_z = height / 2.0  # top surface
+        local_grasp = np.array([local_x, local_y, local_z])
+        
+        # Transform the local grasp position to world coordinates
+        object_position = np.array(object_pose[0])
+        object_rot = R.from_quat(object_pose[1])
+        world_position = object_position + object_rot.apply(local_grasp)
+        
+        # Generate a random grasp orientation (completely random rotation)
+        euler_angles = [random.uniform(0, 360) for _ in range(3)]
+        grasp_orientation = R.from_euler('xyz', euler_angles, degrees=True).as_quat()
+        
+        poses.append([world_position, grasp_orientation])
     
-    # Log settings (replicate command line args in code)
-    settings.set("/log/level", "error")  # Global log level
-    settings.set("/log/fileLogLevel", "error")
-    settings.set("/log/outputStreamLevel", "error")
-    settings.set("/log/debugConsoleLevel", "error")
-    settings.set("/log/enabled", False)
-    
-    # Additional specific loggers that cause warnings
-    settings.set("/log/level/omni.graph.core.plugin", 4)  # CRITICAL level (4)
-    settings.set("/log/level/omni.syntheticdata.plugin", 4)
-    settings.set("/log/level/omni.timeline.plugin", 4)
-    settings.set("/log/level/omni.isaac", 4)
-    settings.set("/log/level/omni.replicator", 4)
-    
-    # Environment variable approach
-    import os
-    os.environ["CARB_LOG_LEVEL"] = "4"  # CRITICAL level
-    
-    # Python warnings
-    import warnings
-    warnings.filterwarnings("ignore")
-    
-    print("Warnings successfully suppressed")
-    return
+    return poses
 
 def convert_wxyz_to_xyzw(q_wxyz):
     """Convert a quaternion from [w, x, y, z] format to [x, y, z, w] format."""
@@ -224,6 +383,7 @@ def extract_replay_data(input_file_path):
   # Save the filtered data into a new JSON file
   with open(output_file_path, 'w') as output_file:
       json.dump(output_data, output_file)
+  print(f"Filtered data saved to: {output_file_path}")
 
 
 def orientation_creation():
@@ -420,13 +580,14 @@ def draw_frame(
 
 
 
-def process_tf_message(tf_message: TFMessage):
-    allowed_frames = {"world", "panda_link0", "panda_hand", "object"}
+def process_tf_message(tf_dict: dict):
+    allowed_frames = {"world", "panda_link0", "panda_hand", "Ycb_object"}
     # Extract the frames and transformations
     tf_data = []
-    for transform in tf_message.transforms:
+    for transform in tf_dict.values():
         parent_frame = transform.header.frame_id
         child_frame = transform.child_frame_id
+        # print(f'parent_frame: {parent_frame}, child_frame: {child_frame}')
         if parent_frame in allowed_frames and child_frame in allowed_frames:
             frame_data = {
                 "parent_frame": parent_frame,
@@ -466,30 +627,23 @@ def pointcloud2_to_o3d(pcd_ros):
     
     return pcd_o3d
 
-def transform_pointcloud_to_frame(
+def transform_pointcloud(
     cloud_in: PointCloud2,
-    tf_buffer: tf2_ros.Buffer,
-    target_frame: str="panda_link0"
+    transform_stamped: TransformStamped
 ) -> PointCloud2:
     """
-    Transforms a PointCloud2 from its current frame to target_frame.
-
+    Transforms a PointCloud2 using a pre-computed transform.
+    
     Args:
         cloud_in (PointCloud2): The input point cloud.
-        tf_buffer (tf2_ros.Buffer): Buffer containing transform information.
-        target_frame (str): Name of the desired target frame.
-
+        transform_stamped (TransformStamped): The transform to apply, which should be 
+                                              looked up at the same timestamp as the point cloud.
+    
     Returns:
         PointCloud2: A new point cloud in the target frame.
     """
-    source_frame = cloud_in.header.frame_id
-    transform_stamped: TransformStamped = tf_buffer.lookup_transform(
-        target_frame=target_frame,
-        source_frame=source_frame,
-        time=Time())
-
     if transform_stamped is None:
-        raise ValueError(f"No direct transform from '{source_frame}' to '{target_frame}' found.")
+        raise ValueError("No transform provided.")
 
     # Extract transform components
     tx = transform_stamped.transform.translation.x
@@ -523,6 +677,7 @@ def transform_pointcloud_to_frame(
 
     # Parse point cloud data
     fields_dict = {}
+    offset_x = offset_y = offset_z = None
     for f in cloud_in.fields:
         fields_dict[f.name] = (f.offset, f.datatype, f.count)
         if f.name == 'x':
@@ -558,8 +713,8 @@ def transform_pointcloud_to_frame(
 
     # Create output message
     cloud_out = PointCloud2()
-    cloud_out.header.stamp = cloud_in.header.stamp
-    cloud_out.header.frame_id = target_frame
+    cloud_out.header.stamp = cloud_in.header.stamp  # Preserve original timestamp
+    cloud_out.header.frame_id = transform_stamped.header.frame_id  # Use target frame from transform
     cloud_out.height = cloud_in.height
     cloud_out.width = cloud_in.width
     cloud_out.fields = cloud_in.fields
@@ -581,6 +736,7 @@ def get_current_end_effector_pose() -> np.ndarray:
     """
 
     offset = np.array([0.0, 0.0, 0.1034])
+    # offset = np.array([0.0, 0.0, 0.0])
     from omni.isaac.dynamic_control import _dynamic_control
     """Return the current end-effector (grasp center) position."""
     # Acquire dynamic control interface
@@ -708,83 +864,27 @@ def view_pcd(file_path, show_normals=False):
         print(f"Error visualizing point cloud: {e}")
         return None
 
-def compare_point_clouds(file_path1, file_path2, titles=None):
-    """
-    Load and compare two point clouds side by side.
-    
-    Args:
-        file_path1 (str): Path to the first point cloud file
-        file_path2 (str): Path to the second point cloud file
-        titles (list): Optional titles for the point clouds
-        
-    Returns:
-        tuple: The two loaded point clouds
-    """    
-    try:
-        # Load the point clouds
-        pcd1 = o3d.io.read_point_cloud(file_path1)
-        pcd2 = o3d.io.read_point_cloud(file_path2)
-        
-        if len(pcd1.points) == 0 or len(pcd2.points) == 0:
-            print("One or both point clouds are empty")
-            return None, None
-            
-        # Create coordinate frames for reference
-        coordinate_frame1 = o3d.geometry.TriangleMesh.create_coordinate_frame(
-            size=0.1, origin=[0, 0, 0]
-        )
-        coordinate_frame2 = o3d.geometry.TriangleMesh.create_coordinate_frame(
-            size=0.1, origin=[0, 0, 0]
-        )
-        
-        # Paint the point clouds different colors for easier comparison
-        pcd1.paint_uniform_color([1, 0.706, 0])  # Yellow
-        pcd2.paint_uniform_color([0, 0.651, 0.929])  # Blue
-        
-        # Create a custom visualization window
-        vis1 = o3d.visualization.Visualizer()
-        vis1.create_window(window_name=titles[0] if titles else "Point Cloud 1", width=800, height=600, left=0, top=0)
-        vis1.add_geometry(pcd1)
-        vis1.add_geometry(coordinate_frame1)
-        
-        vis2 = o3d.visualization.Visualizer()
-        vis2.create_window(window_name=titles[1] if titles else "Point Cloud 2", width=800, height=600, left=800, top=0)
-        vis2.add_geometry(pcd2)
-        vis2.add_geometry(coordinate_frame2)
-        
-        # Set up the camera viewpoint
-        view_control1 = vis1.get_view_control()
-        view_control2 = vis2.get_view_control()
-        
-        # Run the visualization
-        while True:
-            vis1.update_geometry(pcd1)
-            vis2.update_geometry(pcd2)
-            
-            if not vis1.poll_events() or not vis2.poll_events():
-                break
-                
-            vis1.update_renderer()
-            vis2.update_renderer()
-            
-        vis1.destroy_window()
-        vis2.destroy_window()
-        
-        return pcd1, pcd2
-    except Exception as e:
-        print(f"Error comparing point clouds: {e}")
-        return None, None
+
 
 def process_pointcloud(pcd, remove_plane=True):
     """
-    Process a point cloud with advanced filtering and normal estimation.
+    Process a point cloud with advanced filtering, normal estimation, and segmentation.
+    
+    This function performs the following steps:
+      1. Removes the dominant plane (e.g., table surface).
+      2. Removes statistical outliers.
+      3. Estimates normals with translation adjustments.
+      4. Segments the processed point cloud using DBSCAN clustering to obtain
+         the indices corresponding to the largest cluster (assumed to be the object).
     
     Args:
-        pcd (o3d.geometry.PointCloud): Input point cloud
-        remove_plane (bool): Whether to remove the dominant plane
-        
+        pcd (o3d.geometry.PointCloud): Input point cloud.
+        remove_plane (bool): Whether to remove the dominant plane.
+    
     Returns:
-        o3d.geometry.PointCloud: Processed point cloud
+        tuple: (processed_pcd, object_indices)
+            processed_pcd: o3d.geometry.PointCloud after processing.
+            object_indices: List of indices corresponding to the segmented object.
     """
     if pcd is None or len(pcd.points) == 0:
         return pcd
@@ -793,26 +893,26 @@ def process_pointcloud(pcd, remove_plane=True):
     if remove_plane:
         try:
             plane_model, inliers = pcd.segment_plane(
-                distance_threshold=0.01, 
+                distance_threshold=0.015, 
                 ransac_n=100, 
                 num_iterations=1000
             )
             if len(inliers) > 0:
                 # Remove plane inliers (keep only points not belonging to the plane)
                 pcd = pcd.select_by_index(inliers, invert=True)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Plane segmentation failed: {e}")
     
     # 2. Remove statistical outliers
     try:
         filtered_pcd, _ = pcd.remove_statistical_outlier(
             nb_neighbors=20, 
-            std_ratio=1.5
+            std_ratio=2
         )
         if len(filtered_pcd.points) > 0:
             pcd = filtered_pcd
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Statistical outlier removal failed: {e}")
     
     # 3. Normal estimation with translation adjustments
     try:
@@ -838,11 +938,30 @@ def process_pointcloud(pcd, remove_plane=True):
         
         # Reverse the translation
         pcd.translate(np.array([0, 0, -0.05]))
-        pcd.translate(center)
-    except Exception:
-        pass
+        pcd.translate(center)   
+    except Exception as e:
+        print(f"Error processing point cloud: {e}")
     
-    return pcd
+    # 4. Segment the object using DBSCAN clustering
+    object_indices = []
+    try:
+        labels = np.array(pcd.cluster_dbscan(eps=0.02, min_points=10, print_progress=True))
+        if labels.size == 0 or labels.max() < 0:
+            # No valid clusters found, return all indices.
+            object_indices = list(range(len(pcd.points)))
+        else:
+            # Exclude noise (label -1) and find the largest cluster.
+            valid_labels = labels[labels >= 0]
+            if valid_labels.size == 0:
+                object_indices = list(range(len(pcd.points)))
+            else:
+                largest_cluster_label = np.bincount(valid_labels).argmax()
+                object_indices = np.where(labels == largest_cluster_label)[0].tolist()
+    except Exception as e:
+        print(f"Segmentation using DBSCAN failed: {e}")
+        object_indices = list(range(len(pcd.points)))
+    
+    return pcd, object_indices
 
 def merge_and_save_pointclouds(pcds_dict: dict, tf_buffer: Buffer, output_path="/home/chris/Chris/placement_ws/src/pcds/pointcloud.pcd"):
     """
@@ -858,18 +977,33 @@ def merge_and_save_pointclouds(pcds_dict: dict, tf_buffer: Buffer, output_path="
         tuple: (raw_pcd, processed_pcd) The raw and processed point clouds
     """
     transformed_pcds = []
+    camera_source_list = []
     
-    for name, pcd_msg in pcds_dict.items():
+    # We'll assign camera indices based on sorted keys to ensure consistency
+    sorted_keys = sorted(pcds_dict.keys())
+
+    for cam_idx, name in enumerate(sorted_keys):
+        pcd_msg = pcds_dict[name]
         if pcd_msg is None:
             print(f"Camera {name} has no point cloud data")
             continue
             
         try:
-            # transform = tf_buffer.lookup_transform("world", pcd_msg.header.frame_id, rclpy.time.Time())
-            world_pcd_msg = transform_pointcloud_to_frame(pcd_msg, tf_buffer, target_frame="world")
+            # Get transform at the exact time of the point cloud
+            transform = tf_buffer.lookup_transform("world", 
+                                                   pcd_msg.header.frame_id, 
+                                                   rclpy.time.Time(), 
+                                                   timeout=rclpy.duration.Duration(seconds=1.0))
+            # Use a function that accepts the pre-computed transform
+            world_pcd_msg = transform_pointcloud(pcd_msg, transform)
             o3d_pcd = pointcloud2_to_o3d(world_pcd_msg)
             o3d_pcd = o3d_pcd.voxel_down_sample(voxel_size=0.005)
             transformed_pcds.append(o3d_pcd)
+
+            # Create an array of the same length as this point cloud filled with the camera index.
+            num_points = len(o3d_pcd.points)
+            camera_source_list.append(np.full((num_points,), cam_idx))
+
         except Exception as e:
             print(f"Error processing {name}: {e}")
             continue
@@ -877,21 +1011,21 @@ def merge_and_save_pointclouds(pcds_dict: dict, tf_buffer: Buffer, output_path="
     if not transformed_pcds:
         empty_pcd = o3d.geometry.PointCloud()
         o3d.io.write_point_cloud(output_path, empty_pcd)
-        return empty_pcd, empty_pcd
+        return {"cloud_sources": {"cloud": None, "camera_source": [], "view_points": []},
+                "indices": []}
     
     # Merge point clouds
     merged_pcd = transformed_pcds[0]
-    for pcd in transformed_pcds[1:]:
+    merged_camera_source = camera_source_list[0]
+    for pcd, cam_source in zip(transformed_pcds[1:], camera_source_list[1:]):
         merged_pcd += pcd
+        merged_camera_source = np.concatenate((merged_camera_source, cam_source))
     
-    points_np = np.asarray(merged_pcd.points)
-    raw_pcd = o3d.geometry.PointCloud()
-    raw_pcd.points = o3d.utility.Vector3dVector(points_np)
-    
+
     # Save the raw merged point cloud
+    raw_pcd = o3d.geometry.PointCloud()
+    raw_pcd.points = merged_pcd.points  # already merged
     raw_output_path = output_path.replace(".pcd", "_raw.pcd")
-    
-    # Create directory if it doesn't exist
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
     try:
@@ -901,7 +1035,7 @@ def merge_and_save_pointclouds(pcds_dict: dict, tf_buffer: Buffer, output_path="
         pass
     
     # Process the point cloud
-    processed_pcd = process_pointcloud(raw_pcd)
+    processed_pcd, object_indices = process_pointcloud(raw_pcd)
     # Save the processed point cloud
     try:
         o3d.io.write_point_cloud(output_path, processed_pcd)
@@ -909,11 +1043,57 @@ def merge_and_save_pointclouds(pcds_dict: dict, tf_buffer: Buffer, output_path="
     except Exception:
         pass
     
-    
-    return raw_pcd, processed_pcd
 
-def process_existing_pointcloud(input_path="/home/chris/Chris/placement_ws/src/pcds/pointcloud_raw.pcd", 
-                               output_path="/home/chris/Chris/placement_ws/src/pcds/pointcloud.pcd"):
+
+    tcp_msg = {
+                "cloud_sources": {
+                    "cloud": format_o3d_pcd(raw_pcd),
+                    "camera_source": merged_camera_source.tolist(),  # if available
+                    "view_points": []     # if available
+                },
+                "indices": object_indices
+            }
+    return tcp_msg
+
+def format_o3d_pcd(o3d_pcd):
+    """
+    Converts an Open3D point cloud into a JSON-friendly format.
+    Each point is represented as a dictionary with x, y, z, and rgb fields.
+    """
+    points = np.asarray(o3d_pcd.points)
+    data = []
+    
+    # Check if point cloud has colors
+    if o3d_pcd.has_colors():
+        colors = np.asarray(o3d_pcd.colors)
+        for i in range(len(points)):
+            # Convert RGB [0-1] to int
+            r, g, b = colors[i]
+            rgb_int = int((r*255) << 16 | (g*255) << 8 | (b*255))
+            data.append({
+                "x": float(points[i][0]),
+                "y": float(points[i][1]),
+                "z": float(points[i][2]),
+                "rgb": rgb_int
+            })
+    else:
+        # If no colors, use a default RGB value
+        default_rgb = 0xFFFFFF  # white
+        for i in range(len(points)):
+            data.append({
+                "x": float(points[i][0]),
+                "y": float(points[i][1]),
+                "z": float(points[i][2]),
+                "rgb": default_rgb
+            })
+    
+    return data
+
+
+
+
+
+def pcd_processing_visualization(input_path="/home/chris/Chris/placement_ws/src/pcds/pointcloud_raw.pcd"):
     """
     Process an existing point cloud file with advanced filtering and normal estimation.
     
@@ -934,20 +1114,103 @@ def process_existing_pointcloud(input_path="/home/chris/Chris/placement_ws/src/p
             return None
             
         # Process the point cloud
-        processed_pcd = process_pointcloud(pcd)
-        
+        processed_pcd, object_indices = process_pointcloud(pcd)
+
+        print(f"Object indices: {object_indices}")
+        # Create a point cloud for the segmented object (using the indices)
+        object_pcd = processed_pcd.select_by_index(object_indices)
+        # Color the segmented object points in red
+        object_pcd.paint_uniform_color([1, 0, 0])  # Red
+
+        # Create a point cloud for the remaining points (background)
+        background_pcd = processed_pcd.select_by_index(object_indices, invert=True)
+        if len(background_pcd.points) > 0:
+            background_pcd.paint_uniform_color([0.7, 0.7, 0.7])  # Gray for background
+            o3d.visualization.draw_geometries([background_pcd, object_pcd])
+        else:
+            # Only object points exist, so just draw them.
+            o3d.visualization.draw_geometries([object_pcd])
+            
         # Save the processed point cloud
-        o3d.io.write_point_cloud(output_path, processed_pcd)
+        # o3d.io.write_point_cloud(output_path, processed_pcd)
         
         return processed_pcd
     except Exception as e:
         print(f"Error processing point cloud: {e}")
         return None
+    
+
+
+def transform_relative_pose(grasp_pose, relative_translation, relative_rotation=None):
+    from pyquaternion import Quaternion
+    """
+    Transforms a grasp pose using a relative transformation.
+    
+    Parameters:
+        grasp_pose (list): 
+            - "position": list of [x, y, z]
+            - "orientation_wxyz": list of quaternion components [w, x, y, z]
+        relative_translation (list): The relative translation [x, y, z] from the current frame to the target frame.
+        relative_rotation (list, optional): The relative rotation as a quaternion [w, x, y, z]. 
+            If None, the identity rotation is used.
+    
+    Returns:
+        dict: A dictionary representing the transformed pose with keys:
+            - "position": list of [x, y, z]
+            - "orientation_wxyz": list of quaternion components [w, x, y, z]
+    """
+    # Helper: Convert a pose (position, quaternion) to a 4x4 homogeneous transformation matrix.
+    def pose_to_matrix(position, orientation):
+        T = np.eye(4)
+        q = Quaternion(orientation)  # expects [w, x, y, z]
+        T[:3, :3] = q.rotation_matrix
+        T[:3, 3] = position
+        return T
+
+    # Helper: Convert a 4x4 homogeneous transformation matrix back to a pose.
+    def matrix_to_pose(T):
+        position = T[:3, 3].tolist()
+        q = Quaternion(matrix=T[:3, :3])
+        orientation = q.elements.tolist()  # [w, x, y, z]
+        return position, orientation
+
+    # Convert the input grasp pose to a homogeneous matrix.
+    T_current = pose_to_matrix(grasp_pose[0], grasp_pose[1])
+
+    # Build the relative transformation matrix.
+    T_relative = np.eye(4)
+    if relative_rotation is None:
+        q_relative = Quaternion()  # Identity rotation.
+    else:
+        q_relative = Quaternion(relative_rotation)
+    T_relative[:3, :3] = q_relative.rotation_matrix
+    T_relative[:3, 3] = relative_translation
+
+    # Apply the relative transformation.
+    # The new (target) pose is computed as:
+    #   T_target = T_current * T_relative
+    T_target = T_current.dot(T_relative)
+
+    # Convert back to position and quaternion.
+    new_position, new_orientation = matrix_to_pose(T_target)
+    
+    return [new_position, new_orientation]
+
+
+
+
+
+
+
+
+
+
+
 
 if __name__ == "__main__":
     # # # Example Usage
-    file_path = "/home/chris/Chris/placement_ws/src/data/YCB_data/run_20250320_102347/Pcd_0/pointcloud.pcd"
-    view_pcd(file_path)   
+    file_path = "/home/chris/Chris/placement_ws/src/data/YCB_data/run_20250326_094701/Pcd_2/pointcloud_raw.pcd"
+    pcd_processing_visualization(file_path)   
     # process_existing_pointcloud()
     # data_analysis("/home/chris/Chris/placement_ws/src/placement_quality/grasp_placement/learning_models/processed_data.json")
     # print(len(orientation_creation()))

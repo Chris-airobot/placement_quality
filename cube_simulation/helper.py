@@ -6,7 +6,7 @@ import json
 import tf2_ros
 from rclpy.time import Time
 import struct
-from placement_quality.cube_simulation.network.network_client import GraspClient
+from network.network_client import GraspClient
 from transforms3d.quaternions import quat2mat, mat2quat, qmult, qinverse
 from transforms3d.axangles import axangle2mat
 from transforms3d.euler import euler2quat, quat2euler

@@ -7,32 +7,67 @@ import json
 import struct
 import rospy
 from geometry_msgs.msg import PoseArray, Vector3, Point
-from gpd_ros.msg import GraspConfig, GraspConfigList
- 
+from gpd_ros.msg import GraspConfig, GraspConfigList, CloudIndexed, CloudSources
 from sensor_msgs.msg import PointCloud2, PointField
 from sensor_msgs import point_cloud2
-from std_msgs.msg import Header
+from std_msgs.msg import Header, Int64
  
-# from pathlib import Path
 import numpy as np
 import pyquaternion
+import subprocess
+import os
+import signal
+import time
  
 HOST = ''        # Typically bind to all interfaces inside the container
-PORT = 12346    # Choose any free port
+PORT = 12345     # Choose any free port
  
 # For gpd_ros, the topic that outputs the grasp poses are "clustered_grasps"
  
+import subprocess
+import os
+import signal
+import time
+import sys
+def start_detect_grasps():
+    """
+    Launch the gpd_ros detect_grasps node via rosrun with the desired parameters.
+    This does not require you to modify any launch file.
+    """
+    # Build the rosrun command with remapped parameters:
+    # Note: The underscore notation (e.g., _cloud_type:=0) passes private parameters.
+    cmd = [
+        "rosrun", "gpd_ros", "detect_grasps",
+        "_cloud_type:=1",
+        "_cloud_topic:=/gpd_input",
+        "_config_file:=/home/ros_ws/src/grasp_generation/config/ros_eigen_params.cfg",
+        "_rviz_topic:=plot_grasps"
+    ]
+    # Launch the process in its own process group so it can be killed later.
+    proc = subprocess.Popen(cmd, preexec_fn=os.setsid,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE)
+    # Give the node some time to start up (adjust as needed)
+    time.sleep(5)
+    return proc
+
+def stop_detect_grasps(proc):
+    """
+    Terminate the detect_grasps node by killing its process group.
+    """
+    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    proc.wait()
+
+
+
+
+
 class Grasp:
     def __init__(self):
         rospy.init_node("grasp_generation")
-        
-        # Call the point cloud data service
-        # self.left_scan = rospy.ServiceProxy("/left_scan", AssembleScans2)
- 
-        self.grasp_process_timeout = rospy.Duration(5)
-        
+
         # Publish the point cloud data into topic that GPD package which receives the input
-        self.grasps_pub = rospy.Publisher("/gpd_input", PointCloud2, queue_size=1)
+        self.grasps_pub = rospy.Publisher("/gpd_input", CloudIndexed, queue_size=1)
         
         # Subscribe to the gpd topic and get the grasp gesture data, save it into the grasp_list through call_back function
         self.gpd_sub = rospy.Subscriber("/detect_grasps/clustered_grasps", GraspConfigList, self.save_grasps)
@@ -61,32 +96,33 @@ class Grasp:
         grasp_dict = dict()
         i = 0
         while (self.grasp_list is None and
-               rospy.Time.now() - start_time < self.grasp_process_timeout):
-            rospy.loginfo("waiting for left grasps")
+               rospy.Time.now() - start_time < rospy.Duration(20)):
+            rospy.loginfo("waiting for grasps")
             rospy.sleep(0.5)
  
             if self.grasp_list is None:
-                rospy.logwarn("No grasps detected on pcl, restarting!!!")
+                rospy.logwarn("No grasps detected on pcl within 20 seconds, continuing...")
                 continue
         
+
+        if self.grasp_list is None:
+            print("No grasps detected on pcl, returning None")
+            return None
         # Sort all grasps based on the gpd_ros's msg: GraspConfigList.grasps.score.data            
         self.grasp_list.sort(key=lambda x: x.score.data, reverse=True)
  
  
         ### Pay attention here, the axis of the gripper
-        for grasp in self.grasp_list:
-            
-            i+=1
- 
+        for grasp in self.grasp_list:            
+            i+=1 
             rot = np.zeros((3, 3))
             # grasp approach direction
-            rot[:, 0] = self.vector3ToNumpy(grasp.approach)
+            rot[:, 2] = self.vector3ToNumpy(grasp.approach)
             # hand closing direction
-            rot[:, 1]= self.vector3ToNumpy(grasp.binormal)
+            rot[:, 0]= self.vector3ToNumpy(grasp.binormal)
             # hand axis
-            rot[:, 2] = self.vector3ToNumpy(grasp.axis)
-            
-            
+            rot[:, 1] = self.vector3ToNumpy(grasp.axis)
+                        
             # Turn the roll pitch yaw thing into the quaternion axis
             quat = pyquaternion.Quaternion(matrix=rot)
             pos: Point = grasp.position
@@ -105,31 +141,57 @@ class Grasp:
  
             
  
-    def msg_to_pcd2(self, msg):
+    def json_to_cloud_indexed(self, data: dict) -> CloudIndexed:
         """
-        Converts JSON-friendly point cloud data to a PointCloud2 ROS message.
+        Converts JSON-friendly point cloud data (in CloudIndexed format) to a CloudIndexed ROS message.
+        Expects data to have the following structure:
+          {
+              "cloud_sources": {
+                  "cloud": [ { "x": ..., "y": ..., "z": ..., "rgb": ... }, ... ],
+                  "camera_source": [ int, int, ... ],
+                  "view_points": [ { "x": ..., "y": ..., "z": ... }, ... ]
+              },
+              "indices": [ int, int, ... ]
+          }
         """
         header = Header()
         header.stamp = rospy.Time.now()
-        header.frame_id = "world"  # Replace with your frame ID
- 
-        # Extract points from JSON
+        header.frame_id = "world"
+        
+        # Build PointCloud2 from the "cloud" field in cloud_sources
+        cs_data = data["cloud_sources"]
         points = [
-            [point['x'], point['y'], point['z'], point['rgb']]
-            for point in msg
+            [pt["x"], pt["y"], pt["z"], pt["rgb"]]
+            for pt in cs_data["cloud"]
         ]
- 
-        # Define PointCloud2 fields
         fields = [
             PointField('x', 0, PointField.FLOAT32, 1),
             PointField('y', 4, PointField.FLOAT32, 1),
             PointField('z', 8, PointField.FLOAT32, 1),
-            PointField('rgb', 12, PointField.UINT32, 1),
+            PointField('rgb', 12, PointField.UINT32, 1)
         ]
- 
-        # Create PointCloud2 message
         pc2_msg = point_cloud2.create_cloud(header, fields, points)
-        return pc2_msg
+        
+        # Build CloudSources message
+        cs_msg = CloudSources()
+        cs_msg.cloud = pc2_msg
+        cs_msg.camera_source = [Int64(data=int(val)) for val in cs_data.get("camera_source", [])]
+        
+        # Build view_points list
+        cs_msg.view_points = []
+        for vp in cs_data.get("view_points", []):
+            pt = Point()
+            pt.x = vp["x"]
+            pt.y = vp["y"]
+            pt.z = vp["z"]
+            cs_msg.view_points.append(pt)
+        
+        # Build CloudIndexed message
+        ci_msg = CloudIndexed()
+        ci_msg.cloud_sources = cs_msg
+        ci_msg.indices = [Int64(data=int(i)) for i in data.get("indices", [])]
+        
+        return ci_msg
     
  
     
@@ -139,6 +201,11 @@ class Grasp:
         rospy.loginfo("ROS 1 Container Server: Listening on port %d", PORT)
         try:
             while not rospy.is_shutdown():
+
+                # Launch a fresh instance of the detect_grasps node for this cycle.
+                gpd_proc = start_detect_grasps()
+                rospy.loginfo("detect_grasps node launched.")
+                
                 conn, addr = self.server_sock.accept()
                 rospy.loginfo("Connected by %s", addr)
                 with conn:
@@ -150,16 +217,21 @@ class Grasp:
                             break
                         data += chunk
  
- 
+                    
                     # Decode and parse the incoming JSON
                     incoming_data = json.loads(data.decode('utf-8'))
+
+                    # Open a file in write mode and save the JSON data into it
+                    # with open("/home/ros_ws/src/grasp_generation/incoming_message.json", "w") as json_file:
+                    #     json.dump(incoming_data, json_file, indent=4)  # indent=4 makes it pretty-printed
  
-                    pcd = self.msg_to_pcd2(incoming_data["pointcloud"])
+                    ci_msg = self.json_to_cloud_indexed(incoming_data)
  
                     start_time = rospy.Time.now()
                     # Process point cloud data to generate grasps
                     self.grasp_list = None
-                    self.grasps_pub.publish(pcd)
+                    print("publishing CloudIndexed message to /gpd_input")
+                    self.grasps_pub.publish(ci_msg)
                     
                     # Build the response
                     response_dict = self.find_grasps(start_time)
@@ -170,7 +242,10 @@ class Grasp:
                     # Send back the response
                     conn.sendall(send_len + send_data)
                     rospy.loginfo("Sent grasp data to client.")
-                    
+                
+                    # Terminate the detect_grasps node for this cycle.
+                    stop_detect_grasps(gpd_proc)
+                    rospy.loginfo("detect_grasps node terminated for this cycle.")
         except KeyboardInterrupt:
             pass
         finally:
