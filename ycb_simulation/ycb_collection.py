@@ -17,7 +17,7 @@ DISP_HOST_MEM   = 1<<14
 CONFIG = {
     "width": 1920,
     "height":1080,
-    "headless": False,
+    "headless": True,
     "renderer": "RayTracedLighting",
     "display_options": DISP_FPS|DISP_RESOLUTION|DISP_MESH|DISP_DEV_MEM|DISP_HOST_MEM,
 }

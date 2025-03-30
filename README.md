@@ -77,3 +77,17 @@ For the robot in the lab, IP address is **192.168.1.209**, i.e. Type "192.168.1.
 7. Cluster usage:
 - Connections:
     - ssh tianyuanl@gandalf-dev.it.deakin.edu.au
+
+8. Docker:
+- Docker image build
+    - docker build --build-arg GITHUB_TOKEN=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 -t my_isaac_ros_image .
+
+
+- Docker container command
+    - docker run --name my_isaac_ros_container \
+        --runtime=nvidia --gpus all \
+        -e "ACCEPT_EULA=Y" \
+        -e "PRIVACY_CONSENT=Y" \
+        --network=host \
+        -v /home/sohil/Chris/placement_ws/src/data:/home/chris/Chris/placement_ws/src/data:rw \
+        -it --entrypoint bash my_isaac_ros_image
