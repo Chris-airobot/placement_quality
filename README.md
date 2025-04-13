@@ -66,12 +66,12 @@ For the robot in the lab, IP address is **192.168.1.209**, i.e. Type "192.168.1.
         -e "ACCEPT_EULA=Y" \
         -e "PRIVACY_CONSENT=Y" \
         --network=host \
-        -v /home/sohil/Chris/placement_ws/src/data:/home/chris/Chris/placement_ws/src/data:rw \
+        -v /home/chris/Chris/placement_ws/src/data:/home/chris/Chris/placement_ws/src/data:rw \
         -it --entrypoint bash my_isaac_ros_image
 
 - Docker for grasping
     - docker build -t my_ros_noetic_image .
-    - docker run -it   -v /home/sohil/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/grasp_generation:/home/ros_ws/src/grasp_generation:rw   my_ros_noetic_image
+    - docker run -it   -v /home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/grasp_generation:/home/ros_ws/src/grasp_generation:rw   my_ros_noetic_image
 
 
 5. If Vscode does not recognize some certain packages
@@ -81,7 +81,7 @@ For the robot in the lab, IP address is **192.168.1.209**, i.e. Type "192.168.1.
 6. Cannot Plot in the docker for gpd:
 - Solutions:
   - xhost +local:
-  - docker run -it \
+  - docker run --gpus all -it \
         -v /home/chris/Chris/placement_ws/src/placement_quality/docker_files:/home \
         --name ros1 \
         -e DISPLAY=$DISPLAY \

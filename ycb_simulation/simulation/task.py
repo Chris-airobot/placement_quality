@@ -70,7 +70,10 @@ class YcbTask(BaseTask, ABC):
         """Initialize the object poses (both initial and target) using a helper function."""
         self._object_initial_position, self._object_initial_orientation = self.pose_init()
         self._object_target_position, self._object_target_orientation = self.pose_init()
+        
         if not first_time:
+            variantSet = self._object_final.prim.GetVariantSets().GetVariantSet("mode")
+            variantSet.SetVariantSelection("physics")
             self.set_params(
                 object_position=self._object_initial_position,
                 object_orientation=self._object_initial_orientation,
@@ -94,10 +97,32 @@ class YcbTask(BaseTask, ABC):
 
         def create_object_prim(prim_path, usd_path):
             object_prim = add_reference_to_stage(usd_path=usd_path, prim_path=prim_path)
-            UsdPhysics.RigidBodyAPI.Apply(object_prim)
-            UsdPhysics.CollisionAPI.Apply(object_prim)
-            # object_prim.GetAttribute("physics:collision:approximation").Set("convexHull")
-            return 
+            
+            # Create a variant set named "mode" on the prim.
+            variantSet = object_prim.GetVariantSets().AddVariantSet("mode")
+            
+            # Add two variants: "physics" (with physics properties) and "visual" (without physics)
+            variantSet.AddVariant("physics")
+            variantSet.AddVariant("visual")
+            
+            # --- Configure the "physics" variant ---
+            variantSet.SetVariantSelection("physics")
+            with variantSet.GetVariantEditContext():
+                UsdPhysics.RigidBodyAPI.Apply(object_prim)
+                UsdPhysics.CollisionAPI.Apply(object_prim)
+                # Optionally set additional physics attributes
+                # object_prim.GetAttribute("physics:collision:approximation").Set("convexHull")
+            
+            # --- Configure the "visual" variant (physics omitted) ---
+            variantSet.SetVariantSelection("visual")
+            with variantSet.GetVariantEditContext():
+                # Do not apply any physics properties; this variant is for visualization only.
+                pass
+            
+            # Set the default variant to "physics" for normal simulation use.
+            variantSet.SetVariantSelection("physics")
+            
+            return object_prim
 
         # Create the initial object.
         initial_object_prim_path = find_unique_string_name(
@@ -505,5 +530,6 @@ class YcbTask(BaseTask, ABC):
         )
         self._buffer = [object_position, object_orientation, self._object_target_position, self._object_target_orientation]
         # self._object_final.set_world_pose(position=[1000, 1000, 0.5], orientation=self._object_target_orientation)
+        print("Hiding the final object for point cloud generation")
         self._object_final.prim.GetAttribute("visibility").Set("invisible")
         return

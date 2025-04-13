@@ -163,6 +163,8 @@ class YcbCollection:
         print("Soft resetting simulation environment")
         self.world.reset()
         self.planner.reset()
+        variantSet = self.task._object_final.prim.GetVariantSets().GetVariantSet("mode")
+        variantSet.SetVariantSelection("physics")
         self.task._object.set_world_pose(position=self.task._buffer[0], orientation=self.task._buffer[1])
         self.start_logging = True
         self.data_recorded = False
@@ -171,6 +173,7 @@ class YcbCollection:
         self.task._object_final.set_world_pose(position=object_target_position, orientation=object_target_orientation)
 
         self.state = state
+        print("You are going to the state: ", self.state)
         # self.task._object_final.set_world_pose(position=self.task._buffer[2], orientation=self.task._buffer[3])
         # self.stage.RemovePrim("/World/Ycb_final")
 
@@ -322,46 +325,6 @@ class YcbCollection:
             self.object_grasped = "FAILED"
             return False
             
-        # If we don't have object position tracked yet, store current position
-        # if not hasattr(self, 'last_object_position'):
-        #     object_position, _ = self.task._object.get_world_pose()
-        #     self.last_object_position = np.array(object_position)
-        #     self.last_check_time = time.time()
-            
-        # else:
-        #     # Get current object position
-        #     current_position, _ = self.task._object.get_world_pose()
-        #     current_position = np.array(current_position)
-        #     current_time = time.time()
-            
-        #     # Check if enough time has passed to evaluate
-        #     if current_time - self.last_check_time > 0.1:  # Check every 100ms
-        #         # Calculate position change
-        #         position_delta = np.linalg.norm(current_position - self.last_object_position)
-                
-        #         # Update stored position
-        #         self.last_object_position = current_position
-        #         self.last_check_time = current_time
-                
-        #         # If object moved too much while being grasped, it slipped
-        #         if position_delta > POSITION_THRESHOLD:
-        #             print("Object moved too much while being grasped, it slipped")
-        #             self.object_grasped = "SLIPPED"
-        #             return False
-        
-        # # If we have contact sensors, verify object is still making contact
-        # if self.contact_message is not None:
-        #     contact_detected = False
-        #     for msg in self.contact_message:
-        #         if ('finger' in msg["body0"] and "Ycb" in msg["body1"]) or \
-        #            ('finger' in msg["body1"] and "Ycb" in msg["body0"]):
-        #             contact_detected = True
-        #             break
-              
-        #     if not contact_detected:
-        #         self.object_grasped = "SLIPPED"
-        #         return False
-        
         self.object_grasped = "SUCCESS"
         print("Object grasped successfully")
         return True

@@ -74,3 +74,8 @@ Use docker to generate grasps:
 - build a network socket between host and the docker/container
 - Container will be the server that generating the grasps
 - Host just wait for the corresponding grasps
+
+## Mar 31
+If docker has persmission problem in code editior:
+- sudo usermod -aG docker $USER
+- Then restart

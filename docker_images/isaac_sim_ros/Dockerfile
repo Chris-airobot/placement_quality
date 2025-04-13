@@ -53,12 +53,31 @@ WORKDIR /home/chris/Chris/placement_ws/
 RUN /bin/bash -c "source /opt/ros/humble/setup.bash"
 
 
-# Create the bash file with your desired content
-RUN mkdir -p /home/chris/Chris/placement_ws/src && \
-    echo '#!/usr/bin/env bash\nwhile true; do\n    echo "Running ycb_collection.py..."\n    cd /home/chris/Chris/placement_ws/src/placement_quality\n    /isaac-sim/python.sh -m ycb_simulation.ycb_collection --/log/level=error --/log/fileLogLevel=error --/log/outputStreamLevel=error\n    echo "Script finished. Resting for 1 minute..."\n    sleep 60\ndone' > /home/chris/Chris/placement_ws/src/start_collection.sh
+RUN apt install -y python3-rosdep && rosdep init && rosdep update && apt update && apt dist-upgrade -y && \
+apt install -y python3-colcon-common-extensions && apt install -y python3-colcon-mixin && colcon mixin add default https://raw.githubusercontent.com/colcon/colcon-mixin-repository/master/index.yaml && colcon mixin update default
+RUN apt install python3-vcstool
 
-# Make the script executable
-RUN chmod +x /home/chris/Chris/placement_ws/src/start_collection.sh
+RUN mkdir -p ~/ws_moveit/src && \
+cd ~/ws_moveit/src && \
+git clone -b humble https://github.com/moveit/moveit2_tutorials
+
+RUN vcs import --recursive < moveit2_tutorials/moveit2_tutorials.repos
+
+RUN apt remove ros-humble-moveit*
+
+RUN apt update && rosdep install -r --from-paths . --ignore-src --rosdistro humble -y
+
+RUN cd ~/ws_moveit && \
+colcon build --mixin release
+
+
+RUN source ~/ws_moveit/install/setup.bash
+# Create the bash file with your desired content
+# RUN mkdir -p /home/chris/Chris/placement_ws/src && \
+#     echo '#!/usr/bin/env bash\nwhile true; do\n    echo "Running ycb_collection.py..."\n    cd /home/chris/Chris/placement_ws/src/placement_quality\n    /isaac-sim/python.sh -m ycb_simulation.ycb_collection --/log/level=error --/log/fileLogLevel=error --/log/outputStreamLevel=error\n    echo "Script finished. Resting for 1 minute..."\n    sleep 60\ndone' > /home/chris/Chris/placement_ws/src/start_collection.sh
+
+# # Make the script executable
+# RUN chmod +x /home/chris/Chris/placement_ws/src/start_collection.sh
 
 
 # Set the system's default python to be Isaac Sim's python by creating symbolic links.

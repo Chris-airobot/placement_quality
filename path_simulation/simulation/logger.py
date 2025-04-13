@@ -14,7 +14,7 @@ import asyncio
 import json
 
 
-class YcbLogger:
+class Logger:
     def __init__(self, sim_env: YcbCollection, dir_path: str):
         self.env = sim_env
         self.world = self.env.world

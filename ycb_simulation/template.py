@@ -1,3 +1,8 @@
+import os, sys 
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
 from isaacsim import SimulationApp
 
 DISP_FPS        = 1<<0
@@ -18,132 +23,49 @@ CONFIG = {
 }
 
 simulation_app = SimulationApp(CONFIG)
-import numpy as np
-import asyncio
-import json
+
 import os
-import glob
 import rclpy
-from rclpy.node import Node
-from tf2_msgs.msg import TFMessage
-from sensor_msgs.msg import PointCloud2
-import time
 import datetime 
-import re
-from functools import partial
-from typing import List
-from rclpy.executors import SingleThreadedExecutor
+from omni.isaac.core.utils import extensions
+from ycb_simulation.simulation.logger import YcbLogger
+from simulation.simulator import YcbCollection
+from ycb_simulation.utils.vision import *
+from ycb_simulation.utils.helper import *
 
-from omni.isaac.core import World
-from omni.isaac.core.utils import extensions, prims
-from omni.isaac.core.scenes import Scene
-from omni.isaac.franka import Franka
-from omni.isaac.core.utils.types import ArticulationAction
-from omni.isaac.core.utils.rotations import euler_angles_to_quat, quat_to_euler_angles
-from omni.isaac.sensor import ContactSensor
-
-from simulation.task import YcbTask
-from simulation.planner import YcbPlanner
-# from simulation.logger import YcbLogger Has an inssue
-from placement_quality.ycb_simulation.utils.vision import *
-from placement_quality.ycb_simulation.utils.helper import *
 
 # Enable ROS2 bridge extension
 extensions.enable_extension("omni.isaac.ros2_bridge")
 simulation_app.update()
 
-class YcbCollection:
-    def __init__(self):
-        # Basic variables
-        self.world = None
-        self.object = None
-        self.planner = None
-        self.controller = None
-        self.robot = None
-        self.cameras = None
-        self.task = None
-        self.data_logger = None
-        self.contact_sensors = None
-
-        # Task variables
-        self.sim_subscriber = None
-        self.contact_message = None
-        self.object_target_orientation = None  
-        self.ee_grasping_orientation = None
-        self.ee_placement_orientation = None 
-        self.setup_start_time = None
-        self.tf_wait_start_time = None
-
-        # Replay/Record variables
-        self.grasp_counter = 0
-        self.placement_counter = 0
-        
-        # Condition variables 
-        self.replay_start = False              # starting replay 
-        self.replay_finished = True          # checking if replay is finished
-        self.log_start = True        #  starting logging
-        self.log_recorded = False            # checking if the data has been recorded
-        # self.enable_pcd = True
-
-        # Camera starting variables
-        self.setup_finished = False
-        self.cameras_started = False
-        self.tf_buffer_ready = False
-        self.waiting_for_pcds = False
-        self.grasping_failure = False
-
-        # Object variables
-        self.object_grasped = False
-        self.object_collision = False
+base_dir = "/home/chris/Chris/placement_ws/src/data/YCB_data/"
+time_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+DIR_PATH = os.path.join(base_dir, f"run_{time_str}/")
 
 
-    def start(self):
-        # Initialize ROS2 node
-        rclpy.init()
-        self.sim_subscriber = SimSubscriber()
-
-        # Create an executor (SingleThreadedExecutor is the simplest choice)
-        executor = SingleThreadedExecutor()
-        executor.add_node(self.sim_subscriber)
-
-        # Simulation Environment Setup
-        self.world: World = World(stage_units_in_meters=1.0)
-        self.data_logger = self.world.get_data_logger() # a DataLogger object is defined in the World by default
-        self.task = YcbTask(set_camera=True)
-        self.world.add_task(self.task)
-        self.world.reset()
-        
-        # Robot and planner setup
-        self.robot: Franka = self.world.scene.get_object(self.task.get_params()["robot_name"]["value"])
-        self.controller = self.robot.get_articulation_controller()
-        self.planner = YcbPlanner(
-            name="ycb_planner",
-            gripper=self.robot.gripper,
-            robot_articulation=self.robot,
-        )
-        
-        # Initially hide the robot
-        self.robot.prim.GetAttribute("visibility").Set("invisible")
-
-        # Robot movment setup
-        self.ee_grasping_orientation = np.array([0, np.pi, 0])
-        self.ee_placement_orientation = np.array([0, np.pi, 0])
-
-        # TF setup
-        tf_graph_generation()
-        
-    def reset(self):
-        self.world.reset()
-        self.planner.reset()
-        self.task.object_init(False)
-        self.setup_finished = False
 
 def main():
     env = YcbCollection()
     env.start()
 
-    # One grasp corresponding to many placements
-    reset_needed = False        # Used when grasp is done 
+    setup_phase = 0  # Track which setup step we're on
+
+
+    # Add helper function for grasp pose selection and reset
+    def try_next_grasp_pose():
+        if env.grasp_poses:
+            print(f"{len(env.grasp_poses)} Poses left, continuing with next pose on current Pcd")
+            env.grasp_counter += 1  # Increment grasp counter for new attempt
+            env.placement_counter = 0
+
+            env.current_grasp_pose = env.grasp_poses.pop(0)
+            # Give the environment time to stabilize
+            env.soft_reset("STABILIZE")
+            return True
+        else:
+            print("No more poses left, resetting environment")
+            env.reset()
+            return False
 
     while simulation_app.is_running():
         try:
@@ -151,125 +73,192 @@ def main():
         except:
             print("Something wrong with hitting the floor in step")
             if env.placement_counter <= 1:
-                reset_needed = True
+                env.reset()
                 continue
             elif env.placement_counter > 1 and env.placement_counter < 200:
-                # record_grasping(False, env)
-                env.reset()
+                env.soft_reset()
                 continue
         
         # Process any pending ROS callbacks
         rclpy.spin_once(env.sim_subscriber, timeout_sec=0)
-        if env.sim_subscriber.latest_tf is None:
+         # Wait for initial TF data
+        if env.sim_subscriber.latest_tf is None and env.state != "INIT":
             continue
-        if env.world.is_stopped() and not reset_needed:
-            reset_needed = True
         
-        if env.world.is_playing():
+            # State machine for simulation flow
+        if env.state == "SETUP":
+            # Handle the different phases of setup sequentially
+            if setup_phase == 0:
+                # Environment and camera setup
+                if env.setup_environment():
+                    setup_phase = 1
+                    
+            elif setup_phase == 1:
+                # Wait for TF buffer
+                if env.wait_for_tf_buffer():
+                    setup_phase = 2
+                    
+            elif setup_phase == 2:
+                # Wait for point clouds
+                if env.wait_for_point_clouds(DIR_PATH):
+                    setup_phase = 0  # Reset for next time
+                    env.state = "GRASP"
 
-            if reset_needed:
-                env.world.reset()
-                reset_needed = False
-                env.log_recorded = False
-                env.replay_start = False
-                env.log_start = True
-                env.grasp_counter += 1
-                env.placement_counter = 0
-
-            if not env.setup_finished:
-                if not env.setup_start_time:
-                    env.setup_start_time = time.time()
-                if time.time() - env.setup_start_time < 1:
-                    # Skip sending robot commands, letting other parts of the simulation continue.
+                elif env.current_grasp_pose == -1:
+                    setup_phase = 0
+                    env.current_grasp_pose = None
+                    env.reset()
                     continue
-                else:
-                    # Initialize setup sequence if not already started
-                    if not env.cameras_started:
-                        env.task.object_pose_finalization()
-                        # Set camera to the object
-                        env.cameras = env.task.set_camera(env.task.get_params()["object_current_position"]["value"])
-                        start_cameras(env.cameras)
-                        
-                        env.cameras_started = True
-                        env.waiting_for_pcds = True
-                        env.tf_wait_start_time = time.time()
-                        print("Cameras started, waiting for point clouds and TF data...")
-                        continue
 
-                    # First ensure TF buffer is populated
-                    if not env.tf_buffer_ready:
-                        # Wait for TF buffer to be populated (give it a few seconds)
-                        if env.sim_subscriber.latest_tf is not None:
-                            current_time = time.time()
-                            # Wait at least 2 seconds for TF buffer to be populated
-                            if current_time - env.tf_wait_start_time > 2.0:
-                                try:
-                                    camera1_exists = env.sim_subscriber.check_transform_exists("world", "camera_1")
-                                    camera2_exists = env.sim_subscriber.check_transform_exists("world", "camera_2")
-                                    camera3_exists = env.sim_subscriber.check_transform_exists("world", "camera_3")
-                                    
-                                    if camera1_exists and camera2_exists and camera3_exists:
-                                        env.tf_buffer_ready = True
-                                except Exception:
-                                    pass
-                                continue
-                                
-                    # Check if we're waiting for point clouds
-                    if env.waiting_for_pcds:
-                        pcds = env.sim_subscriber.get_latest_pcds()
-                        if pcds["pcd1"] is not None and pcds["pcd2"] is not None and pcds["pcd3"] is not None:
-                            print("All point clouds received!")
-                            raw_pcd, processed_pcd = merge_and_save_pointclouds(pcds, env.sim_subscriber.buffer)
-                            
-                            if raw_pcd is not None and processed_pcd is not None:
-                                print("Point clouds merged and processed successfully!")
-                                print("Raw point cloud saved to: merged_pointcloud_raw.pcd")
-                                print("Processed point cloud saved to: merged_pointcloud.pcd")
-                            
-                            env.waiting_for_pcds = False
-                            env.setup_finished = True
-                            env.setup_start_time = None
+        # STABILIZE state between reset and grasp
+        elif env.state == "STABILIZE":
 
-                            # Make the robot visible again after setup
-                            env.robot.prim.GetAttribute("visibility").Set("inherited")
-                            print("Setup finished, robot visible again")
-                        continue
-
+            print("Now in STABILIZE state")
+            variantSet = env.task._object_final.prim.GetVariantSets().GetVariantSet("mode")
+            current_mode = variantSet.GetVariantSelection()
+            print("Object current mode:", current_mode)
+            # Let the simulation run for a few steps to allow objects to stabilize
+            env.stabilize_counter = env.stabilize_counter - 1 if hasattr(env, 'stabilize_counter') else 50  # Default 30 steps
             
+            # When stabilization is complete, transition to GRASP
+            if env.stabilize_counter <= 0:
+                print("Stabilization complete, moving to grasp")
+                env.state = "GRASP"
+                # Hide the final object
+                # env.task._object_final.prim.GetAttribute("visibility").Set("invisible")
+                
+                # Reset counter for next time
+                env.stabilize_counter = 50
 
-        
+        elif env.state == "GRASP":
+
+                
+            # Perform grasping
             try:
                 observations = env.world.get_observations()
-            except:
-                print("Something wrong with hitting the floor in observation")
-                if env.placement_counter <= 1:
-                    reset_needed = True
+                task_params = env.task.get_params()
+
+                variantSet = env.task._object_final.prim.GetVariantSets().GetVariantSet("mode")
+                # Switch to the "visual" variant, which omits the physics properties.
+                variantSet.SetVariantSelection("visual")
+
+                draw_frame(env.current_grasp_pose[0], env.current_grasp_pose[1])
+                env.current_grasp_pose[0][2] += 0.01 if env.current_grasp_pose[0][2] < 0.01 else 0
+                
+                # Generate actions for the robot
+                actions = env.planner.forward(
+                    picking_position=env.current_grasp_pose[0],
+                    placing_position=observations[task_params["object_name"]["value"]]["object_target_position"],
+                    current_joint_positions=observations[task_params["robot_name"]["value"]]["joint_positions"],
+                    end_effector_offset=None,
+                    placement_orientation=env.current_grasp_pose[1],  
+                    picking_orientation=env.current_grasp_pose[1],
+                )
+
+                # Check if grasp failed
+                if  env.planner.get_current_event() == 4 and \
+                    not env.check_grasp_success():
+                    
+                    print("Grasp failed, recording data and restarting")
+                    # logger.record_grasping(message="FAILED")
+                    try_next_grasp_pose()
                     continue
-                elif env.placement_counter > 1 and env.placement_counter < 200:
-                    env.reset()
-                    env.replay_start = True
+                if  env.planner.get_current_event() > 4 and \
+                    env.planner.get_current_event() < 7 and \
+                    not env.check_grasp_success():
+                    
+                    print("Grasp failed, recording data and restarting")
+                    # logger.record_grasping(message="SLIPPED")
+                    try_next_grasp_pose()
                     continue
+
+                # Apply the actions to the robot
+                env.controller.apply_action(actions)
+                    
+                # Check if we've completed all phases of the planner
+                if env.planner.is_done():
+                    print("----------------- First grasp and placement complete -----------------")
+                    # Record the successful trajectory
+                    # logger.record_grasping(message="SUCCESS")
+                    
+                    # Increment the placement counter and move to replay state
+                    env.placement_counter += 1
+                    
+                    # Reset for next placement
+                    env.soft_reset("REPLAY")
             
+            except Exception as e:
+                print("Something went wrong with the grasp, recording data and restarting")
+                # logger.record_grasping(message="ERROR")
+                try_next_grasp_pose()
+                continue
+                
+        elif env.state == "REPLAY":
+            # Robot and final object visible
+            env.robot.prim.GetAttribute("visibility").Set("inherited")
+            env.task._object_final.prim.GetAttribute("visibility").Set("inherited")
 
-            task_params = env.task.get_params()
-            picking_position = observations[task_params["object_name"]["value"]]["object_current_position"]
-            picking_position[2] += 0.1
+            # Move to place state - the replay will continue in the background
+            env.state = "PLACE"
+            env.start_logging = True
 
-            actions = env.planner.forward(
-                picking_position=picking_position,
-                placing_position=observations[task_params["object_name"]["value"]]["object_target_position"],
-                current_joint_positions=observations[task_params["robot_name"]["value"]]["joint_positions"],
-                end_effector_offset=None,
-                placement_orientation=env.ee_placement_orientation,  
-                grasping_orientation=env.ee_grasping_orientation,
-            )
+            # Generate random placement orientation
+            euler_angles = [random.uniform(0, 360) for _ in range(3)]
+            env.ee_placement_orientation = R.from_euler('xyz', euler_angles, degrees=True).as_quat()
+
+        elif env.state == "PLACE":
+            # Wait for replay to finish if planner is not at event 4 (post-grasp)
+            if env.planner.get_current_event() < 4:
+                continue
            
-            # env.controller.apply_action(actions)
+            # Replay is finished, proceed with placement
+            try:
+                # Hide the final object
+                # env.task._object_final.prim.GetAttribute("visibility").Set("invisible")
+                observations = env.world.get_observations()
+                task_params = env.task.get_params()
+                variantSet = env.task._object_final.prim.GetVariantSets().GetVariantSet("mode")
+                variantSet.SetVariantSelection("visual")
+                
+                # Generate actions for placement
+                actions = env.planner.forward(
+                    picking_position=env.current_grasp_pose[0],
+                    placing_position=task_params["object_target_position"]["value"],
+                    current_joint_positions=observations[task_params["robot_name"]["value"]]["joint_positions"],
+                    end_effector_offset=None,
+                    placement_orientation=env.ee_placement_orientation,  
+                    picking_orientation=env.current_grasp_pose[1],
+                )
+                
+                # Apply the actions to the robot
+                env.controller.apply_action(actions)
+                                        
+                # Check if the entire planning sequence is complete
+                if env.planner.is_done():
+                    print(f"----------------- Placement {env.placement_counter} complete ----------------- \n\n")
+                
+                    # Increment placement counter
+                    env.placement_counter += 1
+                    
+                    # Check if we've reached the maximum placements
+                    if env.placement_counter >= 200:
+                        print(f"Maximum placements reached for grasp {env.grasp_counter}")
+                        try_next_grasp_pose()
+                    else:
+                        # Reset for next placement with the same grasp
+                        env.soft_reset()
+                
+            except Exception as e:
+                print(f"Error during placement: {e}")
+                # if "Found zero norm quaternions in `quat`" in str(e):
+                #     env.reset()
+                #     continue
+                env.soft_reset()
+                continue
+                
         
-        if env.planner.is_done():
-            print("----------------- done picking and placing ----------------- \n\n")
-            env.reset()
 
+    # Cleanup when simulation ends
     simulation_app.close()
 
 if __name__ == "__main__":

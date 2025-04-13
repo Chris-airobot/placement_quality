@@ -719,5 +719,6 @@ if __name__ == "__main__":
     # reformat_json("/home/chris/Chris/placement_ws/src/random_data/Grasping_159/Placement_68_False.json")
     # rough_analysis("/home/chris/Chris/placement_ws/src/data/processed_data/data.json")
     # count_files_in_subfolders("/home/chris/Chris/placement_ws/src/data/random_data")
-    data_analysis("/home/chris/Chris/placement_ws/src/data/processed_data/data.json")
+    # data_analysis("/home/chris/Chris/placement_ws/src/data/processed_data/data.json")
     # data_split()
+    count_files_in_subfolders("/home/chris/Chris/placement_ws/src/data/YCB_data")

@@ -17,7 +17,7 @@ DISP_HOST_MEM   = 1<<14
 CONFIG = {
     "width": 1920,
     "height":1080,
-    "headless": True,
+    "headless": False,
     "renderer": "RayTracedLighting",
     "display_options": DISP_FPS|DISP_RESOLUTION|DISP_MESH|DISP_DEV_MEM|DISP_HOST_MEM,
 }
@@ -55,6 +55,9 @@ def main():
     def try_next_grasp_pose():
         if env.grasp_poses:
             print(f"{len(env.grasp_poses)} Poses left, continuing with next pose on current Pcd")
+            env.grasp_counter += 1  # Increment grasp counter for new attempt
+            env.placement_counter = 0
+
             env.current_grasp_pose = env.grasp_poses.pop(0)
             # Give the environment time to stabilize
             env.soft_reset("STABILIZE")
@@ -113,17 +116,23 @@ def main():
 
         # STABILIZE state between reset and grasp
         elif env.state == "STABILIZE":
+
+            print("Now in STABILIZE state")
+            variantSet = env.task._object_final.prim.GetVariantSets().GetVariantSet("mode")
+            current_mode = variantSet.GetVariantSelection()
+            print("Object current mode:", current_mode)
             # Let the simulation run for a few steps to allow objects to stabilize
-            env.stabilize_counter = env.stabilize_counter - 1 if hasattr(env, 'stabilize_counter') else 30  # Default 30 steps
+            env.stabilize_counter = env.stabilize_counter - 1 if hasattr(env, 'stabilize_counter') else 50  # Default 30 steps
             
             # When stabilization is complete, transition to GRASP
             if env.stabilize_counter <= 0:
                 print("Stabilization complete, moving to grasp")
                 env.state = "GRASP"
                 # Hide the final object
-                env.task._object_final.prim.GetAttribute("visibility").Set("invisible")
+                # env.task._object_final.prim.GetAttribute("visibility").Set("invisible")
+                
                 # Reset counter for next time
-                env.stabilize_counter = 30
+                env.stabilize_counter = 50
 
         elif env.state == "GRASP":
             # Start logging for the grasp attempt
@@ -133,6 +142,10 @@ def main():
             try:
                 observations = env.world.get_observations()
                 task_params = env.task.get_params()
+
+                variantSet = env.task._object_final.prim.GetVariantSets().GetVariantSet("mode")
+                # Switch to the "visual" variant, which omits the physics properties.
+                variantSet.SetVariantSelection("visual")
 
                 draw_frame(env.current_grasp_pose[0], env.current_grasp_pose[1])
                 env.current_grasp_pose[0][2] += 0.01 if env.current_grasp_pose[0][2] < 0.01 else 0
@@ -148,13 +161,19 @@ def main():
                 )
 
                 # Check if grasp failed
-                if  env.planner.get_current_event() > 3 and \
+                if  env.planner.get_current_event() == 4 and \
+                    not env.check_grasp_success():
+                    
+                    print("Grasp failed, recording data and restarting")
+                    logger.record_grasping(message="FAILED")
+                    try_next_grasp_pose()
+                    continue
+                if  env.planner.get_current_event() > 4 and \
                     env.planner.get_current_event() < 7 and \
                     not env.check_grasp_success():
                     
                     print("Grasp failed, recording data and restarting")
-                    env.grasp_counter += 1  # Increment grasp counter for new attempt
-                    logger.record_grasping()
+                    logger.record_grasping(message="SLIPPED")
                     try_next_grasp_pose()
                     continue
 
@@ -165,7 +184,7 @@ def main():
                 if env.planner.is_done():
                     print("----------------- First grasp and placement complete -----------------")
                     # Record the successful trajectory
-                    logger.record_grasping()
+                    logger.record_grasping(message="SUCCESS")
                     
                     # Increment the placement counter and move to replay state
                     env.placement_counter += 1
@@ -174,6 +193,8 @@ def main():
                     env.soft_reset("REPLAY")
             
             except Exception as e:
+                print("Something went wrong with the grasp, recording data and restarting")
+                logger.record_grasping(message="ERROR")
                 try_next_grasp_pose()
                 continue
                 
@@ -184,7 +205,9 @@ def main():
 
             # Start the replay of the grasping trajectory
             logger.replay_grasping()        
-            
+            if logger.data_logger.get_num_of_data_frames() >= 600:
+                env.reset()
+                continue
             # Move to place state - the replay will continue in the background
             env.state = "PLACE"
             env.start_logging = True
@@ -203,10 +226,11 @@ def main():
             # Replay is finished, proceed with placement
             try:
                 # Hide the final object
-                env.task._object_final.prim.GetAttribute("visibility").Set("invisible")
-
+                # env.task._object_final.prim.GetAttribute("visibility").Set("invisible")
                 observations = env.world.get_observations()
                 task_params = env.task.get_params()
+                variantSet = env.task._object_final.prim.GetVariantSets().GetVariantSet("mode")
+                variantSet.SetVariantSelection("visual")
                 
                 # Generate actions for placement
                 actions = env.planner.forward(
@@ -225,7 +249,7 @@ def main():
                 if env.planner.is_done():
                     print(f"----------------- Placement {env.placement_counter} complete ----------------- \n\n")
                     # Record the placement data
-                    logger.record_grasping()
+                    logger.record_grasping(message="SUCCESS")
 
                     #
                     
@@ -235,8 +259,6 @@ def main():
                     # Check if we've reached the maximum placements
                     if env.placement_counter >= 200:
                         print(f"Maximum placements reached for grasp {env.grasp_counter}")
-                        env.grasp_counter += 1
-                        env.placement_counter = 0
                         try_next_grasp_pose()
                     else:
                         # Reset for next placement with the same grasp
@@ -244,6 +266,9 @@ def main():
                 
             except Exception as e:
                 print(f"Error during placement: {e}")
+                # if "Found zero norm quaternions in `quat`" in str(e):
+                #     env.reset()
+                #     continue
                 env.soft_reset()
                 continue
                 

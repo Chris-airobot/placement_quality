@@ -1043,7 +1043,12 @@ def merge_and_save_pointclouds(pcds_dict: dict, tf_buffer: Buffer, output_path="
     except Exception:
         pass
     
-
+    transform_object = tf_buffer.lookup_transform("world", 
+                                                  "Ycb_object", 
+                                                  rclpy.time.Time(), 
+                                                  timeout=rclpy.duration.Duration(seconds=1.0))
+    
+    print(f"Transform object: {transform_object}")
 
     tcp_msg = {
                 "cloud_sources": {
@@ -1096,10 +1101,10 @@ def format_o3d_pcd(o3d_pcd):
 def pcd_processing_visualization(input_path="/home/chris/Chris/placement_ws/src/pcds/pointcloud_raw.pcd"):
     """
     Process an existing point cloud file with advanced filtering and normal estimation.
+    Visualizes both the raw and processed point clouds.
     
     Args:
         input_path (str): Path to the input point cloud file
-        output_path (str): Path to save the processed point cloud
         
     Returns:
         o3d.geometry.PointCloud: Processed point cloud
@@ -1108,13 +1113,21 @@ def pcd_processing_visualization(input_path="/home/chris/Chris/placement_ws/src/
     
     try:
         # Load the point cloud
-        pcd = o3d.io.read_point_cloud(input_path)
+        raw_pcd = o3d.io.read_point_cloud(input_path)
         
-        if len(pcd.points) == 0:
+        if len(raw_pcd.points) == 0:
+            print("Empty point cloud file")
             return None
+        
+        # Visualize the raw point cloud
+        print("Visualizing raw point cloud...")
+        coordinate_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(
+            size=0.1, origin=[0, 0, 0]
+        )
+        o3d.visualization.draw_geometries([raw_pcd, coordinate_frame])
             
         # Process the point cloud
-        processed_pcd, object_indices = process_pointcloud(pcd)
+        processed_pcd, object_indices = process_pointcloud(raw_pcd)
 
         print(f"Object indices: {object_indices}")
         # Create a point cloud for the segmented object (using the indices)
@@ -1124,15 +1137,14 @@ def pcd_processing_visualization(input_path="/home/chris/Chris/placement_ws/src/
 
         # Create a point cloud for the remaining points (background)
         background_pcd = processed_pcd.select_by_index(object_indices, invert=True)
+        
+        print("Visualizing processed point cloud with segmentation...")
         if len(background_pcd.points) > 0:
             background_pcd.paint_uniform_color([0.7, 0.7, 0.7])  # Gray for background
-            o3d.visualization.draw_geometries([background_pcd, object_pcd])
+            o3d.visualization.draw_geometries([background_pcd, object_pcd, coordinate_frame])
         else:
             # Only object points exist, so just draw them.
-            o3d.visualization.draw_geometries([object_pcd])
-            
-        # Save the processed point cloud
-        # o3d.io.write_point_cloud(output_path, processed_pcd)
+            o3d.visualization.draw_geometries([object_pcd, coordinate_frame])
         
         return processed_pcd
     except Exception as e:
