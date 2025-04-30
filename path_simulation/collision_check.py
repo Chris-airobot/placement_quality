@@ -8,7 +8,7 @@ class GroundCollisionDetector:
     Detects collisions between objects and a virtual ground using mesh overlap checks.
     """
     
-    def __init__(self, stage, ground_height=0.001):
+    def __init__(self, stage, non_colliding_part="/World/Franka/panda_link0", ground_height=0.001):
         """
         Initialize the ground collision detector.
         """
@@ -16,7 +16,7 @@ class GroundCollisionDetector:
         self.ground_height = ground_height
         self.virtual_ground_path = None
         self.colliding_parts = set()  # Track which parts are colliding
-        self.non_colliding_part = "/World/panda/panda_link0"
+        self.non_colliding_part = non_colliding_part
         
     def create_virtual_ground(self, path="/World/VirtualGround", 
                               size_x=10.0, size_y=10.0, 
@@ -74,7 +74,7 @@ class GroundCollisionDetector:
                 if hit_path_str != self.non_colliding_part:
                     collision_detected[0] = True
                     self.colliding_parts.add(hit_path_str)
-                    print(f"Right now, the colliding parts are: {self.colliding_parts}")
+                    # print(f"Right now, the colliding parts are: {self.colliding_parts}")
                     
                     # Change the color of the virtual ground instead of the robot parts
                     try:
@@ -104,7 +104,7 @@ class GroundCollisionDetector:
                 except Exception as e:
                     print(f"Error resetting ground color: {e}")
         
-            return num_hits
+            return collision_detected[0]
             
         except Exception as e:
             print(f"Error in mesh overlap detection: {e}")

@@ -385,9 +385,9 @@ class Grasp:
                 # Calculate grasp poses and store them
                 response_dict = self.find_grasps(start_time)
                 # Save grasp data to JSON file
-                # with open('/home/ros_ws/src/grasp_generation/grasp_poses.json', 'w') as json_file:
-                #     json.dump(response_dict, json_file, indent=4)
-                # rospy.loginfo("Grasp poses saved to grasp_poses.json")
+                with open('/home/ros_ws/src/grasp_generation/grasp_poses_v2.json', 'w') as json_file:
+                    json.dump(response_dict, json_file, indent=4)
+                rospy.loginfo("Grasp poses saved to grasp_poses.json")
                 grasp_detected = True
                 rospy.loginfo("Grasp poses published to /pose_viz for RViz visualization")
             

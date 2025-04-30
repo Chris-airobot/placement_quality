@@ -1,7 +1,9 @@
-import os, sys 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)
+import os
+import sys
+# Add the parent directory to the Python path
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
 
 from isaacsim import SimulationApp
 
@@ -27,55 +29,19 @@ CONFIG = {
 # Initialize the simulation application
 simulation_app = SimulationApp(CONFIG)
 
-import os
-import rclpy
 import datetime 
-from omni.isaac.core.utils import extensions
-# from path_simulation.simulation.logger import Logger
-# from path_simulation.simulation.simulator import Simulator
-# from ycb_simulation.utils.helper import draw_frame
-import rclpy
-
-
+import numpy as np
+import json
+import carb
+from copy import deepcopy
+import omni
 from omni.isaac.core import World
 from omni.isaac.core.utils import extensions
-from omni.isaac.core.scenes import Scene
-from omni.isaac.franka import Franka
-from omni.isaac.core.utils.types import ArticulationAction
-from omni.isaac.core.utils.rotations import euler_angles_to_quat, quat_to_euler_angles
-import omni
-
-import numpy as np
-from scipy.spatial.transform import Rotation as R
-
-import open3d as o3d
-import json
-import tf2_ros
-from rclpy.time import Time
-import struct
-from transforms3d.quaternions import quat2mat, mat2quat, qmult, qinverse
-from transforms3d.axangles import axangle2mat
-from transforms3d.euler import euler2quat, quat2euler
-from tf2_msgs.msg import TFMessage
-from sensor_msgs.msg import PointCloud2
-from geometry_msgs.msg import TransformStamped
-import random
-import math
-from rclpy.node import Node
-from tf2_ros import Buffer, TransformListener
-from visualization_msgs.msg import Marker, MarkerArray
-
-# from path_simulation.simulation.RRT_controller import RRTController
-# from path_simulation.simulation.RRT_task import RRTTask
-# from ycb_simulation.utils.helper import tf_graph_generation
-import numpy as np
-
-import carb
 from omni.isaac.core.utils.stage import add_reference_to_stage, create_new_stage
 from omni.isaac.core.utils.nucleus import get_assets_root_path
 from omni.isaac.core.prims import XFormPrim
 from omni.isaac.core.articulations import Articulation
-from omni.isaac.core.utils.numpy.rotations import euler_angles_to_quats
+
 from omni.isaac.motion_generation import ArticulationKinematicsSolver, LulaKinematicsSolver
 from omni.isaac.motion_generation import interface_config_loader
 from pxr import Sdf, UsdLux
@@ -83,6 +49,7 @@ from pxr import Sdf, UsdLux
 # Import the collision detection functionality
 from collision_check import GroundCollisionDetector
 from pxr import Gf
+from ycb_simulation.utils.helper import draw_frame, transform_relative_pose, local_transform
 
 # Enable ROS2 bridge extension
 extensions.enable_extension("omni.isaac.ros2_bridge")
@@ -91,6 +58,23 @@ simulation_app.update()
 base_dir = "/home/chris/Chris/placement_ws/src/data/YCB_data/"
 time_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 DIR_PATH = os.path.join(base_dir, f"run_{time_str}/")
+
+
+# Mapping of surface names to indices
+surface_mapping ={
+    # z up 
+    "z_up": 0,
+    # z down
+    "z_down": 1,
+    # y up
+    "y_up": 2,
+    # y down    
+    "y_down": 3,
+    # x up
+    "x_up": 4,
+    # x down
+    "x_down": 5
+}
 
 
 class StandaloneIK:
@@ -105,6 +89,25 @@ class StandaloneIK:
         self.base_path = "/World/panda"
         self.robot_parts_to_check = []
         self.collision_detected = False
+
+
+        # File reads
+        object_poses_file = "/home/chris/Chris/placement_ws/src/object_poses_test.json"
+        self.all_object_poses = json.load(open(object_poses_file))
+        
+        self.grasp_poses_file = "/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/grasp_generation/grasp_poses_v2.json"
+        self.grasp_poses = json.load(open(self.grasp_poses_file))
+
+        self.data_folder = "/home/chris/Chris/placement_ws/src/data/path_simulation/raw_data_v3/"
+
+        # Offset of the grasp from the object center
+        # Grasp poses are based on the gripper center, so we need to offset it to transform it to the tool_center, i.e. 
+        # the middle of the gripper fingers
+        self.grasp_offset = [0, 0, 0.062] 
+
+        self.data_dict = {}
+        self.count = 0
+        self.episode_count = 0
 
     def setup_scene(self):
         """Create a new stage and set up the scene with lighting and camera"""
@@ -121,11 +124,16 @@ class StandaloneIK:
         self.world.scene.add(self._articulation)
         self.world.scene.add(self._target)
         
+        
+        # self._articulation.set_enabled_self_collisions(True)
         # Set up the ground collision detector
         self.setup_collision_detection()
         
         # Set up the physics scene
         self.world.reset()
+
+        # self._target.set_world_pose(self.object_pose_at_grasp["position"], 
+        #                             self.object_pose_at_grasp["orientation_quat"])
         
         # Set up the kinematics solver
         self.setup_kinematics()
@@ -146,9 +154,10 @@ class StandaloneIK:
         articulation = Articulation(robot_prim_path)
         
         # Add the target frame to the stage
-        add_reference_to_stage(get_assets_root_path() + "/Isaac/Props/UIElements/frame_prim.usd", "/World/target")
-        target = XFormPrim("/World/target", scale=[0.04, 0.04, 0.04])
-        target.set_default_state(np.array([0.3, 0, 0.5]), euler_angles_to_quats([0, np.pi, 0]))
+        add_reference_to_stage(get_assets_root_path() + "/Isaac/Props/YCB/Axis_Aligned/009_gelatin_box.usd", "/World/Ycb_object")
+        target = XFormPrim("/World/Ycb_object", scale=[0.8, 0.8, 0.8])
+        # target.set_default_state(np.array([0.3, 0, 0.5]), euler_angles_to_quats([0, np.pi, 0]))
+        
         
         return articulation, target
 
@@ -173,7 +182,7 @@ class StandaloneIK:
     def setup_collision_detection(self):
         """Set up the ground collision detector"""
         stage = omni.usd.get_context().get_stage()
-        self.collision_detector = GroundCollisionDetector(stage)
+        self.collision_detector = GroundCollisionDetector(stage, non_colliding_part="/World/panda/panda_link0")
         
         # Create a virtual ground plane at z=-0.05 (lowered to avoid false positives)
         self.collision_detector.create_virtual_ground(
@@ -201,24 +210,34 @@ class StandaloneIK:
         """Check if any robot parts are colliding with the ground"""
         for part_path in self.robot_parts_to_check:
             if self.collision_detector.is_colliding_with_ground(part_path):
+                # print(f"Collision detected")
                 self.collision_detected = True
                 return True
-                
-        return False
+            else:
+                # print(f"No collision detected")
+                self.collision_detected = False
+                return False
 
     def update(self, step):
         """Update the robot's position based on the target's position"""
-        # Get the target position and orientation
-        target_position, target_orientation = self._target.get_world_pose()
+        # object_position, object_orientation = self._target.get_world_pose()
         
+        # Local grasp pose in gripper frame  
+        grasp_pose_local = [self.grasp_pose["position"], self.grasp_pose["orientation_wxyz"]]
+        # World grasp pose in gripper frame
+        grasp_pose_world = transform_relative_pose(grasp_pose_local, self.current_object_pose["position"], self.current_object_pose["orientation_quat"])
+        # World grasp pose in tool center frame
+        grasp_pose_center = local_transform(grasp_pose_world, self.grasp_offset)
+        
+        # draw_frame(grasp_pose_center[0], grasp_pose_center[1])
         # Track any movements of the robot base
         robot_base_translation, robot_base_orientation = self._articulation.get_world_pose()
         self._kinematics_solver.set_robot_base_pose(robot_base_translation, robot_base_orientation)
         
         # Compute inverse kinematics to find joint positions
         action, success = self._articulation_kinematics_solver.compute_inverse_kinematics(
-            target_position, 
-            target_orientation
+            np.array(grasp_pose_center[0]), 
+            np.array(grasp_pose_center[1])
         )
         
         # Apply the joint positions if IK was successful
@@ -228,8 +247,33 @@ class StandaloneIK:
             carb.log_warn("IK did not converge to a solution. No action is being taken")
         
         # Check for collisions with the ground
-        self.check_for_collisions()
+        collision = self.check_for_collisions()
+        
+        
+        self.data_dict[self.count] = {
+            "collision": collision, 
+            "grasp_pose": grasp_pose_center,
+            "z_position": self.current_object_pose["position"][2],
+            "object_orientation": self.current_object_pose["orientation_quat"],
+            "success": success,
+            "surface": self.count // 72
+            }
 
+    def save_data(self):
+        """Save the data to a file"""
+        # Create the directory if it doesn't exist
+        os.makedirs(os.path.dirname(self.data_folder), exist_ok=True)
+        
+        # Create the file path
+        file_path = self.data_folder + f"data_{self.episode_count}.json"
+        
+        # Save the data to the file
+        with open(file_path, "w") as f:
+            json.dump(self.data_dict, f)
+
+        self.data_dict = {}
+
+    
     def reset(self):
         """Reset the simulation"""
         if self.world:
@@ -240,22 +284,46 @@ class StandaloneIK:
         # Set up the scene
         self.setup_scene()
         
-        print("Starting simulation loop. Press Ctrl+C to exit.")
-        
+        # If self.grasp_poses is a dict, we need to get the first key-value pair
+        first_key = list(self.grasp_poses.keys())[0]
+        self.grasp_pose = self.grasp_poses[first_key]
+        # Remove the first item from the dict
+        self.grasp_poses.pop(first_key)
+        self.object_poses = deepcopy(self.all_object_poses)
+
         # Main simulation loop
         while simulation_app.is_running():
+            print(f"The current progress is: {self.episode_count} / {len(self.grasp_poses)}: {self.count}/{len(self.all_object_poses)}")
+            if self.object_poses:
+                self.current_object_pose = self.object_poses.pop(0)
+                self.current_object_pose['position'][0] = 0.4
+                self.current_object_pose['position'][1] = 0.0
+                self._target.set_world_pose(self.current_object_pose["position"], 
+                                            self.current_object_pose["orientation_quat"])
+            else:
+                print("No more object poses, saving data and restarting simulation")
+                self.save_data()
+                self.episode_count += 1
+                self.count = 0
+
+                first_key = list(self.grasp_poses.keys())[0]
+                self.grasp_pose = self.grasp_poses[first_key]
+                # Remove the first item from the dict
+                self.grasp_poses.pop(first_key)
+
+                self.object_poses = deepcopy(self.all_object_poses)
+                self.current_object_pose = self.object_poses.pop(0)
+                self.current_object_pose['position'][0] = 0.4
+                self.current_object_pose['position'][1] = 0.0
+                self._target.set_world_pose(self.current_object_pose["position"], 
+                                            self.current_object_pose["orientation_quat"])
             # Step the simulation
             self.world.step(render=True)
-            
+
             # Update the robot's position
             self.update(step=1.0/60.0)
-            
-            # Optional: Break the loop if a collision is detected
-            # if self.collision_detected:
-            #     print("Stopping simulation due to collision with ground.")
-            #     break
-
-        # Cleanup when simulation ends
+            self.count += 1
+        
         print("Simulation ended.")
 
 

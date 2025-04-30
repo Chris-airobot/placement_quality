@@ -9,7 +9,6 @@ if parent_dir not in sys.path:
 from isaacsim import SimulationApp
 import json
 import time
-from datetime import datetime
 
 DISP_FPS        = 1<<0
 DISP_AXIS       = 1<<1
@@ -32,32 +31,22 @@ CONFIG = {
 
 simulation_app = SimulationApp(CONFIG)
 
-from typing import Optional, List, Dict
 
 import numpy as np
-import omni
-from omni.isaac.core.prims.xform_prim import XFormPrim
 from omni.isaac.core.prims.rigid_prim import RigidPrim
-from omni.isaac.core.scenes.scene import Scene
-from omni.isaac.core.tasks import BaseTask
 from omni.isaac.core.utils.prims import is_prim_path_valid
-from omni.isaac.core.utils.rotations import euler_angles_to_quat
-from omni.isaac.core.utils.stage import get_stage_units
 from omni.isaac.core.utils.string import find_unique_string_name
 from omni.isaac.core.utils.stage import add_reference_to_stage
 from omni.isaac.core import World
-from omni.isaac.core.utils import extensions, prims
-from omni.isaac.core.utils.types import ArticulationAction
-from transforms3d.euler import euler2quat, quat2euler
+from transforms3d.euler import euler2quat
 from omni.isaac.nucleus import get_assets_root_path
 import random
 from pxr import UsdPhysics
-from omni.physx.scripts import physicsUtils
 
 ROOT_PATH = get_assets_root_path() + "/Isaac/Props/YCB/Axis_Aligned/"
 
 class PoseCollection:
-    def __init__(self, num_poses=100, num_simultaneous=1000, output_file="ycb_stable_poses.json"):
+    def __init__(self, num_poses=1000, num_simultaneous=1000, output_file="/home/chris/Chris/placement_ws/src/object_poses_v2.json"):
         # Basic variables
         self.world = None
         self.scene = None
@@ -67,19 +56,49 @@ class PoseCollection:
         self.output_file = output_file
         self.collected_poses = []
         self.object_name = "009_gelatin_box.usd"  # Fixed to one object
-        self.settlement_threshold = 0.005  # Velocity threshold for considering object settled (m/s)
-        self.settlement_time = 2.0  # Time (in seconds) object must be still to be considered settled
-        self.drop_height = 1.5  # Height above ground to drop objects from (meters)
+        self.settlement_threshold = 0.001  # Position change threshold in meters
+        self.settlement_time = 1.5  # Time object must be still to be considered settled
+        self.drop_height = 0.05  # Height above ground to drop objects from (meters)
         # Area dimensions for distributing objects
         self.area_size = max(5.0, (self.num_simultaneous ** 0.5) * 0.3)  # Scale area based on object count
+        # Add tracking for previous positions
+        self.previous_positions = {}
+        self.position_history = {}
+        self.position_timestamps = {}
+        self.save_buffer = []  # Buffer to collect poses before saving
+        self.save_buffer_size = 5000  # Save every 5000 poses (adjust as needed)
+        
+        # New: Track which orientations have been used
+        self.available_orientations = []
+        self.orientation_index = 0
         
     def start(self):
         self.world: World = World(stage_units_in_meters=1.0, physics_dt=1.0/60.0)
         self.scene = self.world.scene
         self.scene.add_default_ground_plane()
         self.world.reset()
+        # New: Initialize orientations before creating objects
+        self.initialize_orientations()
         self.create_objects()
         
+    def initialize_orientations(self):
+        """Prepare all orientations to be used during drops"""
+        # Get orientations from all surfaces
+        all_orientations_dict = self.sample_uniform_orientations()
+        
+        # Flatten all orientations into a single list
+        self.available_orientations = []
+        for surface_name, quats in all_orientations_dict.items():
+            self.available_orientations.extend(quats)
+            
+        # Shuffle to mix orientations from different surfaces
+        # random.shuffle(self.available_orientations)
+        
+        # Reset the index
+        self.orientation_index = 0
+        
+        print(f"Prepared {len(self.available_orientations)} orientations for testing")
+    
     def create_objects(self):
         """Create multiple YCB objects as rigid bodies with physics enabled"""
         self.objects = []
@@ -122,27 +141,25 @@ class PoseCollection:
         return self.objects
     
     def set_drop_poses(self):
-        """Position the objects above the ground with random orientations in a grid pattern"""
+        """Position the objects above the ground with uniform orientations, each in its own area"""
         initial_poses = []
         
-        # Calculate grid dimensions for distributing objects
+        # Calculate grid dimensions for areas per object
         grid_size = int(np.ceil(np.sqrt(self.num_simultaneous)))
-        spacing = self.area_size / grid_size
         
-        # Place objects in a grid with small random offsets to prevent perfect alignment
+        # Place objects in a grid, each at the center of its own area
         for i, obj in enumerate(self.objects):
             row = i // grid_size
             col = i % grid_size
             
-            # Calculate position with small random offset
-            x = (col - grid_size/2) * spacing + np.random.uniform(-0.05, 0.05)
-            y = (row - grid_size/2) * spacing + np.random.uniform(-0.05, 0.05)
+            # Calculate position - exact center of each cell
+            x = (col - (grid_size-1)/2)
+            y = (row - (grid_size-1)/2)
             z = self.drop_height
             
-            # Random orientation (Euler angles in degrees)
-            euler_angles_deg = [random.uniform(0, 360) for _ in range(3)]
-            euler_angles_rad = np.deg2rad(euler_angles_deg)
-            quat = euler2quat(*euler_angles_rad)
+            # Get the next orientation from our pre-computed list
+            quat = self.available_orientations[self.orientation_index]
+            self.orientation_index = (self.orientation_index + 1) % len(self.available_orientations)
             
             # Set the initial pose
             pos = np.array([x, y, z])
@@ -154,21 +171,46 @@ class PoseCollection:
         return initial_poses
     
     def are_objects_settled(self):
-        """Check if all objects have settled"""
-        for obj in self.objects:
-            linear_velocity = obj.get_linear_velocity()
-            angular_velocity = obj.get_angular_velocity()
+        """Check if all objects have settled based on position change"""
+        current_time = time.time()
+        all_settled = True
+        
+        for i, obj in enumerate(self.objects):
+            # Get current position
+            current_position, _ = obj.get_world_pose()
+            obj_id = id(obj)
             
-            linear_speed = np.linalg.norm(linear_velocity)
-            angular_speed = np.linalg.norm(angular_velocity)
+            # Initialize tracking for this object if not already done
+            if obj_id not in self.previous_positions:
+                self.previous_positions[obj_id] = current_position
+                self.position_history[obj_id] = []
+                self.position_timestamps[obj_id] = current_time
+                all_settled = False
+                continue
             
-            # If any object is still moving significantly, return False
-            if linear_speed >= self.settlement_threshold or angular_speed >= self.settlement_threshold * 10:
-                return False
-                
-        return True
+            # Calculate position change
+            position_change = np.linalg.norm(current_position - self.previous_positions[obj_id])
+            
+            # Update history
+            self.position_history[obj_id].append((current_time, position_change))
+            # Remove old history entries (older than settlement_time)
+            self.position_history[obj_id] = [entry for entry in self.position_history[obj_id] 
+                                            if current_time - entry[0] < self.settlement_time]
+            
+            # Check if the object has moved more than the threshold
+            if position_change > self.settlement_threshold:
+                self.position_timestamps[obj_id] = current_time  # Reset settlement timer
+                all_settled = False
+            elif current_time - self.position_timestamps[obj_id] < self.settlement_time:
+                # Not settled long enough
+                all_settled = False
+            
+            # Update previous position
+            self.previous_positions[obj_id] = current_position
+        
+        return all_settled
     
-    def wait_for_settlement(self, max_wait_time=15.0):
+    def wait_for_settlement(self, max_wait_time=10.0):
         """Wait for all objects to settle on the ground"""
         start_time = time.time()
         
@@ -201,43 +243,133 @@ class PoseCollection:
         poses = []
         
         for i, obj in enumerate(self.objects):
-            position = obj.get_world_pose()[0]
-            orientation_quat = obj.get_world_pose()[1]
+            position, orientation_quat = obj.get_world_pose()
             
             # Check if object is on the ground (z close to 0)
             if position[2] > 0.5:  # Ignore objects that might be resting on top of others
                 continue
                 
-            # Convert quaternion to Euler angles for easier interpretation
-            euler_angles_rad = quat2euler(orientation_quat)
-            euler_angles_deg = np.rad2deg(euler_angles_rad)
             
             pose_data = {
-                "object_name": self.object_name,
-                "object_id": i,
                 "position": position.tolist(),
                 "orientation_quat": orientation_quat.tolist(),
-                "orientation_euler_deg": euler_angles_deg.tolist(),
-                "timestamp": datetime.now().isoformat()
             }
             
             poses.append(pose_data)
             self.collected_poses.append(pose_data)
-            
+            self.save_buffer.append(pose_data)
+        
+        # Check if buffer is large enough to trigger a save
+        if len(self.save_buffer) >= self.save_buffer_size:
+            self.save_poses()
+        
         return poses
     
-    def save_poses(self):
-        """Save all collected poses to file"""
+    def save_poses(self, force_save=False):
+        """
+        Save collected poses to file, either by appending or creating new file
+        When force_save is True, saves regardless of buffer size
+        """
+        if not self.save_buffer and not force_save:
+            return  # Nothing to save
+        
+        # If file doesn't exist, create it with an empty list
+        if not os.path.exists(self.output_file):
+            with open(self.output_file, 'w') as f:
+                json.dump([], f)
+        
+        # Read existing data
+        try:
+            with open(self.output_file, 'r') as f:
+                try:
+                    existing_data = json.load(f)
+                except json.JSONDecodeError:
+                    # File exists but is empty or invalid
+                    existing_data = []
+        except FileNotFoundError:
+            existing_data = []
+        
+        # Append new data and write back
+        existing_data.extend(self.save_buffer)
         with open(self.output_file, 'w') as f:
-            json.dump(self.collected_poses, f, indent=2)
-        print(f"Saved {len(self.collected_poses)} poses to {self.output_file}")
+            json.dump(existing_data, f, indent=2)
+        
+        print(f"Saved {len(self.save_buffer)} new poses (Total: {len(existing_data)}) to {self.output_file}")
+        
+        # Clear the buffer after saving
+        self.save_buffer = []
 
-def main():
-    # Adjust these parameters as needed
-    total_poses_needed = 1000
-    simultaneous_objects = 100  # You can increase this based on your system's capabilities
+    def sample_uniform_orientations(self, max_step_deg=10, min_step_deg=1):
+        """
+        Returns a dict mapping each surface name to a list of quaternions
+        sampled with dynamic intervals (between min_step_deg and max_step_deg) around the "free" axis.
+        """
+        # baseline Euler angles (deg) for each surface, and which index to vary:
+        # roll (0), pitch (1), yaw (2)
+        configs = {
+            "top_surface":    (np.array([   0.0,   0.0,   0.0]), 2), # 0.01475
+            "bottom_surface": (np.array([-180.0,   0.0,   0.0]), 2), # 0.01415
+            "left_surface":   (np.array([  90.0,   0.0,   0.0]), 1), # 0.03586
+            "right_surface":  (np.array([ -90.0,   0.0,   0.0]), 1), # 0.03644
+            "front_surface":  (np.array([  90.0,   0.0,  90.0]), 1), # 0.04427
+            "back_surface":   (np.array([  90.0,   0.0, -90.0]), 1), # 0.04447
+        }
+
+        # Generate angles with dynamic intervals from -180° to near 180°
+        angles = []
+        # Total range to cover is 360 degrees (-180 to 180)
+        # Number of orientations is 72, so we need 71 steps
+        num_orientations = 72
+        
+        # For exact number of points, we'll pre-generate all steps
+        # Average step size needed for 72 points covering 360 degrees
+        avg_step = 360.0 / (num_orientations - 1)
+        
+        # Generate random steps that will sum to exactly the range we need
+        steps = []
+        remaining_steps = num_orientations - 1
+        remaining_angle = 360.0
+        
+        for i in range(remaining_steps - 1):
+            # Calculate bounds to ensure we can reach exactly 180 with the remaining steps
+            max_step = min(max_step_deg, remaining_angle - (remaining_steps - 1) * min_step_deg)
+            min_step = max(min_step_deg, remaining_angle - (remaining_steps - 1) * max_step_deg)
+            
+            # Generate a random step size
+            step = random.uniform(min_step, max_step)
+            steps.append(step)
+            
+            remaining_angle -= step
+            remaining_steps -= 1
+        
+        # Add the final step
+        steps.append(remaining_angle)
+        
+        # Generate the angles
+        angles = [-180.0]
+        for step in steps:
+            angles.append(angles[-1] + step)
+        
+        all_orients = {}
+        for name, (base_euler, var_idx) in configs.items():
+            quats = []
+            for a in angles:
+                e = base_euler.copy()
+                e[var_idx] = a
+                # convert to radians and then quaternion
+                q = euler2quat(*np.deg2rad(e), axes='rxyz')
+                quats.append(q)
+            all_orients[name] = quats
+
+        return all_orients
     
-    env = PoseCollection(num_poses=total_poses_needed, num_simultaneous=simultaneous_objects)
+
+
+def main(save_path):
+    # Adjust these parameters as needed
+    simultaneous_objects = 72  # You can increase this based on your system's capabilities
+    
+    env = PoseCollection(num_poses=432, num_simultaneous=simultaneous_objects, output_file=save_path)
     env.start()
     
     poses_collected = 0
@@ -253,12 +385,15 @@ def main():
             
             # Wait for objects to settle
             print("Waiting for objects to settle...")
-            if env.wait_for_settlement(max_wait_time=15.0):
+            if env.wait_for_settlement(max_wait_time=10.0):
                 # Record all stable poses
                 batch_poses = env.record_poses()
                 new_poses = len(batch_poses)
                 poses_collected += new_poses
                 print(f"Recorded {new_poses} stable poses (Total: {poses_collected}/{env.num_poses})")
+                
+                # Save after each successful batch
+                env.save_poses(force_save=True)  # Force save even if buffer isn't full
                 
                 # If we've collected enough poses, break
                 if poses_collected >= env.num_poses:
@@ -270,20 +405,24 @@ def main():
                 new_poses = len(batch_poses)
                 poses_collected += new_poses
                 print(f"Recorded {new_poses} stable poses (Total: {poses_collected}/{env.num_poses})")
+                
+                # Save after each batch even if not all objects settled
+                env.save_poses(force_save=True)  # Force save even if buffer isn't full
             
             # Small delay between batches
             time.sleep(0.5)
         
-        # Save all collected poses
-        env.save_poses()
+        # Final save to make sure everything is saved
+        env.save_poses(force_save=True)
         
     except KeyboardInterrupt:
         print("Collection interrupted by user")
-        if env.collected_poses:
-            env.save_poses()
+        # Save what we have if interrupted
+        env.save_poses(force_save=True)
     
     print("Pose collection complete")
     simulation_app.close()
     
 if __name__ == "__main__":
-    main()
+    output_path = "/home/chris/Chris/placement_ws/src/object_poses_test.json"
+    main(output_path)

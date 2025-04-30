@@ -14,5 +14,5 @@
     </node>
 
     <!-- Launch RViz with the saved default configuration -->
-    <node name="rviz" pkg="rviz" type="rviz" output="screen"/>
+    <!-- <node name="rviz" pkg="rviz" type="rviz" output="screen"/> -->
 </launch>

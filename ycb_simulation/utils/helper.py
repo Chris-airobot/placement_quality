@@ -1198,10 +1198,9 @@ def transform_relative_pose(grasp_pose, relative_translation, relative_rotation=
     T_relative[:3, :3] = q_relative.rotation_matrix
     T_relative[:3, 3] = relative_translation
 
-    # Apply the relative transformation.
-    # The new (target) pose is computed as:
-    #   T_target = T_current * T_relative
-    T_target = T_current.dot(T_relative)
+    # Apply the transformation - for local to global, we need:
+    # T_target = T_relative * T_current (object_world * grasp_local)
+    T_target = np.dot(T_relative, T_current)
 
     # Convert back to position and quaternion.
     new_position, new_orientation = matrix_to_pose(T_target)
@@ -1209,7 +1208,28 @@ def transform_relative_pose(grasp_pose, relative_translation, relative_rotation=
     return [new_position, new_orientation]
 
 
-
+def local_transform(pose, offset):
+    """Apply offset in the local frame of the pose"""
+    from pyquaternion import Quaternion
+    # Convert to matrices
+    T_pose = np.eye(4)
+    q = Quaternion(pose[1])  # [w, x, y, z]
+    T_pose[:3, :3] = q.rotation_matrix
+    T_pose[:3, 3] = pose[0]
+    
+    # Create offset matrix (identity rotation)
+    T_offset = np.eye(4)
+    T_offset[:3, 3] = offset
+    
+    # Multiply in correct order: pose * offset (applies offset in local frame)
+    T_result = np.dot(T_pose, T_offset)
+    
+    # Convert back to position, orientation
+    new_position = T_result[:3, 3].tolist()
+    q_new = Quaternion(matrix=T_result[:3, :3])
+    new_orientation = q_new.elements.tolist()  # [w, x, y, z]
+    
+    return [new_position, new_orientation]
 
 
 

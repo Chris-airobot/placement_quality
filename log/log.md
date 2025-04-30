@@ -79,3 +79,11 @@ Use docker to generate grasps:
 If docker has persmission problem in code editior:
 - sudo usermod -aG docker $USER
 - Then restart
+
+
+## Apr 23
+For large dataset processing step:
+1. **load_data_from_json** in *data_postprocessing.py*, from raw data to each processed_data
+2. **build_split_index_parallel_filewise** in *data_postprocessing.py*, extract indices for fast process
+3. **convert_indices_to_npy_parallel** in *data_postprocessing.py*, for fast read
+4. **sanity_check** in *data_postprocessing.py*, make sure no problem during the convertion
