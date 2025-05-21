@@ -12,18 +12,19 @@ from omni.isaac.core import World
 from omni.isaac.core.utils import extensions, prims
 from omni.isaac.core.scenes import Scene
 from omni.isaac.franka import Franka
+from omni.isaac.manipulators.grippers.parallel_gripper import ParallelGripper
 from omni.isaac.core.utils.types import ArticulationAction
 from omni.isaac.core.utils.rotations import euler_angles_to_quat, quat_to_euler_angles
-
+from omni.isaac.motion_generation import ArticulationKinematicsSolver, LulaKinematicsSolver
+from omni.isaac.motion_generation import interface_config_loader
 from scipy.spatial.transform import Rotation as R
 from collision_check import GroundCollisionDetector
 from pxr import Gf
-from pxr import Sdf, UsdLux
+from pxr import Sdf, UsdLux, Tf
 from omni.isaac.core.prims import XFormPrim
 
 from RRT_controller import RRTController
 from RRT_task import RRTTask
-
 
         
 
@@ -35,18 +36,25 @@ class Simulator:
         self.controller = None
         self.articulation_controller = None
         self.robot = None
+        self.gripper = None
         self.task = None
         self.stage = omni.usd.get_context().get_stage()
         self.use_physics = use_physics
         # Counters and timers
         self.grasps = []
+        self.placements = []
         self.current_grasp = None
+        self.current_placement = None
+
+
         # State tracking
-        self.state = "INIT"  # States: INIT, GRASP, PLACE
         self.base_path = "/World/Franka"
 
+        self.state = "SETUP"
+        self.open = True
+
         # Test data
-        with open("/media/chris/OS2/Users/24330/Desktop/placement_quality/unseen/balanced_samples.json", "r") as f:
+        with open("/home/chris/Chris/placement_ws/src/data/path_simulation/test.json", "r") as f:
             self.test_data: list[dict] = json.load(f)
 
         self.current_data = None
@@ -55,31 +63,39 @@ class Simulator:
 
     def start(self):
         # Simulation Environment Setup
-        self.world: World = World(stage_units_in_meters=1.0)
+        self.world: World = World(stage_units_in_meters=1.0, physics_dt=1.0/30.0)
         self.task = RRTTask("RRT_task", use_physics=self.use_physics)
         self.world.add_task(self.task)
         self.world.reset()
         
         # Robot and planner setup
         self.robot: Franka = self.world.scene.get_object(self.task.get_params()["robot_name"]["value"])
+        self.gripper: ParallelGripper = self.robot.gripper
         self.articulation_controller = self.robot.get_articulation_controller()
         self.controller = RRTController(
             name="RRT_controller",
             robot_articulation=self.robot,
         )
+        print(f"RRT Controller created")
 
-        self.state = "GRASP"
         self.current_data = self.test_data[self.data_index]
         self.data_index += 1
         
 
         self.setup_collision_detection()
+        self.setup_kinematics()
         self._add_light_to_stage()
+        # if self.use_physics:
+        #     self.controller._cspace_controller.add_obstacle(self.task.ground_plane, static=True)
+        self.controller.add_obstacle(self.task.ground_plane, static=True)
+        # self.controller.add_obstacle(self.task._ycb, static=True)
 
         self.task.set_params(
-            object_position=np.array([0.4, 0, self.current_data["initial_object_pose"][0]]),
+
+            object_position=np.array([0.35, 0, self.current_data["initial_object_pose"][0]]),
             object_orientation=np.array(self.current_data["initial_object_pose"][1:]),
         )
+
 
     def reset(self):
         """Reset the simulation environment"""
@@ -89,31 +105,31 @@ class Simulator:
         # self.task.object_init(False)
         
         # Reset state flags
-        self.state = "GRASP"
         self.task.set_params(
-            object_position=np.array([0.4, 0, self.current_data["initial_object_pose"][0]]),
+            object_position=np.array([0.35, 0, self.current_data["initial_object_pose"][0]]),
             object_orientation=np.array(self.current_data["initial_object_pose"][1:]),
         )
 
-        self.start_logging = True
-        self.data_recorded = False
 
 
-    def calculate_final_grasp_pose(self):
-
-        grasp_position_initial             = np.array(self.current_data["grasp_pose"][0:3])
-        grasp_orientation_wxyz_initial     = self.current_data["grasp_pose"][3:7]
+    def calculate_placement_pose(self, grasp_pose, object_initial_pose, object_final_pose):
+        # print(f"Calculating placement pose")
+        # print(f"grasp_pose: {grasp_pose}")
+        # print(f"object_initial_pose: {object_initial_pose}")
+        # print(f"object_final_pose: {object_final_pose}")
+        grasp_position_initial             = np.array(grasp_pose[0:3])
+        grasp_orientation_wxyz_initial     = grasp_pose[3:]
 
         # Initial object pose in world: [z, qw, qx, qy, qz]
-        object_height_initial              = self.current_data["initial_object_pose"][0]
-        object_orientation_wxyz_initial    = self.current_data["initial_object_pose"][1:5]
-        # assume x=0.4, y=0.0
-        object_position_initial            = np.array([0.4, 0.0, object_height_initial])
+        object_height_initial              = object_initial_pose[0]
+        object_orientation_wxyz_initial    = object_initial_pose[1:]
+        # assume x=0.35, y=0.0
+        object_position_initial            = np.array([0.35, 0.0, object_height_initial])
 
         # Final object pose in world: [z, qw, qx, qy, qz]
-        object_height_final                = self.current_data["final_object_pose"][0]
-        object_orientation_wxyz_final      = self.current_data["final_object_pose"][1:5]
-        object_position_final              = np.array([0.4, 0.0, object_height_final])
+        object_height_final                = object_final_pose[0]
+        object_orientation_wxyz_final      = object_final_pose[1:]
+        object_position_final              = np.array([0.35, 0.0, object_height_final])
     
 
 
@@ -186,7 +202,7 @@ class Simulator:
         #     quaternion_final_grasp_wxyz
         # ])
 
-        return final_grasp_position, quaternion_final_grasp_wxyz
+        return [final_grasp_position, quaternion_final_grasp_wxyz]
 
     def _add_light_to_stage(self):
         """Add a spherical light to the stage"""
@@ -232,3 +248,54 @@ class Simulator:
                 # print(f"No collision detected")
                 return False
             
+    def setup_kinematics(self):
+        """Set up the kinematics solver for the Franka robot"""
+        # Load kinematics configuration for the Franka robot
+        # print("Supported Robots with a Lula Kinematics Config:", interface_config_loader.get_supported_robots_with_lula_kinematics())
+        kinematics_config = interface_config_loader.load_supported_lula_kinematics_solver_config("Franka")
+        self._kinematics_solver = LulaKinematicsSolver(**kinematics_config)
+        
+        # Print valid frame names for debugging
+        # print("Valid frame names at which to compute kinematics:", self._kinematics_solver.get_all_frame_names())
+        
+        # Configure the articulation kinematics solver with the end effector
+        end_effector_name = "panda_hand"
+        self._articulation_kinematics_solver = ArticulationKinematicsSolver(
+            self.robot, 
+            self._kinematics_solver, 
+            end_effector_name
+        )
+
+    def update(self, grasp_pose):
+        import carb
+        """Update the robot's position based on the target's position"""
+        # object_position, object_orientation = self._target.get_world_pose()
+        
+        # Track any movements of the robot base
+        robot_base_translation, robot_base_orientation = self.robot.get_world_pose()
+        self._kinematics_solver.set_robot_base_pose(robot_base_translation, robot_base_orientation)
+        # Compute inverse kinematics to find joint positions
+        action, success = self._articulation_kinematics_solver.compute_inverse_kinematics(
+            np.array(grasp_pose[0:3]), 
+            np.array(grasp_pose[3:])
+        )
+        
+        # Apply the joint positions if IK was successful
+        if success:
+            self.robot.apply_action(action)
+        else:
+            carb.log_warn("IK did not converge to a solution. No action is being taken")
+        
+        return success
+    
+
+    def check_grasp_success(self):
+        """Check if the grasp was successful"""
+        # print(f"You are in the grasp success check")
+        # print(f"Gripper position: {self.robot._gripper.get_joint_positions()}")
+        # Check if gripper is fully closed (no object grasped)
+        if self.robot._gripper.get_joint_positions()[0]  == 0:
+            # print("Gripper is fully closed, didn't grasp object")
+            return False
+            
+        return True

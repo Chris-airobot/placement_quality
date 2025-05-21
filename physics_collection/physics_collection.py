@@ -40,17 +40,19 @@ from omni.isaac.core.utils import extensions
 from omni.isaac.core.utils.stage import add_reference_to_stage, create_new_stage
 from omni.isaac.core.utils.nucleus import get_assets_root_path
 from omni.isaac.core.prims import XFormPrim
+from omni.isaac.franka import Franka
 from omni.isaac.core.articulations import Articulation
-from omni.isaac.core.prims import XFormPrim
+from omni.isaac.manipulators.grippers.parallel_gripper import ParallelGripper
 from omni.isaac.motion_generation import ArticulationKinematicsSolver, LulaKinematicsSolver
 from omni.isaac.motion_generation import interface_config_loader
 from pxr import Sdf, UsdLux
 
 # Import the collision detection functionality
 from collision_check import GroundCollisionDetector
-from pxr import UsdGeom, Gf, Usd
-from placement_quality.cube_simulation import helper
-from omni.physx import get_physx_scene_query_interface
+from RRT_controller import RRTController
+from pxr import Gf, UsdPhysics
+from ycb_simulation.utils.helper import draw_frame, transform_relative_pose, local_transform
+
 # Enable ROS2 bridge extension
 extensions.enable_extension("omni.isaac.ros2_bridge")
 simulation_app.update()
@@ -77,7 +79,7 @@ surface_mapping ={
 }
 
 
-class StandaloneIK:
+class PhysicsCollection:
     def __init__(self):
         # Core variables for the kinematic solver
         self._kinematics_solver = None
@@ -92,24 +94,22 @@ class StandaloneIK:
 
 
         # File reads
-        object_poses_file = "/home/chris/Chris/placement_ws/src/object_poses_v2.json"
+        object_poses_file = "/home/chris/Chris/placement_ws/src/object_poses_test.json"
         self.all_object_poses = json.load(open(object_poses_file))
         
-        self.grasp_poses_file = "/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/grasp_generation/grasps.json"
+        self.grasp_poses_file = "/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/grasp_generation/grasp_poses_v2.json"
         self.grasp_poses = json.load(open(self.grasp_poses_file))
-        start_index = 0
-        self.grasp_poses = {k: v for k, v in self.grasp_poses.items() if int(k) >= start_index}
 
-        self.data_folder = "/home/chris/Chris/placement_ws/src/data/path_simulation/raw_data_v1/"
+        self.data_folder = "/home/chris/Chris/placement_ws/src/data/path_simulation/raw_data_v4/"
 
         # Offset of the grasp from the object center
         # Grasp poses are based on the gripper center, so we need to offset it to transform it to the tool_center, i.e. 
         # the middle of the gripper fingers
-        self.grasp_offset = [0, 0, -0.065] 
-        self.gripper_max_aperture = 0.05
+        self.grasp_offset = [0, 0, -0.07] 
+
         self.data_dict = {}
         self.count = 0
-        self.episode_count = start_index
+        self.episode_count = 0
 
     def setup_scene(self):
         """Create a new stage and set up the scene with lighting and camera"""
@@ -118,32 +118,34 @@ class StandaloneIK:
         
         # Create a world instance
         self.world: World = World()
-        
+
+        self.ground_plane = self.world.scene.add_default_ground_plane()
         # Load robot and target
         self._articulation, self._target = self.load_assets()
+        self.gripper: ParallelGripper = self._articulation.gripper
+        self.gripper.set_default_state(self.gripper.joint_opened_positions)
         
         # Add assets to the world scene
         self.world.scene.add(self._articulation)
         self.world.scene.add(self._target)
+        self.controller = RRTController(
+            name = "RRT_controller",
+            robot_articulation=self._articulation,
+        )
+        self.articulation_controller = self._articulation.get_articulation_controller()
         
-        
-        # self._articulation.set_enabled_self_collisions(True)
+        self._articulation.set_enabled_self_collisions(True)
         # Set up the ground collision detector
         self.setup_collision_detection()
         
         # Set up the physics scene
         self.world.reset()
-
+        self.controller.add_obstacle(self.ground_plane, static=True)
         # self._target.set_world_pose(self.object_pose_at_grasp["position"], 
         #                             self.object_pose_at_grasp["orientation_quat"])
         
         # Set up the kinematics solver
-        self.setup_kinematics()
-
-
-
-
-        
+        # self.setup_kinematics()
 
     def _add_light_to_stage(self):
         """Add a spherical light to the stage"""
@@ -158,33 +160,15 @@ class StandaloneIK:
         robot_prim_path = "/World/panda"
         path_to_robot_usd = get_assets_root_path() + "/Isaac/Robots/Franka/franka.usd"
         add_reference_to_stage(path_to_robot_usd, robot_prim_path)
-        articulation = Articulation(robot_prim_path)
+        articulation = Franka(prim_path=robot_prim_path, usd_path=path_to_robot_usd)
         
         # Add the target frame to the stage
-        add_reference_to_stage(get_assets_root_path() + "/Isaac/Props/YCB/Axis_Aligned/009_gelatin_box.usd", "/World/Ycb_object")
+        ycb_prim = add_reference_to_stage(get_assets_root_path() + "/Isaac/Props/YCB/Axis_Aligned/009_gelatin_box.usd", "/World/Ycb_object")
+        UsdPhysics.RigidBodyAPI.Apply(ycb_prim)
+        UsdPhysics.CollisionAPI.Apply(ycb_prim)
         target = XFormPrim("/World/Ycb_object")
-        # target.set_default_state(np.array([0.35, 0, 0.5]), euler_angles_to_quats([0, np.pi, 0]))
-        
-        
+        # target.set_default_state(np.array([0.3, 0, 0.5]), euler_angles_to_quats([0, np.pi, 0]))
         return articulation, target
-
-    def setup_kinematics(self):
-        """Set up the kinematics solver for the Franka robot"""
-        # Load kinematics configuration for the Franka robot
-        print("Supported Robots with a Lula Kinematics Config:", interface_config_loader.get_supported_robots_with_lula_kinematics())
-        kinematics_config = interface_config_loader.load_supported_lula_kinematics_solver_config("Franka")
-        self._kinematics_solver = LulaKinematicsSolver(**kinematics_config)
-        
-        # Print valid frame names for debugging
-        print("Valid frame names at which to compute kinematics:", self._kinematics_solver.get_all_frame_names())
-        
-        # Configure the articulation kinematics solver with the end effector
-        end_effector_name = "panda_hand"
-        self._articulation_kinematics_solver = ArticulationKinematicsSolver(
-            self._articulation, 
-            self._kinematics_solver, 
-            end_effector_name
-        )
 
     def setup_collision_detection(self):
         """Set up the ground collision detector"""
@@ -224,48 +208,9 @@ class StandaloneIK:
                 # print(f"No collision detected")
                 self.collision_detected = False
                 return False
-
-    def update(self, step):
-        """Update the robot's position based on the target's position"""
-        # object_position, object_orientation = self._target.get_world_pose()
-        
-        # Local grasp pose in gripper frame  
-        grasp_pose_local = [self.grasp_pose["position"], self.grasp_pose["orientation_wxyz"]]
-        # World grasp pose in gripper frame
-        grasp_pose_world = helper.transform_relative_pose(grasp_pose_local, 
-                                                   self.current_object_pose["position"], 
-                                                   self.current_object_pose["orientation_quat"])
-        # World grasp pose in tool center frame
-        grasp_pose_center = helper.local_transform(grasp_pose_world, self.grasp_offset)
-        
-        # draw_frame(grasp_pose_center[0], grasp_pose_center[1])
-        # Track any movements of the robot base
-        robot_base_translation, robot_base_orientation = self._articulation.get_world_pose()
-        self._kinematics_solver.set_robot_base_pose(robot_base_translation, robot_base_orientation)
-        
-        # Compute inverse kinematics to find joint positions
-        action, success = self._articulation_kinematics_solver.compute_inverse_kinematics(
-            np.array(grasp_pose_center[0]), 
-            np.array(grasp_pose_center[1])
-        )
-        
-        # Apply the joint positions if IK was successful
-        if success:
-            self._articulation.apply_action(action)
-        else:
-            carb.log_warn("IK did not converge to a solution. No action is being taken")
-        
-        # Check for collisions with the ground
-        collision = self.check_for_collisions()
-        
-        
-        self.data_dict[self.count] = {
-            "collision": collision, 
-            "grasp_pose": grasp_pose_center,
-            "z_position": self.current_object_pose["position"][2],
-            "object_orientation": self.current_object_pose["orientation_quat"],
-            "success": success,
-            }
+    def get_custom_gains(self):
+        return (1e15 * np.ones(9), 1e13 * np.ones(9))
+    
 
     def save_data(self):
         """Save the data to a file"""
@@ -281,17 +226,30 @@ class StandaloneIK:
 
         self.data_dict = {}
 
+    def check_grasp_success(self):
+        """Check if the grasp was successful"""
+        # print(f"You are in the grasp success check")
+        
+        # Check if gripper is fully closed (no object grasped)
+        if np.floor(self.gripper.get_joint_positions()[0] * 100) == 0:
+            # print("Gripper is fully closed, didn't grasp object")
+            return False
+            
+        return True
     
     def reset(self):
         """Reset the simulation"""
         if self.world:
             self.world.reset()
+            self.gripper.open()
+            self.controller.reset()
+            self._articulation.set_joints_default_state()
 
     def run(self):
         """Main loop to run the simulation"""
         # Set up the scene
         self.setup_scene()
-        
+        state = "POSE"
         # If self.grasp_poses is a dict, we need to get the first key-value pair
         first_key = list(self.grasp_poses.keys())[0]
         self.grasp_pose = self.grasp_poses[first_key]
@@ -301,43 +259,106 @@ class StandaloneIK:
 
         # Main simulation loop
         while simulation_app.is_running():
-            print(f"The current progress is: {self.episode_count} / {len(self.grasp_poses)}: {self.count}/{len(self.all_object_poses)}")
-            if self.object_poses:
-                self.current_object_pose = self.object_poses.pop(0)
-                self.current_object_pose['position'][0] = 0.35
-                self.current_object_pose['position'][1] = 0.0
-                self._target.set_world_pose(self.current_object_pose["position"], 
-                                            self.current_object_pose["orientation_quat"])
-            else:
-                print("No more object poses, saving data and restarting simulation")
-                self.save_data()
-                self.episode_count += 1
-                self.count = 0
-
-                first_key = list(self.grasp_poses.keys())[0]
-                self.grasp_pose = self.grasp_poses[first_key]
-                # Remove the first item from the dict
-                self.grasp_poses.pop(first_key)
-
-                self.object_poses = deepcopy(self.all_object_poses)
-                self.current_object_pose = self.object_poses.pop(0)
-                self.current_object_pose['position'][0] = 0.35
-                self.current_object_pose['position'][1] = 0.0
-                self._target.set_world_pose(self.current_object_pose["position"], 
-                                            self.current_object_pose["orientation_quat"])
             # Step the simulation
             self.world.step(render=True)
+            print(f"The current progress is: {self.episode_count} / {len(self.grasp_poses)}: {len(self.all_object_poses) - len(self.object_poses)}/{len(self.all_object_poses)}")
+            if state == "POSE": 
+                if self.object_poses:
+                    self.current_object_pose = self.object_poses.pop(0)
+                    self.current_object_pose['position'][0] = 0.3
+                    self.current_object_pose['position'][1] = 0.0
+                    self._target.set_world_pose(self.current_object_pose["position"], 
+                                                self.current_object_pose["orientation_quat"])
+                    failure = False
+                    collisions = []
+                else:
+                    print("No more object poses, saving data and restarting simulation")
+                    self.save_data()
+                    self.episode_count += 1
+                    self.count = 0
 
-            # Update the robot's position
-            self.update(step=1.0/60.0)
-            self.count += 1
-        
+                    first_key = list(self.grasp_poses.keys())[0]
+                    self.grasp_pose = self.grasp_poses[first_key]
+                    # Remove the first item from the dict
+                    self.grasp_poses.pop(first_key)
+
+                    self.object_poses = deepcopy(self.all_object_poses)
+                    self.current_object_pose = self.object_poses.pop(0)
+                    self.current_object_pose['position'][0] = 0.3
+                    self.current_object_pose['position'][1] = 0.0
+                    self._target.set_world_pose(self.current_object_pose["position"], 
+                                                self.current_object_pose["orientation_quat"])
+                    
+                state = "GRASP"
+
+                internal_counter = 0
+            
+
+            if state == "GRASP":
+                # Local grasp pose in gripper frame  
+                grasp_pose_local = [self.grasp_pose["position"], self.grasp_pose["orientation_wxyz"]]
+                # World grasp pose in gripper frame
+                grasp_pose_world = transform_relative_pose(grasp_pose_local, 
+                                                        self.current_object_pose["position"], 
+                                                        self.current_object_pose["orientation_quat"])
+                # World grasp pose in tool center frame
+                grasp_pose_center = local_transform(grasp_pose_world, self.grasp_offset)
+                # Update the robot's position
+                actions = self.controller.forward(
+                            target_end_effector_position=np.array(grasp_pose_center[0]),
+                            target_end_effector_orientation=np.array(grasp_pose_center[1]),
+                        )
+                if self.controller.ik_check:
+                    kps, kds = self.get_custom_gains()
+                    self.articulation_controller.set_gains(kps, kds)
+                    # Apply the actions to the robot
+                    self.articulation_controller.apply_action(actions)
+                    collisions.append(self.check_for_collisions())
+
+                    if self.controller.is_done():
+                         print(f"controller is done")
+                         state = "GRIP"
+                else:
+                    print(f"No plan found for the current grasp pose")
+                    state = "POSE"
+
+                
+
+
+
+            if state == "GRIP":
+                self.gripper.close()
+                # Wait for the gripper to finish closing
+                if not hasattr(self, "grip_timer"):
+                    self.grip_timer = 0
+                    
+                self.grip_timer += 1
+                
+                # Give enough time for the gripper to close (typically 10-20 frames is sufficient)
+                if self.grip_timer >= 30:
+                    object_position, object_orientation = self._target.get_world_pose()
+                    grasp_position, grasp_orientation = self.gripper.get_world_pose()
+                    self.data_dict[self.count] = {
+                        "collisions": collisions, 
+                        "grasp_position": grasp_position,
+                        "grasp_orientation": grasp_orientation,
+                        "object_position": object_position,
+                        "object_orientation": object_orientation,
+                        "feasibility": self.controller.ik_check,
+                        "grasp_success": self.check_grasp_success(),
+                    }
+                    self.count += 1  # Make sure to increment the counter
+                    self.grip_timer = 0  # Reset the timer for next grasp
+                    self.reset()
+                    state = "POSE"
+
+            
         print("Simulation ended.")
 
 
 if __name__ == "__main__":
     # Create and run the standalone IK example
-    env = StandaloneIK()
+    env =  PhysicsCollection()
     env.run()
     
     # Close the simulation application

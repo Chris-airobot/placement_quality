@@ -144,9 +144,9 @@ class Grasp:
             # grasp approach direction
             rot[:, 2] = self.vector3ToNumpy(grasp.approach)
             # hand closing direction
-            rot[:, 0] = self.vector3ToNumpy(grasp.binormal)
+            rot[:, 1] = -self.vector3ToNumpy(grasp.binormal)
             # hand axis
-            rot[:, 1] = self.vector3ToNumpy(grasp.axis)
+            rot[:, 0] = self.vector3ToNumpy(grasp.axis)
             
             
             # Turn the roll pitch yaw thing into the quaternion axis
@@ -352,7 +352,7 @@ class Grasp:
  
         rospy.loginfo("ROS 1 Container Server: Listening on port %d", PORT)
         
-        file_path = "/home/ros_ws/src/perfect_pointcloud.pcd"
+        file_path = "/home/ros_ws/src/pointcloud_no_plane.pcd"
         # file_path = "/home/gpd/tutorials/krylon.pcd"
         
         # file_path = "/home/pointcloud.pcd"
@@ -385,7 +385,7 @@ class Grasp:
                 # Calculate grasp poses and store them
                 response_dict = self.find_grasps(start_time)
                 # Save grasp data to JSON file
-                with open('/home/ros_ws/src/grasp_generation/grasp_poses_v2.json', 'w') as json_file:
+                with open('/home/ros_ws/src/grasp_generation/test_grasps.json', 'w') as json_file:
                     json.dump(response_dict, json_file, indent=4)
                 rospy.loginfo("Grasp poses saved to grasp_poses.json")
                 grasp_detected = True

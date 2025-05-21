@@ -15,7 +15,7 @@ do
     
     echo "Running server..."
     # Run the Isaac Sim Python script with your collection file
-    roslaunch grasp_generation grasp.launch
+    roslaunch grasp_generation grasp_single.launch
     
     echo "Script finished. Resting for 20 seconds..."
     sleep 20  # 20 seconds

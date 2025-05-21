@@ -32,11 +32,13 @@ class RRTTask(BaseTask):
         self._ycb_name = None
         self._ycb = None
         self._ycb_prim_path = None
+        self._frame = None
         self._ycb_initial_position = initial_position
         self._ycb_initial_orientation = initial_orientation
         self._ycb_target_position = target_position
         self._ycb_target_orientation = target_orientation
         self._obstacle_walls = OrderedDict()
+        self.ground_plane = None
         return
 
     def set_up_scene(self, scene: Scene) -> None:
@@ -46,7 +48,8 @@ class RRTTask(BaseTask):
             scene (Scene): [description]
         """
         super().set_up_scene(scene)
-        # scene.add_default_ground_plane()
+        if self.use_physics:
+            self.ground_plane = scene.add_default_ground_plane()
 
         # Add the object to the scene
         self._ycb = self.set_ycb(name="ycb_object", prim_path="/World/Ycb_object", use_physics=self.use_physics)
@@ -59,6 +62,13 @@ class RRTTask(BaseTask):
         # Add the robot to the scene
         self._robot = self.set_robot()
         scene.add(self._robot)
+
+        add_reference_to_stage(get_assets_root_path() + "/Isaac/Props/UIElements/frame_prim.usd", "/World/target")
+        self._frame = XFormPrim("/World/target", scale=[.04,.04,.04], name="target")
+        self._frame.set_default_state(np.array([0.3, 0, 0.5]),
+                                np.array([0, 0, 0, 1]))
+        
+        scene.add(self._frame)
 
         # Set the object parameters
         self.set_params(
@@ -113,11 +123,63 @@ class RRTTask(BaseTask):
         object_prim = add_reference_to_stage(usd_path=usd_path, prim_path=prim_path)
 
         if use_physics:
-            UsdPhysics.RigidBodyAPI.Apply(object_prim)
+            import omni
+            import omni.physx
+            from pxr import UsdGeom, UsdShade, PhysxSchema
+            stage = omni.usd.get_context().get_stage()
+
+            # -- REMOVE existing collision/mesh colliders under object_prim
+            children = [c for c in stage.GetPrimAtPath(prim_path).GetChildren()]
+            for child in children:
+                # Remove any child prims named 'collision', 'collider', or that are meshes
+                if 'collis' in child.GetName().lower() or child.GetTypeName() in ['Mesh', 'TriangleMesh', 'GeomMesh']:
+                    print(f"Removing existing collider: {child.GetPath()}")
+                    stage.RemovePrim(child.GetPath())
+
+            # Set RigidBody and Mass
+            rigid_api = UsdPhysics.RigidBodyAPI.Apply(object_prim)
             UsdPhysics.CollisionAPI.Apply(object_prim)
-            return XFormPrim(prim_path=prim_path, name=name, scale=[0.8, 0.8, 0.8])
-        else:
-            return XFormPrim(prim_path=prim_path, name=name, scale=[0.8, 0.8, 0.8])
+            mass_api = UsdPhysics.MassAPI.Apply(object_prim)
+            mass_api.CreateMassAttr(0.086)
+            
+            # ---- PhysX Material ----
+            material_path = prim_path + "/physx_material"
+
+            for mat_type in ["PhysxSchema.PhysxMaterial", "PhysicsMaterial"]:
+                if not stage.GetPrimAtPath(material_path).IsValid():
+                    mat_prim = stage.DefinePrim(material_path, mat_type)
+                else:
+                    mat_prim = stage.GetPrimAtPath(material_path)
+                # Set attributes if they exist
+                try:
+                    mat_prim.GetAttribute("physxStaticFriction").Set(2.0)
+                    mat_prim.GetAttribute("physxDynamicFriction").Set(2.0)
+                    mat_prim.GetAttribute("physxRestitution").Set(0.0)
+                    break  # Succeed and exit loop
+                except Exception:
+                    continue
+
+            # Create a cube under /World/Ycb_object
+            collider_path = prim_path + "/box_collider"
+            collider = UsdGeom.Cube.Define(stage, collider_path)
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+
+            # Set the cube to be scaled as the gelatin box dimensions (YCB 009: 0.073 x 0.032 x 0.101 meters)
+            collider.CreateSizeAttr(1.0)
+            collider.AddScaleOp().Set((0.08, 0.065, 0.025))
+            collider.AddTranslateOp().Set((0, 0, 0))  # Centered; adjust if necessary
+            # collider.GetPrim().GetAttribute('visibility').Set('invisible')
+
+            # ---- Material Binding ----
+            def bind_physx_material(prim, mat_prim):
+                binding_api = UsdShade.MaterialBindingAPI(prim)
+                binding_api.Bind(UsdShade.Material(mat_prim))
+
+            bind_physx_material(object_prim, mat_prim)
+            bind_physx_material(collider.GetPrim(), mat_prim)
+
+
+        return XFormPrim(prim_path=prim_path, name=name, )
 
 
     def set_params(

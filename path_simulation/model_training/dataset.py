@@ -26,8 +26,7 @@ class KinematicFeasibilityDataset(Dataset):
         self.final_raw   = torch.empty((N, 5), dtype=torch.float32)
         self.success     = torch.empty((N,),   dtype=torch.float32)
         self.collision   = torch.empty((N,),   dtype=torch.float32)
-        self.surfaces    = torch.empty((N, 2), dtype=torch.long)
-        self.const_xy   = torch.tensor([0.4, 0.0], dtype=torch.float32)
+        self.const_xy   = torch.tensor([0.35, 0.0], dtype=torch.float32)
 
         for i, s in enumerate(self.data):
             self.grasp[i]     = torch.tensor(s['grasp_pose'],            dtype=torch.float32)
@@ -35,8 +34,6 @@ class KinematicFeasibilityDataset(Dataset):
             self.final_raw[i] = torch.tensor(s['final_object_pose'],     dtype=torch.float32)
             self.success[i]   = float(s['success_label'])
             self.collision[i] = float(s['collision_label'])
-            i_s, f_s = map(int, s['surfaces'].split('_'))
-            self.surfaces[i]  = torch.tensor([i_s, f_s], dtype=torch.long)
 
         # self.object_pcd = object_pcd            # already a Tensor [num_pts, 3]
 
@@ -50,5 +47,4 @@ class KinematicFeasibilityDataset(Dataset):
         final  = torch.cat([self.const_xy, self.final_raw[idx]])
         sl     = self.success[idx]
         cl     = self.collision[idx]
-        surfaces = self.surfaces[idx]
-        return grasp, init, final, sl, cl, surfaces
+        return grasp, init, final, sl, cl

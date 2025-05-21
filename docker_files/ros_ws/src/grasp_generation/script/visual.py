@@ -186,7 +186,7 @@ class Grasp:
  
         rospy.loginfo("ROS 1 Container Server: Listening on port %d", PORT)
         
-        file_path = "/home/ros_ws/src/perfect_pointcloud.pcd"
+        file_path = "/home/ros_ws/src/pointcloud.pcd"
         # file_path = "/home/gpd/tutorials/krylon.pcd"
         
         # file_path = "/home/pointcloud.pcd"
@@ -195,7 +195,7 @@ class Grasp:
         # Process point cloud data to generate grasps
         self.grasp_list = None
 
-        grasp_file = "/home/ros_ws/src/grasp_generation/grasp_poses.json"
+        grasp_file = "/home/ros_ws/src/grasp_generation/tests.json"
         with open(grasp_file, 'r') as f:
             grasp_data = json.load(f)
 

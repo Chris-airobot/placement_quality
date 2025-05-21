@@ -25,7 +25,6 @@ def all_data(data_path, output_path):
                 "final_object_pose": data["final_object_poses"][i],
                 "success_label": data["success_labels"][i],
                 "collision_label": data["collision_labels"][i],
-                "surfaces": data["surfaces"][i]
             }
             all_data.append(sample)
 
@@ -38,7 +37,6 @@ def all_data(data_path, output_path):
 
 
 def split_all_data(all_data_path: str,
-                   output_dir: str,
                    train_frac: float = 0.8,
                    val_frac:   float = 0.1,
                    test_frac:  float = 0.1,
@@ -48,7 +46,7 @@ def split_all_data(all_data_path: str,
     and write train.json, val.json, test.json in output_dir.
     """
     assert abs(train_frac + val_frac + test_frac - 1.0) < 1e-6, "Fractions must sum to 1"
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(all_data_path, exist_ok=True)
 
     # 1) Load full list
     with open(all_data_path+"/all_data.json", 'r') as f:
@@ -81,7 +79,7 @@ def split_all_data(all_data_path: str,
 
     # 5) Write out each split
     for fname, idxs in splits.items():
-        out_path = os.path.join(output_dir, fname)
+        out_path = os.path.join(all_data_path, fname)
         with open(out_path, 'w') as out_f:
             # write only the selected samples
             subset = [data[i] for i in idxs]
@@ -107,7 +105,6 @@ def load_data_from_json(data_path, output_path):
             "final_object_poses": [],
             "success_labels": [],
             "collision_labels": [],
-            "surfaces": []
         }
 
         initial_valid_samples = [v for v in data.values() if v["success"] and not v["collision"]]
@@ -132,7 +129,6 @@ def load_data_from_json(data_path, output_path):
                 # You may choose to recompute feasibility explicitly later.
                 output["success_labels"].append(float(final_sample["success"]))
                 output["collision_labels"].append(float(final_sample["collision"]))
-                output["surfaces"].append(str(init_sample["surface"]) + "_" + str(final_sample["surface"]))
         # Save output to JSON file
         final_path = f"{output_path}/processed_{json_file.split('/')[-1]}"
         if not os.path.exists(final_path): 
@@ -241,11 +237,18 @@ def extract_data_from_json(data_path, output_path, samples_per_category: int = 2
     print(f"Breakdown: Up to {samples_per_category} samples per category")
 
 if __name__ == "__main__":
+    # Step 1: Load raw data into the processed individual files
+    raw_data_path = "/home/chris/Chris/placement_ws/src/data/path_simulation/raw_data_v1"
+    processed_data_path = "/home/chris/Chris/placement_ws/src/data/path_simulation/processed_data"
+    load_data_from_json(raw_data_path, processed_data_path)
+    
+    # Step 2: Combine all the processed files into one
+    combined_data_path = "/home/chris/Chris/placement_ws/src/data/path_simulation"
+    all_data(processed_data_path, combined_data_path)
 
-    # split_all_data(data_path, output_path)
-    # file_path = os.path.join(output_path, "all_data.json")
-    # load_data_from_json(data_path, output_path)
+    # Step 3: Split the combined data into train, val, test
+    split_all_data(combined_data_path)
 
-    data_path = "/media/chris/OS2/Users/24330/Desktop/placement_quality/unseen/all_data.json"
-    output_path = "/media/chris/OS2/Users/24330/Desktop/placement_quality/unseen"
-    extract_data_from_json(data_path, output_path)    
+    # data_path = "/media/chris/OS2/Users/24330/Desktop/placement_quality/unseen/all_data.json"
+    # output_path = "/media/chris/OS2/Users/24330/Desktop/placement_quality/unseen"
+    # extract_data_from_json(data_path, output_path)    

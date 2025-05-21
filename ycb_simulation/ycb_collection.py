@@ -28,10 +28,10 @@ import os
 import rclpy
 import datetime 
 from omni.isaac.core.utils import extensions
-from ycb_simulation.simulation.logger import YcbLogger
+from simulation.logger import YcbLogger
 from simulation.simulator import YcbCollection
-from ycb_simulation.utils.vision import *
-from ycb_simulation.utils.helper import *
+from utils.vision import *
+from utils.helper import *
 
 
 # Enable ROS2 bridge extension

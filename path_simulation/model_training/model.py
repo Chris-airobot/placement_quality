@@ -23,18 +23,14 @@ class PointNetEncoder(nn.Module):
         return global_feat
 
 class GraspObjectFeasibilityNet(nn.Module):
-    def __init__(self, surface_embed_dim=8, use_static_obj=False):
+    def __init__(self, use_static_obj=False):
         super().__init__()
         self.use_static_obj = use_static_obj
         if not use_static_obj:
             self.pointnet = PointNetEncoder(256)
 
-        # NEW: surface embeddings (6 surfaces each)
-        self.init_surf_emb = nn.Embedding(6, surface_embed_dim)
-        self.final_surf_emb= nn.Embedding(6, surface_embed_dim)
-
-        # Pose encoder now sees: 7(grasp)+7(init pose)+7(final pose)+2*surface_embed_dim
-        in_dim = 7 + 7 + 7 + 2*surface_embed_dim
+        # Pose encoder now sees: 7(grasp)+7(init pose)+7(final pose)
+        in_dim = 7 + 7 + 7 
         self.pose_encoder = nn.Sequential(
             nn.Linear(in_dim, 64), nn.ReLU(),
             nn.Linear(64, 128), nn.ReLU(),
@@ -50,7 +46,7 @@ class GraspObjectFeasibilityNet(nn.Module):
         self.out_success = nn.Linear(64, 1)
         self.out_collision = nn.Linear(64, 1)
 
-    def forward(self, points, grasp_pose, init_pose, final_pose, surfaces):
+    def forward(self, points, grasp_pose, init_pose, final_pose):
         # 1) object feature
         if self.use_static_obj:
             # static_obj_feat is [1,256] buffer registered in main()
@@ -58,12 +54,8 @@ class GraspObjectFeasibilityNet(nn.Module):
         else:
             obj_feat = self.pointnet(points)
 
-        # 2) surface embeddings
-        init_emb  = self.init_surf_emb (surfaces[:,0])  # [B, E]
-        final_emb = self.final_surf_emb(surfaces[:,1])
-
         # 3) pose feature
-        x = torch.cat([grasp_pose, init_pose, final_pose, init_emb, final_emb], dim=1)
+        x = torch.cat([grasp_pose, init_pose, final_pose], dim=1)
         pose_feat = self.pose_encoder(x)
 
         # 4) fuse & heads

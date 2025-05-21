@@ -23,8 +23,8 @@ import omni
 from simulation.task import YcbTask
 from simulation.planner import YcbPlanner
 
-from ycb_simulation.utils.vision import *
-from ycb_simulation.utils.helper import *
+from utils.vision import *
+from utils.helper import *
 
 
 class YcbCollection:

@@ -11,7 +11,7 @@ from omni.isaac.core.articulations import Articulation
 from omni.isaac.manipulators.grippers.parallel_gripper import ParallelGripper
 from omni.isaac.manipulators.grippers.gripper import Gripper
 from scipy.spatial.transform import Rotation, Slerp
-from ycb_simulation.utils.helper import get_current_end_effector_pose,convert_wxyz_to_xyzw
+from utils.helper import get_current_end_effector_pose,convert_wxyz_to_xyzw
 
 
 

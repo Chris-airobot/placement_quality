@@ -990,11 +990,18 @@ def merge_and_save_pointclouds(pcds_dict: dict, tf_buffer: Buffer, output_path="
             
         try:
             # Get transform at the exact time of the point cloud
-            transform = tf_buffer.lookup_transform("world", 
+            transform = tf_buffer.lookup_transform("Ycb_object", 
                                                    pcd_msg.header.frame_id, 
                                                    rclpy.time.Time(), 
                                                    timeout=rclpy.duration.Duration(seconds=1.0))
             # Use a function that accepts the pre-computed transform
+
+            print(f"Transform: {transform}")
+            print()
+            print()
+            print()
+            print()
+            print()
             world_pcd_msg = transform_pointcloud(pcd_msg, transform)
             o3d_pcd = pointcloud2_to_o3d(world_pcd_msg)
             o3d_pcd = o3d_pcd.voxel_down_sample(voxel_size=0.005)

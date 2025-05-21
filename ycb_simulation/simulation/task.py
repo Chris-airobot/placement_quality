@@ -19,7 +19,7 @@ import omni.graph.core as og
 import omni.syntheticdata
 from pxr import Usd, UsdGeom, Gf, UsdPhysics
 # Assuming these helper functions are defined in your project
-from ycb_simulation.utils.helper import euler2quat, get_current_end_effector_pose
+from utils.helper import euler2quat, get_current_end_effector_pose
 from scipy.spatial.transform import Rotation as R
 
 
@@ -140,7 +140,6 @@ class YcbTask(BaseTask, ABC):
             name=object_name,
             translation=self._object_initial_position,
             orientation=self._object_initial_orientation,
-            scale=[0.8, 0.8, 0.8]
         )
 
         # Add the object to the scene
@@ -160,7 +159,6 @@ class YcbTask(BaseTask, ABC):
             name=final_object_name,
             translation=self._object_target_position,
             orientation=self._object_target_orientation,
-            scale=[0.8, 0.8, 0.8]
         )
 
         # Add the final object to the scene

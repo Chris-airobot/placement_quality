@@ -1,4 +1,3 @@
-import numpy as np
 from scipy.spatial.transform import Rotation as R
 import os
 import open3d as o3d
@@ -6,17 +5,54 @@ import json
 import tf2_ros
 from rclpy.time import Time
 import struct
+import sys
+import numpy as np
+
+# Add the cube_simulation directory to the path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Original import should now work
 from network.network_client import GraspClient
 from transforms3d.quaternions import quat2mat, mat2quat, qmult, qinverse
 from transforms3d.axangles import axangle2mat
 from transforms3d.euler import euler2quat, quat2euler
 from tf2_msgs.msg import TFMessage
-from sensor_msgs.msg import PointCloud2
+from sensor_msgs.msg import PointCloud2, PointField
 from geometry_msgs.msg import TransformStamped
 import random
 import math
-from omni.isaac.core.utils.prims import is_prim_path_valid
+from rclpy.node import Node
+class TFSubscriber(Node):
+    def __init__(self, pcd_topic):
+        super().__init__("tf_subscriber")
+        self.latest_tf = None  # Store the latest TFMessage here
+        self.latest_pcd = None # Store the latest Pointcloud here
 
+        self.buffer = tf2_ros.Buffer()
+        self.listener = tf2_ros.TransformListener(self.buffer, self)
+
+        # Create the subscription
+        self.tf_subscription = self.create_subscription(
+            TFMessage,           # Message type
+            "/tf",               # Topic name
+            self.tf_callback,    # Callback function
+            10                   # QoS
+        )
+
+        self.pcd_subscription = self.create_subscription(
+            PointCloud2,         # Message type
+            pcd_topic,        # Topic name
+            self.pcd_callback,   # Callback function
+            10                   # QoS
+        )
+
+    def pcd_callback(self, msg):
+        self.latest_pcd = msg
+
+
+    def tf_callback(self, msg):
+        # This callback is triggered for every new TF message on /tf
+        self.latest_tf = msg
 
 def convert_wxyz_to_xyzw(q_wxyz):
     """Convert a quaternion from [w, x, y, z] format to [x, y, z, w] format."""
@@ -205,13 +241,13 @@ def projection(q_current_cube, q_current_ee, q_desired_ee):
 
 
 
-def tf_graph_generation():
+def tf_graph_generation(object_frame_path):
     import omni.graph.core as og
+    from omni.isaac.core.utils.prims import is_prim_path_valid
 
     keys = og.Controller.Keys
 
     robot_frame_path= "/World/Franka"
-    cube_frame = "/World/Cube"
     graph_path = "/Graphs/TF"
     # test_cube = "/World/Franka/test_cube"
     if is_prim_path_valid(graph_path):
@@ -233,7 +269,7 @@ def tf_graph_generation():
 
             keys.SET_VALUES: [
                 ("TF_Tree.inputs:topicName", "/tf"),
-                ("TF_Tree.inputs:targetPrims", [robot_frame_path, cube_frame]),
+                ("TF_Tree.inputs:targetPrims", [robot_frame_path, object_frame_path]),
                 # ("TF_Tree.inputs:targetPrims", cube_frame),
                 ("TF_Tree.inputs:queueSize", 10),
  
@@ -368,15 +404,17 @@ def get_current_end_effector_pose() -> np.ndarray:
 
 
 
-
+from omni.isaac.core import World
 def draw_frame(
     position: np.ndarray,
     orientation: np.ndarray,
+    world: World = None,
     scale: float = 0.1,
 ):
     # Isaac Sim's debug draw interface
     from omni.isaac.debug_draw import _debug_draw
     from carb import Float3, ColorRgba
+    from omni.isaac.core.utils.nucleus import get_assets_root_path
     # Acquire the debug draw interface once at startup or script init
     draw = _debug_draw.acquire_debug_draw_interface()
     # Clear previous lines so we have only one, moving frame.
@@ -429,15 +467,31 @@ def draw_frame(
 
     # Draw the three axes.
     draw.draw_lines(start_points, end_points, colors, sizes)
+    # print(f"position: {position}")
+    # print(f"orientation: {orientation}")
+    # if world is not None:
+    #     from omni.isaac.core.objects import VisualCuboid
+    #     cube = world.scene.add(
+    #             VisualCuboid(
+    #                 name="test",
+    #                 position=position,
+    #                 orientation=orientation,
+    #                 prim_path="/World/test",
+    #                 scale=[0.1, 0.1, 0.1],
+    #                 size=1.0,
+    #                 color=np.array([0, 0, 1]),
+    #             )
+    #         )
+
+    
 
 
 
 
 
 
-
-
-
+# def draw_axis(position, orientation, world):
+    
 
 
 
@@ -525,21 +579,14 @@ def filter_points_in_bounding_box(points, box_center, box_size):
     return points[~inside_mask]
 
 
-def save_pointcloud(msg: PointCloud2, root) -> str:
+def process_pointcloud(msg: PointCloud2) -> np.ndarray:
     """
     Saves a ROS PointCloud2 (with x,y,z,[rgb]) to an ASCII PCD file.
     The file includes a voxel-based downsampling step to reduce size.
 
-    The output path is:  root/Pcd_{pcd_counter}/pointcloud.pcd
+    The output path is:  root/pointcloud.pcd
     """
-    # 1) Create the directory
-    # dir_name = os.path.join(root, f"Pcd_{pcd_counter}")
-    # os.makedirs(dir_name, exist_ok=True)
-
-    # 2) Fixed filename: "pointcloud.pcd"
-    file_path = os.path.join(root, "pointcloud.pcd")
-
-    # 3) Identify offsets for x,y,z,rgb
+    # Identify offsets for x,y,z,rgb
     offset_x = offset_y = offset_z = None
     offset_rgb = None
     for field in msg.fields:
@@ -555,7 +602,7 @@ def save_pointcloud(msg: PointCloud2, root) -> str:
     if offset_x is None or offset_y is None or offset_z is None:
         raise ValueError("PointCloud2 does not contain x, y, z fields!")
 
-    # 4) Convert data to (N,4) float32 array: [x y z rgb]
+    # Convert data to (N,4) float32 array: [x y z rgb]
     num_points = len(msg.data) // msg.point_step
     points = np.zeros((num_points, 4), dtype=np.float32)
 
@@ -578,42 +625,118 @@ def save_pointcloud(msg: PointCloud2, root) -> str:
     # [A] FILTER OUT POINTS INSIDE THE ROBOT'S BOUNDING BOX
     # NOTE: Make sure points are in the same coordinate frame as the bounding box
     box_center = [-0.04, 0.0, 0.0]  # center of the robot bounding box in "world" frame
-    box_size   = [0.24, 0.20, 1] # size in x,y,z
+    box_size   = [0.24, 0.20, 2] # size in x,y,z
     points_filtered = filter_points_in_bounding_box(points, box_center, box_size)
     # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
-
+    # --- NEW: remove ground plane at z≈0 ---
+    ground_height    = 0.0     # floor plane height in world frame
+    ground_tolerance = 0.01    # 1cm above the floor
+    # keep only points strictly above the floor plane + tolerance
+    mask = points_filtered[:, 2] > (ground_height + ground_tolerance)
+    points_noground = points_filtered[mask]
 
 
     # 5) Downsample to reduce size (voxel_size=0.01 => 1cm grid; adjust as needed)
-    points_down = downsample_points(points_filtered, voxel_size=0.005)
+    points_down = downsample_points(points_noground, voxel_size=0.0005)
 
-    # 6) Build ASCII PCD header
-    # NOTE: We now do "TYPE F F F F" for the 4 fields, so that PCL's voxel/crop
-    #       filter doesn't reject them. (Instead of 'I' for rgb.)
+    return points_down
+
+def save_pointcloud(data, file_path):
+    """
+    Save pointcloud data to a PCD file. Accepts either a numpy array or PointCloud2 message.
+    
+    Args:
+        data: Either a numpy array of shape (N,4) with [x,y,z,rgb] or a PointCloud2 message
+        file_path: Directory where the pointcloud.pcd file will be saved
+        
+    Returns:
+        str: Path to the saved PCD file
+    """
+    # Ensure the root directory exists
+    os.makedirs(file_path, exist_ok=True)
+    
+    # Fixed filename: "pointcloud.pcd"
+    file_path = os.path.join(file_path, "pointcloud.pcd")
+    
+    # If data is a PointCloud2 message, convert it to numpy array
+    if isinstance(data, PointCloud2):
+        # Convert PointCloud2 to numpy array
+        points = pointcloud2_to_numpy(data)
+    else:
+        # Assume it's a numpy array
+        points = data
+    
+    # Build ASCII PCD header
     header = (
         "# .PCD v.7 - Point Cloud Data file format\n"
         "VERSION .7\n"
         "FIELDS x y z rgb\n"
         "SIZE 4 4 4 4\n"
-        "TYPE F F F F\n"  # <--- we changed the last field to F
+        "TYPE F F F F\n"  # <--- we use float type for all fields
         "COUNT 1 1 1 1\n"
-        f"WIDTH {points_down.shape[0]}\n"
+        f"WIDTH {points.shape[0]}\n"
         "HEIGHT 1\n"
-        f"POINTS {points_down.shape[0]}\n"
+        f"POINTS {points.shape[0]}\n"
         "DATA ascii\n"
     )
 
-    # 7) Write ASCII data: x, y, z, rgb
+    # Write ASCII data: x, y, z, rgb
     with open(file_path, "w") as f:
         f.write(header)
-        for i in range(points_down.shape[0]):
-            x, y, z, rgbf = points_down[i]
+        for i in range(points.shape[0]):
+            x, y, z, rgbf = points[i]
             # Here we treat the last column as float
             f.write(f"{x:.6f} {y:.6f} {z:.6f} {rgbf:.6f}\n")
 
-    print(f"[INFO] Saved ASCII PCD to {file_path}: {points_down.shape[0]} points (down from {num_points}).")
+    print(f"[INFO] Saved ASCII PCD to {file_path}: {points.shape[0]} points).")
     return file_path
+
+def pointcloud2_to_numpy(msg: PointCloud2) -> np.ndarray:
+    """
+    Convert a ROS PointCloud2 message to a numpy array without any processing.
+    
+    Args:
+        msg: PointCloud2 message
+        
+    Returns:
+        np.ndarray: Nx4 array of [x, y, z, rgb]
+    """
+    # Identify offsets for x,y,z,rgb
+    offset_x = offset_y = offset_z = None
+    offset_rgb = None
+    for field in msg.fields:
+        if field.name == "x":
+            offset_x = field.offset
+        elif field.name == "y":
+            offset_y = field.offset
+        elif field.name == "z":
+            offset_z = field.offset
+        elif field.name in ("rgb", "rgba"):
+            offset_rgb = field.offset
+
+    if offset_x is None or offset_y is None or offset_z is None:
+        raise ValueError("PointCloud2 does not contain x, y, z fields!")
+
+    # Convert data to (N,4) float32 array: [x y z rgb]
+    num_points = len(msg.data) // msg.point_step
+    points = np.zeros((num_points, 4), dtype=np.float32)
+
+    for i in range(num_points):
+        start = i * msg.point_step
+        x = struct.unpack_from("f", msg.data, start + offset_x)[0]
+        y = struct.unpack_from("f", msg.data, start + offset_y)[0]
+        z = struct.unpack_from("f", msg.data, start + offset_z)[0]
+
+        if offset_rgb is not None:
+            # read raw 32 bits as float or int
+            rgb_uint = struct.unpack_from("I", msg.data, start + offset_rgb)[0]
+            # store as float so we can put it in 'rgb' column
+            points[i] = [x, y, z, float(rgb_uint)]
+        else:
+            points[i] = [x, y, z, 0.0]
+            
+    return points
 
 def pointcloud2_to_o3d(pcd_ros):
     import sensor_msgs_py.point_cloud2 as pc2
@@ -934,6 +1057,507 @@ def view_pcd(file_path):
     pcd = o3d.io.read_point_cloud(file_path)
     o3d.visualization.draw_geometries([pcd])
 
+
+def transform_relative_pose(grasp_pose, relative_translation, relative_rotation=None):
+    from pyquaternion import Quaternion
+    """
+    Transforms a grasp pose using a relative transformation.
+    """
+    # Helper: Convert a pose (position, quaternion) to a 4x4 homogeneous transformation matrix.
+    def pose_to_matrix(position, orientation):
+        T = np.eye(4)
+        q = Quaternion(orientation)  # expects [w, x, y, z]
+        T[:3, :3] = q.rotation_matrix
+        T[:3, 3] = position
+        return T
+
+    # Helper: Convert a 4x4 homogeneous transformation matrix back to a pose.
+    def matrix_to_pose(T):
+        position = T[:3, 3].tolist()
+        q = Quaternion(matrix=T[:3, :3])
+        orientation = q.elements.tolist()  # [w, x, y, z]
+        return position, orientation
+
+    # Convert the input grasp pose to a homogeneous matrix.
+    T_current = pose_to_matrix(grasp_pose[0], grasp_pose[1])
+
+    # Build the relative transformation matrix.
+    T_relative = np.eye(4)
+    if relative_rotation is None:
+        q_relative = Quaternion()  # Identity rotation.
+    else:
+        q_relative = Quaternion(relative_rotation)
+    T_relative[:3, :3] = q_relative.rotation_matrix
+    T_relative[:3, 3] = relative_translation
+
+    # Apply the transformation - for local to global, we need:
+    # T_target = T_relative * T_current (object_world * grasp_local)
+    T_target = np.dot(T_relative, T_current)
+
+    # Convert back to position and quaternion.
+    new_position, new_orientation = matrix_to_pose(T_target)
+    
+    return [new_position, new_orientation]
+
+
+def local_transform(pose, offset):
+    """Apply offset in the local frame of the pose"""
+    from pyquaternion import Quaternion
+    # Convert to matrices
+    T_pose = np.eye(4)
+    q = Quaternion(pose[1])  # [w, x, y, z]
+    T_pose[:3, :3] = q.rotation_matrix
+    T_pose[:3, 3] = pose[0]
+    
+    # Create offset matrix (identity rotation)
+    T_offset = np.eye(4)
+    T_offset[:3, 3] = offset
+    
+    # Multiply in correct order: pose * offset (applies offset in local frame)
+    T_result = np.dot(T_pose, T_offset)
+    
+    # Convert back to position, orientation
+    new_position = T_result[:3, 3].tolist()
+    q_new = Quaternion(matrix=T_result[:3, :3])
+    new_orientation = q_new.elements.tolist()  # [w, x, y, z]
+    
+    return [new_position, new_orientation]
+
+
+def compute_camera_pose(object_position: np.ndarray,
+                        offset: np.ndarray = np.array([0.0, -0.4, 0.2]),
+                        up: np.ndarray     = np.array([0.0, 0.0, 1.0])):
+    """
+    Given the object's world position, return a camera position and quaternion
+    such that the camera is offset by `offset` (in world frame) and
+    oriented to look at the object.
+
+    Args:
+        object_position: (3,) world coordinates of your box center.
+        offset:          (3,) vector from object to camera in world frame.
+        up:              (3,) preferred "up" direction for the camera.
+
+    Returns:
+        camera_position: (3,) world position of the camera.
+        quat:            (4,) [x, y, z, w] quaternion for camera orientation.
+    """
+    # 1) Position the camera
+    camera_position = object_position + offset
+
+    # 2) Build camera local axes so that local −Z points toward the object:
+    #    target_vec = object − camera
+    target_vec = object_position - camera_position
+    #    world Z_cam (local +Z) must be opposite of target_vec
+    z_cam = -target_vec / np.linalg.norm(target_vec)
+
+    #    X_cam = up × Z_cam
+    x_cam = np.cross(up, z_cam)
+    x_cam /= np.linalg.norm(x_cam)
+
+    #    Y_cam = Z_cam × X_cam
+    y_cam = np.cross(z_cam, x_cam)
+
+    # 3) Make rotation matrix whose columns are [X_cam, Y_cam, Z_cam]
+    rot_mat = np.column_stack((x_cam, y_cam, z_cam))
+
+    # 4) Convert to quaternion [x, y, z, w] (or roll to [w,x,y,z] as before)
+    quat_xyzw = R.from_matrix(rot_mat).as_quat()
+    quat_wxyz = np.roll(quat_xyzw, 1)   # if you need wxyz
+
+    return camera_position, quat_wxyz
+
+
+def set_cameras(object_position):
+    """
+    Convenience function to set up and start multiple cameras at once.
+    
+    Args:
+        cameras: List of Camera objects to start
+        enable_pcd: Whether to enable pointcloud publishing
+        topic_prefix: Prefix for ROS topics
+    """
+    import omni
+    from omni.isaac.core.utils.prims import is_prim_path_valid
+    from omni.isaac.sensor import Camera
+    cam_prim_path = "/World/camera"
+
+    cam_pos, rotation_quat = compute_camera_pose(
+        object_position=np.array(object_position),
+        offset=np.array([0.0, -0.4, 0.2]),     # tweak these as needed
+        up=np.array([0.0, 0.0, 1.0])
+    )
+
+    # Improved camera parameters - increased radius for better field of view
+    radius = 0.4       # Increased distance from 0.6 to 1.0
+    cam = Camera(
+                prim_path=cam_prim_path,
+                name="camera",
+                position=cam_pos.tolist(),
+                orientation=rotation_quat.tolist(),
+                resolution=[640, 480],
+            )
+            
+    # Set the camera's world pose
+    cam.set_world_pose(position=cam_pos.tolist(), 
+                       orientation=rotation_quat.tolist(), 
+                       camera_axes="usd")
+    
+    # Set clipping range
+    cam.set_clipping_range(0.01, 1000.0)
+    
+    # Set horizontal aperture for wider field of view
+    stage = omni.usd.get_context().get_stage()
+    camera_prim = stage.GetPrimAtPath(cam.prim_path)
+    if camera_prim:
+        camera_prim.GetAttribute("horizontalAperture").Set(36.0)  # 36mm is a wide-angle setting
+        camera_prim.GetAttribute("verticalAperture").Set(24.0)    # Maintain aspect ratio
+        camera_prim.GetAttribute("focalLength").Set(24.0)         # Standard focal length
+        camera_prim.GetAttribute("focusDistance").Set(radius)     # Focus at object distance
+    
+    
+    # Set up the multi-camera graph
+    setup_multi_camera_graph([cam])
+    
+    print(f"Started the camera")
+    return
+
+
+
+def setup_multi_camera_graph(
+    cameras: list,
+    graph_path: str = "/Graphs/MultiCameraROS",
+    tf_graph_path: str = "/Graphs/CameraTFActionGraph",
+    node_namespace: str = "",
+    topic_prefix: str = "",
+):
+    """
+    Creates a comprehensive OmniGraph that handles multiple cameras and publishes:
+    1) TF transforms for each camera
+    2) Camera Info for each camera
+    3) RGB Image for each camera
+    4) Depth Pointcloud for each camera
+    
+    Args:
+        cameras: List of Camera objects to add to the graph
+        graph_path: Path for the main camera data graph
+        tf_graph_path: Path for the transform graph
+        node_namespace: ROS namespace for the nodes
+        topic_prefix: Prefix to add to topic names
+        
+    Returns:
+        None
+    """
+    import time
+    import omni.graph.core as og
+    from omni.isaac.core.utils.prims import is_prim_path_valid
+    from omni.isaac.core_nodes.scripts.utils import set_target_prims
+    if len(cameras) == 0:
+        raise ValueError("No cameras provided. Please provide at least one camera.")
+    
+    # First, set up the TF graph if it doesn't exist yet
+    try:
+        # Check if the TF graph already exists
+        if not is_prim_path_valid(tf_graph_path):
+            # Create the base TF graph with clock
+            (ros_camera_graph, _, _, _) = og.Controller.edit(
+                {
+                    "graph_path": tf_graph_path,
+                    "evaluator_name": "execution",
+                    "pipeline_stage": og.GraphPipelineStage.GRAPH_PIPELINE_STAGE_SIMULATION,
+                },
+                {
+                    og.Controller.Keys.CREATE_NODES: [
+                        ("OnTick", "omni.graph.action.OnTick"),
+                        ("IsaacClock", "omni.isaac.core_nodes.IsaacReadSimulationTime"),
+                        ("RosPublisher", "omni.isaac.ros2_bridge.ROS2PublishClock"),
+                    ],
+                    og.Controller.Keys.CONNECT: [
+                        ("OnTick.outputs:tick", "RosPublisher.inputs:execIn"),
+                        ("IsaacClock.outputs:simulationTime", "RosPublisher.inputs:timeStamp"),
+                    ]
+                }
+            )
+        
+        # Add each camera to the TF graph
+        for camera in cameras:
+            camera_prim = camera.prim_path
+            if not is_prim_path_valid(camera_prim):
+                print(f"Warning: Camera path '{camera_prim}' is invalid. Skipping this camera for TF.")
+                continue
+                
+            camera_frame_id = camera_prim.split("/")[-1]
+            
+            # Check if this camera's TF nodes already exist
+            if not is_prim_path_valid(f"{tf_graph_path}/PublishTF_{camera_frame_id}"):
+                # Add camera-specific TF nodes
+                og.Controller.edit(
+                    tf_graph_path,
+                    {
+                        og.Controller.Keys.CREATE_NODES: [
+                            (f"PublishTF_{camera_frame_id}", "omni.isaac.ros2_bridge.ROS2PublishTransformTree"),
+                        ],
+                        og.Controller.Keys.SET_VALUES: [
+                            (f"PublishTF_{camera_frame_id}.inputs:topicName", "/tf"),
+                        ],
+                        og.Controller.Keys.CONNECT: [
+                            (f"{tf_graph_path}/OnTick.outputs:tick",
+                                f"PublishTF_{camera_frame_id}.inputs:execIn"),
+                            (f"{tf_graph_path}/IsaacClock.outputs:simulationTime",
+                                f"PublishTF_{camera_frame_id}.inputs:timeStamp"),
+                        ],
+                    },
+                )
+                
+                # Add target prims for the USD pose
+                set_target_prims(
+                    primPath=f"{tf_graph_path}/PublishTF_{camera_frame_id}",
+                    inputName="inputs:targetPrims",
+                    targetPrimPaths=[camera_prim],
+                )
+    except Exception as e:
+        print(f"Error setting up camera TF graph: {e}")
+    
+    # Now set up the main camera data graph if it doesn't exist
+    if not is_prim_path_valid(graph_path):
+        try:
+            # First create the base graph with common nodes
+            og.Controller.edit(
+                {
+                    "graph_path": graph_path, 
+                    "evaluator_name": "execution",
+                    "pipeline_stage": og.GraphPipelineStage.GRAPH_PIPELINE_STAGE_SIMULATION,
+                },
+                {
+                    og.Controller.Keys.CREATE_NODES: [
+                        ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
+                        ("RunOnce", "omni.isaac.core_nodes.OgnIsaacRunOneSimulationFrame"),
+                        ("Context", "omni.isaac.ros2_bridge.ROS2Context"),
+                    ],
+                    og.Controller.Keys.CONNECT: [
+                        ("OnPlaybackTick.outputs:tick", "RunOnce.inputs:execIn"),
+                    ],
+                }
+            )
+            
+            # Now add camera-specific nodes for each camera
+            for i, camera in enumerate(cameras):
+                camera_prim = camera.prim_path
+                if not is_prim_path_valid(camera_prim):
+                    print(f"Warning: Camera path '{camera_prim}' is invalid. Skipping this camera for data graph.")
+                    continue
+                
+                camera_frame_id = camera_prim.split("/")[-1]
+                camera_prefix = f"cam{i}"
+                
+                # Format topic names with prefix and camera index
+                rgb_topic = f"{topic_prefix}/{camera_prefix}/rgb"
+                depth_topic = f"{topic_prefix}/{camera_prefix}/depth"
+                depth_pcl_topic = f"{topic_prefix}/{camera_prefix}/depth_pcl"
+                camera_info_topic = f"{topic_prefix}/{camera_prefix}/camera_info"
+                
+                # Add camera-specific nodes
+                og.Controller.edit(
+                    graph_path,
+                    {
+                        og.Controller.Keys.CREATE_NODES: [
+                            (f"RenderProduct_{camera_prefix}", "omni.isaac.core_nodes.IsaacCreateRenderProduct"),
+                            (f"CameraInfo_{camera_prefix}", "omni.isaac.ros2_bridge.ROS2CameraInfoHelper"),
+                            (f"RGB_{camera_prefix}", "omni.isaac.ros2_bridge.ROS2CameraHelper"),
+                            (f"Depth_{camera_prefix}", "omni.isaac.ros2_bridge.ROS2CameraHelper"),
+                            (f"DepthPCL_{camera_prefix}", "omni.isaac.ros2_bridge.ROS2CameraHelper"),
+                        ],
+                        og.Controller.Keys.SET_VALUES: [
+                            (f"RenderProduct_{camera_prefix}.inputs:cameraPrim", camera_prim),
+                            
+                            (f"CameraInfo_{camera_prefix}.inputs:topicName", camera_info_topic),
+                            (f"CameraInfo_{camera_prefix}.inputs:frameId", camera_frame_id),
+                            (f"CameraInfo_{camera_prefix}.inputs:nodeNamespace", node_namespace),
+                            (f"CameraInfo_{camera_prefix}.inputs:resetSimulationTimeOnStop", True),
+                            
+                            (f"RGB_{camera_prefix}.inputs:topicName", rgb_topic),
+                            (f"RGB_{camera_prefix}.inputs:type", "rgb"),
+                            (f"RGB_{camera_prefix}.inputs:frameId", camera_frame_id),
+                            (f"RGB_{camera_prefix}.inputs:nodeNamespace", node_namespace),
+                            (f"RGB_{camera_prefix}.inputs:resetSimulationTimeOnStop", True),
+                            
+                            (f"Depth_{camera_prefix}.inputs:topicName", depth_topic),
+                            (f"Depth_{camera_prefix}.inputs:type", "depth"),
+                            (f"Depth_{camera_prefix}.inputs:frameId", camera_frame_id),
+                            (f"Depth_{camera_prefix}.inputs:nodeNamespace", node_namespace),
+                            (f"Depth_{camera_prefix}.inputs:resetSimulationTimeOnStop", True),
+                            
+                            (f"DepthPCL_{camera_prefix}.inputs:topicName", depth_pcl_topic),
+                            (f"DepthPCL_{camera_prefix}.inputs:type", "depth_pcl"),
+                            (f"DepthPCL_{camera_prefix}.inputs:frameId", camera_frame_id),
+                            (f"DepthPCL_{camera_prefix}.inputs:nodeNamespace", node_namespace),
+                            (f"DepthPCL_{camera_prefix}.inputs:resetSimulationTimeOnStop", True),
+                        ],
+                    }
+                )
+                
+                # Small delay to ensure nodes are fully created
+                time.sleep(0.1)
+                
+                # Verify that nodes exist before connecting
+                render_product_path = f"{graph_path}/RenderProduct_{camera_prefix}"
+                if not is_prim_path_valid(render_product_path):
+                    print(f"Warning: Node {render_product_path} was not created properly. Skipping connections for this camera.")
+                    continue
+                
+                # Add connections in a separate edit to ensure nodes exist first
+                og.Controller.edit(
+                    graph_path,
+                    {
+                        og.Controller.Keys.CONNECT: [
+                            # RunOnce -> RenderProduct
+                            (f"{graph_path}/RunOnce.outputs:step", f"{graph_path}/RenderProduct_{camera_prefix}.inputs:execIn"),
+                            
+                            # RenderProduct -> Helpers
+                            (f"{graph_path}/RenderProduct_{camera_prefix}.outputs:execOut", f"{graph_path}/CameraInfo_{camera_prefix}.inputs:execIn"),
+                            (f"{graph_path}/RenderProduct_{camera_prefix}.outputs:renderProductPath", f"{graph_path}/CameraInfo_{camera_prefix}.inputs:renderProductPath"),
+                            
+                            (f"{graph_path}/RenderProduct_{camera_prefix}.outputs:execOut", f"{graph_path}/RGB_{camera_prefix}.inputs:execIn"),
+                            (f"{graph_path}/RenderProduct_{camera_prefix}.outputs:renderProductPath", f"{graph_path}/RGB_{camera_prefix}.inputs:renderProductPath"),
+                            
+                            (f"{graph_path}/RenderProduct_{camera_prefix}.outputs:execOut", f"{graph_path}/Depth_{camera_prefix}.inputs:execIn"),
+                            (f"{graph_path}/RenderProduct_{camera_prefix}.outputs:renderProductPath", f"{graph_path}/Depth_{camera_prefix}.inputs:renderProductPath"),
+                            
+                            (f"{graph_path}/RenderProduct_{camera_prefix}.outputs:execOut", f"{graph_path}/DepthPCL_{camera_prefix}.inputs:execIn"),
+                            (f"{graph_path}/RenderProduct_{camera_prefix}.outputs:renderProductPath", f"{graph_path}/DepthPCL_{camera_prefix}.inputs:renderProductPath"),
+                            
+                            # Context -> Helpers
+                            (f"{graph_path}/Context.outputs:context", f"{graph_path}/CameraInfo_{camera_prefix}.inputs:context"),
+                            (f"{graph_path}/Context.outputs:context", f"{graph_path}/RGB_{camera_prefix}.inputs:context"),
+                            (f"{graph_path}/Context.outputs:context", f"{graph_path}/Depth_{camera_prefix}.inputs:context"),
+                            (f"{graph_path}/Context.outputs:context", f"{graph_path}/DepthPCL_{camera_prefix}.inputs:context"),
+                        ],
+                    }
+                )
+                
+        except Exception as e:
+            print(f"Error setting up camera data graph: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print(f"Graph at {graph_path} already exists. Using existing graph.")
+    
+    print(f"Successfully set up multi-camera graph for {len(cameras)} cameras")
+    return
+
+def numpy_to_pointcloud2(points_array, frame_id="panda_link0"):
+    """
+    Convert a numpy array of shape (N,4) with [x,y,z,rgb] to a ROS PointCloud2 message.
+    
+    Args:
+        points_array: Nx4 numpy array containing [x,y,z,rgb] for each point
+        frame_id: Frame ID for the pointcloud message
+        
+    Returns:
+        PointCloud2: ROS PointCloud2 message
+    """
+    from sensor_msgs.msg import PointCloud2, PointField
+    from std_msgs.msg import Header
+    import struct
+    
+    # Create header
+    header = Header()
+    header.frame_id = frame_id
+    
+    # Define the fields
+    fields = [
+        PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+        PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+        PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
+        PointField(name='rgb', offset=12, datatype=PointField.FLOAT32, count=1)
+    ]
+    
+    # Create the PointCloud2 message
+    cloud_msg = PointCloud2()
+    cloud_msg.header = header
+    cloud_msg.height = 1
+    cloud_msg.width = len(points_array)
+    cloud_msg.fields = fields
+    cloud_msg.is_bigendian = False
+    cloud_msg.point_step = 16  # 4 bytes per float, 4 fields
+    cloud_msg.row_step = cloud_msg.point_step * cloud_msg.width
+    cloud_msg.is_dense = True
+    
+    # Convert numpy array to bytes for message data
+    cloud_msg.data = points_array.astype(np.float32).tobytes()
+    
+    return cloud_msg
+
+def o3d_to_pointcloud2(pcd_o3d, frame_id="panda_link0"):
+    """
+    Convert an Open3D point cloud to a ROS PointCloud2 message.
+    
+    Args:
+        pcd_o3d: Open3D point cloud object
+        frame_id: Frame ID for the output message
+        
+    Returns:
+        PointCloud2: ROS PointCloud2 message
+    """
+    import sensor_msgs_py.point_cloud2 as pc2
+    from std_msgs.msg import Header
+    
+    # Get the points from the Open3D pointcloud
+    points = np.asarray(pcd_o3d.points)
+    
+    # Check if we have colors in the pointcloud
+    has_colors = hasattr(pcd_o3d, 'colors') and len(pcd_o3d.colors) > 0
+    
+    if has_colors:
+        # Convert colors from [0,1] to [0,255] and pack into a single float
+        colors = np.asarray(pcd_o3d.colors)
+        colors_uint32 = (colors * 255.0).astype(np.uint8)
+        # Create RGB packed values
+        rgb_packed = np.zeros(len(points), dtype=np.float32)
+        for i in range(len(points)):
+            rgb_packed[i] = struct.unpack('f', struct.pack('BBBB', 
+                                         colors_uint32[i, 0], 
+                                         colors_uint32[i, 1], 
+                                         colors_uint32[i, 2], 
+                                         0))[0]
+        
+        # Create array with both points and colors
+        point_data = np.column_stack((points, rgb_packed))
+        fields = [
+            PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
+            PointField(name='rgb', offset=12, datatype=PointField.FLOAT32, count=1)
+        ]
+    else:
+        # Just points, no color
+        point_data = points
+        fields = [
+            PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1)
+        ]
+    
+    # Create header
+    header = Header()
+    header.frame_id = frame_id
+    
+    # Create PointCloud2 message
+    cloud_msg = PointCloud2()
+    cloud_msg.header = header
+    cloud_msg.height = 1
+    cloud_msg.width = len(point_data)
+    cloud_msg.fields = fields
+    cloud_msg.is_bigendian = False
+    cloud_msg.point_step = 16 if has_colors else 12
+    cloud_msg.row_step = cloud_msg.point_step * cloud_msg.width
+    cloud_msg.is_dense = True
+    
+    # Add the data
+    cloud_msg.data = point_data.tobytes()
+    
+    return cloud_msg
+
+
 if __name__ == "__main__":
     # # # Example Usage
     # file_path = "/home/chris/Chris/placement_ws/src/data/pcd_0/pointcloud.pcd"
@@ -951,3 +1575,4 @@ if __name__ == "__main__":
     # filtered_cloud = filter_robot_bounding_box(cloud_world, robot_center, robot_size)
     # print("Original cloud size:", len(cloud_world))
     # print("Filtered cloud size:", len(filtered_cloud))
+

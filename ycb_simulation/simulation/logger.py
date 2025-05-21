@@ -5,9 +5,9 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 # Use the correct relative import path
-from ycb_simulation.utils.helper import SimSubscriber, process_tf_message, extract_replay_data
+from utils.helper import SimSubscriber, process_tf_message, extract_replay_data
 
-from ycb_simulation.simulation.simulator import YcbCollection
+from simulation.simulator import YcbCollection
 import numpy as np
 import glob
 import asyncio

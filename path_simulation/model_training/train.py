@@ -18,12 +18,32 @@ from model import PointNetEncoder
 import matplotlib.pyplot as plt
 import time
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.utils.data import Sampler
 torch.backends.cudnn.benchmark = True
 import torch
 
 # Enable TF32 tensor‐core acceleration on supported hardware:
 torch.set_float32_matmul_precision('high')
 
+class NumpyWeightedSampler(Sampler):
+    def __init__(self, weights, num_samples=None, seed=None):
+        self.weights = np.array(weights, dtype=np.float64)
+        self.probs = self.weights / self.weights.sum()
+        self.num_samples = num_samples or len(self.probs)
+        self.rs = np.random.RandomState(seed)
+
+    def __iter__(self):
+        idx = self.rs.choice(
+            len(self.probs),
+            size=self.num_samples,
+            replace=True,
+            p=self.probs
+        )
+        return iter(idx.tolist())
+
+    def __len__(self):
+        return self.num_samples
+    
 
 class Tee:
     """Duplicate stdout/stderr to console and a log file."""
@@ -46,8 +66,11 @@ class Tee:
 
 # Load point cloud
 def load_pointcloud(pcd_path, target_points=1024):
-    pcd = o3d.io.read_point_cloud(pcd_path)
-    points = np.asarray(pcd.points)
+    if type(pcd_path) == str:
+        pcd = o3d.io.read_point_cloud(pcd_path)
+        points = np.asarray(pcd.points)
+    else:
+        points = pcd_path
     
     # Convert to torch tensor for FPS
     points_tensor = torch.from_numpy(points).float().unsqueeze(0)  # [1, N, 3]
@@ -118,8 +141,8 @@ def main(dir_path):
     # ——— 2) Device & data splits —————————————————————————————
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"=== Training started on {device} ===")
-    train_data_json = os.path.join(dir_path, 'processed_data', 'train.json')
-    val_data_json = os.path.join(dir_path, 'processed_data', 'val.json')
+    train_data_json = os.path.join(dir_path, 'train.json')
+    val_data_json = os.path.join(dir_path, 'val.json')
     print(f"Loading train dataset from {train_data_json}...")
     print(f"Loading val dataset from {val_data_json}...")
 
@@ -147,9 +170,9 @@ def main(dir_path):
         np.save(weights_path, sample_weights)
         print(f"Saved sample_weights to {weights_path}")
 
-    sampler = WeightedRandomSampler(sample_weights, num_samples=N_train, replacement=True)
+    sampler = NumpyWeightedSampler(sample_weights, num_samples=N_train, seed=42)
     print("Done preparing sampler weights...")
-    epochs = 400
+    epochs = 300
 
     # ——— 4) DataLoaders —————————————————————————————————————rs
     train_loader = DataLoader(
@@ -165,7 +188,7 @@ def main(dir_path):
 
     # ——— 5) Static point‐cloud embedding ———————————————————————
     print("Computing static point-cloud embedding …")
-    pcd_path      = '/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/perfect_pointcloud.pcd'
+    pcd_path      = '/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/pointcloud_no_plane.pcd'
     object_pcd_np = load_pointcloud(pcd_path)
     object_pcd = torch.tensor(object_pcd_np, dtype=torch.float32).to(device)
     print(f"Loaded point cloud with {object_pcd.shape[0]} points...")
@@ -189,8 +212,10 @@ def main(dir_path):
         optimizer,
         max_lr=1e-3,
         total_steps=epochs * len(train_loader),
-        pct_start=0.1,
-        anneal_strategy='cos'
+        pct_start=0.3,
+        anneal_strategy='cos',
+        div_factor=25,
+        final_div_factor=10000
     )
 
     # ——— 7) History buckets & training loop —————————————————————
@@ -210,6 +235,7 @@ def main(dir_path):
     best_val_loss = float("inf")
 
     print("Start training...")
+
     for epoch in range(1, epochs+1):
         # Training
         model.train()
@@ -219,16 +245,15 @@ def main(dir_path):
         
         train_bar = tqdm(train_loader, desc=f"Epoch {epoch}/{epochs} [Train]", 
                          file=orig_stderr, leave=False)
-        for grasp, init, final, sl, cl, surfaces in train_bar:
+        for grasp, init, final, sl, cl in train_bar:
             grasp, init, final = [t.to(device, non_blocking=True)
                                   for t in (grasp, init, final)]
-            surfaces = surfaces.to(device)
             sl = sl.to(device).unsqueeze(1)
             cl = cl.to(device).unsqueeze(1)
 
             optimizer.zero_grad()
             with autocast(device_type='cuda'):
-                log_s, log_c = model(None, grasp, init, final, surfaces)
+                log_s, log_c = model(None, grasp, init, final)
                 loss_s = criterion(log_s, sl)
                 loss_c = criterion(log_c, cl)
                 loss   = loss_s + loss_c
@@ -296,14 +321,13 @@ def main(dir_path):
                        file=orig_stderr, leave=False)
         
         with torch.no_grad():
-            for grasp, init, final, sl, cl, surfaces in val_bar:
+            for grasp, init, final, sl, cl in val_bar:
                 grasp, init, final = [t.to(device, non_blocking=True)
                                       for t in (grasp, init, final)]
-                surfaces = surfaces.to(device)
                 sl    = sl.to(device).unsqueeze(1)
                 cl    = cl.to(device).unsqueeze(1)
 
-                log_s, log_c = model(None, grasp, init, final, surfaces)
+                log_s, log_c = model(None, grasp, init, final)
                 loss_s = criterion(log_s, sl)
                 loss_c = criterion(log_c, cl)
 
@@ -359,7 +383,7 @@ def main(dir_path):
         current_lr = optimizer.param_groups[0]['lr']
         print(f"Learning rate now: {current_lr:.6e}\n")
 
-        # save this epoch’s metrics
+        # save this epoch's metrics
         csv_path = os.path.join(log_dir, 'epoch_metrics.csv')
         write_header = not os.path.exists(csv_path)
         with open(csv_path, 'a') as csvf:
@@ -368,17 +392,18 @@ def main(dir_path):
             row = ','.join(f"{history[k][-1]:.4f}" for k in history) + '\n'
             csvf.write(row)
 
-        # save best‐model only
+        # save best-model only
         if val_total_loss < best_val_loss:
             best_val_loss = val_total_loss
             ckpt = os.path.join(model_dir, f"best_model_{best_val_loss:.4f}.pth".replace('.', '_'))
             torch.save(model.state_dict(), ckpt)
             print(f"→ Saved new best model: {os.path.basename(ckpt)}\n")
+        
 
     print("Training completed!")
     log_file.close()
 
-     # ——— 8) Post‐training plots —————————————————————————————
+     # ——— 8) Post-training plots —————————————————————————————
     save_plots(history, log_dir)
 
 
@@ -386,5 +411,5 @@ def main(dir_path):
 
 if __name__ == "__main__":
     # Paths
-    my_dir = "/media/chris/OS2/Users/24330/Desktop/placement_quality"
+    my_dir = "/home/chris/Chris/placement_ws/src/data/path_simulation"
     main(my_dir)

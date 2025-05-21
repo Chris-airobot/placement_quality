@@ -93,8 +93,8 @@ class GraspVisualizer(Node):
 
         # --- Load the PCD file ---
         # NOTE: Update the file path to your actual PCD file!
-        pcd_file = '/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/perfect_pointcloud.pcd'
-        grasps_file = "/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/grasp_generation/grasp_poses_v2.json"
+        pcd_file = '/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/pointcloud.pcd'
+        grasps_file = "/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/grasp_generation/tests.json"
         
         # Load the original PCD data once
         self.original_pcd = o3d.io.read_point_cloud(pcd_file)
@@ -198,7 +198,6 @@ class GraspVisualizer(Node):
             name=unique_name,
             position=pos,
             orientation=quat,
-            scale=[0.8, 0.8, 0.8]
         )
 
         self.scene.add(object)
