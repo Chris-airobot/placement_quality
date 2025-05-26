@@ -18,6 +18,7 @@ class GroundCollisionDetector:
         self.colliding_parts = set()  # Track which parts are colliding
         self.non_colliding_part = non_colliding_part
         self.ground_path = "/World/defaultGroundPlane/GroundPlane/CollisionPlane"
+        self.obstacle = "/World/CollisionGround"
         
     def create_virtual_ground(self, path="/World/VirtualGround", 
                               size_x=10.0, size_y=10.0, 
@@ -72,7 +73,8 @@ class GroundCollisionDetector:
             def report_hit(hit):         
                 # More flexible comparison approach
                 hit_path_str = str(hit.rigid_body)
-                if hit_path_str != self.non_colliding_part and hit_path_str != "/World/Ycb_object" and hit_path_str != self.ground_path:
+                if hit_path_str != self.non_colliding_part and hit_path_str != "/World/Ycb_object" and hit_path_str != self.ground_path\
+                    and hit_path_str != self.obstacle:
                     collision_detected[0] = True
                     self.colliding_parts.add(hit_path_str)
                     # print(f"Right now, the colliding parts are: {self.colliding_parts}")

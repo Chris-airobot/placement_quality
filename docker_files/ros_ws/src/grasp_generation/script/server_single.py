@@ -29,7 +29,7 @@ class Grasp:
         # Call the point cloud data service
         # self.left_scan = rospy.ServiceProxy("/left_scan", AssembleScans2)
  
-        self.grasp_process_timeout = rospy.Duration(5)
+        self.grasp_process_timeout = rospy.Duration(10)
         
         # Publish the point cloud data into topic that GPD package which receives the input
         self.grasps_pub = rospy.Publisher("/gpd_input", PointCloud2, queue_size=1)

@@ -75,6 +75,7 @@ class Simulator:
         self.controller = RRTController(
             name="RRT_controller",
             robot_articulation=self.robot,
+            ground_plane=self.task.ground_plane,
         )
         print(f"RRT Controller created")
 
@@ -87,7 +88,7 @@ class Simulator:
         self._add_light_to_stage()
         # if self.use_physics:
         #     self.controller._cspace_controller.add_obstacle(self.task.ground_plane, static=True)
-        self.controller.add_obstacle(self.task.ground_plane, static=True)
+        # self.controller.add_obstacle(self.task.ground_plane, static=True)
         # self.controller.add_obstacle(self.task._ycb, static=True)
 
         self.task.set_params(

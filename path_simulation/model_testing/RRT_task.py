@@ -2,19 +2,18 @@ from collections import OrderedDict
 from typing import List, Optional, Tuple
 
 import numpy as np
-from omni.isaac.core.objects import FixedCuboid, VisualCuboid
+from omni.isaac.core.objects import FixedCuboid, VisualCuboid, DynamicCuboid
 from omni.isaac.core.prims.xform_prim import XFormPrim
 from omni.isaac.core.scenes.scene import Scene
 from omni.isaac.core.tasks import BaseTask
 from omni.isaac.core.utils.prims import is_prim_path_valid
 from omni.isaac.core.utils.rotations import euler_angles_to_quat
-from omni.isaac.core.utils.stage import get_stage_units
+from omni.isaac.core.utils.stage import get_stage_units, add_reference_to_stage
 from omni.isaac.core.utils.string import find_unique_string_name
 from omni.isaac.franka import Franka
 from omni.isaac.nucleus import get_assets_root_path
-from omni.isaac.core.utils.stage import add_reference_to_stage
+
 from pxr import UsdPhysics
-ROOT_PATH = get_assets_root_path() + "/Isaac/Props/YCB/Axis_Aligned/"
 class RRTTask(BaseTask):
     def __init__(
         self,
@@ -49,7 +48,16 @@ class RRTTask(BaseTask):
         """
         super().set_up_scene(scene)
         if self.use_physics:
-            self.ground_plane = scene.add_default_ground_plane()
+            scene.add_default_ground_plane()
+
+            self.ground_plane = DynamicCuboid(
+                prim_path="/World/CollisionGround",
+                name="collision_ground",
+                position=np.array([0.0, 0.0, -0.0005]),  # Match your visual ground position
+                scale=np.array([20.0, 20.0, 0.001]),     # Match size and thickness
+                color=np.array([0.0, 0.0, 0.0])     # Make it invisible if you want (alpha=0)
+            )
+            scene.add(self.ground_plane)
 
         # Add the object to the scene
         self._ycb = self.set_ycb(name="ycb_object", prim_path="/World/Ycb_object", use_physics=self.use_physics)
@@ -110,6 +118,8 @@ class RRTTask(BaseTask):
             [type]: [description]
         """
         selected_object = "009_gelatin_box.usd"
+        ROOT_PATH = get_assets_root_path() + "/Isaac/Props/YCB/Axis_Aligned/"
+
         usd_path = ROOT_PATH + selected_object
 
         # Create the initial object.

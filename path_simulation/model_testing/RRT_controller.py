@@ -22,6 +22,7 @@ class RRTController(BaseController):
             self,
             name: str,
             robot_articulation: Articulation,
+            ground_plane: omni.isaac.core.objects,
             physics_dt: float = 1 / 60.0,
             rrt_interpolation_max_dist: float = 0.01,
         ):
@@ -44,9 +45,12 @@ class RRTController(BaseController):
             assert self._cspace_trajectory_generator._lula_kinematics.has_c_space_acceleration_limit(i)
             assert self._cspace_trajectory_generator._lula_kinematics.has_c_space_jerk_limit(i)
         
+        
         # Create a visualizer to visualize the path planner
         self._path_planner_visualizer = PathPlannerVisualizer(robot_articulation, rrt)
         self._path_planner: RRT = self._path_planner_visualizer.get_path_planner()
+        print(f"At this moment, the ground plane is {ground_plane}")
+        self._path_planner.add_obstacle(ground_plane, static=True)
 
         self._robot: Franka = self._path_planner_visualizer.get_robot_articulation() 
 
