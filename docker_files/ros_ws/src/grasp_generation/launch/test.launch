@@ -2,7 +2,7 @@
     <node name="detect_grasps" pkg="gpd_ros" type="detect_grasps" output="screen">
         <param name="cloud_type" value="0" />
         <param name="cloud_topic" value="/gpd_input" />
-        <param name="config_file" value="/home/ros_ws/src/grasp_generation/config/ros_eigen_params.cfg" />
+        <param name="config_file" value="/home/ros_ws/src/grasp_generation/config/ros_eigen_params_panda.cfg" />
         <param name="rviz_topic" value="plot_grasps" />
     </node>
  

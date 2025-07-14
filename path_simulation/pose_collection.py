@@ -46,7 +46,14 @@ from pxr import UsdPhysics
 ROOT_PATH = get_assets_root_path() + "/Isaac/Props/YCB/Axis_Aligned/"
 
 class PoseCollection:
-    def __init__(self, num_poses=1000, num_simultaneous=1000, output_file="/home/chris/Chris/placement_ws/src/object_poses_v2.json"):
+    def __init__(self, 
+                 num_poses=1000, 
+                 num_simultaneous=1000, 
+                 output_file="/home/chris/Chris/placement_ws/src/object_poses_v2.json",
+                 mode="ycb"):
+        
+        self.mode = mode
+        self.box_dims = np.array([0.143, 0.0915, 0.051])
         # Basic variables
         self.world = None
         self.scene = None
@@ -105,8 +112,8 @@ class PoseCollection:
         
         # Create the specified number of objects
         for i in range(self.num_simultaneous):
-            prim_path = f"/World/Ycb_object_{i}"
-            name = f"ycb_object_{i}"
+            prim_path = f"/World/Object_{i}"
+            name = f"object_{i}"
             
             unique_prim_path = find_unique_string_name(
                 initial_name=prim_path, is_unique_fn=lambda x: not is_prim_path_valid(x)
@@ -114,24 +121,35 @@ class PoseCollection:
             unique_name = find_unique_string_name(
                 initial_name=name, is_unique_fn=lambda x: not self.scene.object_exists(x)
             )
-            
-            usd_path = ROOT_PATH + self.object_name
-            
-            # Add reference to stage and get the prim
-            object_prim = add_reference_to_stage(usd_path=usd_path, prim_path=unique_prim_path)
-            
-            # Apply physics properties directly to the prim
-            UsdPhysics.RigidBodyAPI.Apply(object_prim)
-            UsdPhysics.CollisionAPI.Apply(object_prim)
-            
-            # Create the RigidPrim object after applying physics properties
-            obj = RigidPrim(
-                prim_path=unique_prim_path,
-                name=unique_name,
-                position=np.array([0, 0, 0]),
-                scale=[0.8, 0.8, 0.8]
-            )
-            
+            if self.mode == "ycb":
+                usd_path = ROOT_PATH + self.object_name
+                
+                # Add reference to stage and get the prim
+                object_prim = add_reference_to_stage(usd_path=usd_path, prim_path=unique_prim_path)
+                
+                # Apply physics properties directly to the prim
+                UsdPhysics.RigidBodyAPI.Apply(object_prim)
+                UsdPhysics.CollisionAPI.Apply(object_prim)
+                
+                # Create the RigidPrim object after applying physics properties
+                obj = RigidPrim(
+                    prim_path=unique_prim_path,
+                    name=unique_name,
+                    position=np.array([0, 0, 0]),
+                    scale=[0.8, 0.8, 0.8]
+                )
+
+            elif self.mode == "box":
+                from omni.isaac.core.objects import DynamicCuboid
+                obj = DynamicCuboid(
+                    prim_path=unique_prim_path,
+                    name=unique_name,
+                    position=np.array([0, 0, 0]),
+                    scale=self.box_dims.tolist(),  # [x, y, z]
+                    color=np.random.rand(3)  # Give each a random color if you want
+                )
+            else:
+                raise ValueError(f"Unsupported mode: {self.mode}")
             # Make sure physics is enabled
             obj.enable_rigid_body_physics()
             
@@ -365,11 +383,10 @@ class PoseCollection:
     
 
 
-def main(save_path):
+def main(save_path, mode="ycb"):
     # Adjust these parameters as needed
     simultaneous_objects = 72  # You can increase this based on your system's capabilities
-    
-    env = PoseCollection(num_poses=432, num_simultaneous=simultaneous_objects, output_file=save_path)
+    env = PoseCollection(num_poses=432, num_simultaneous=simultaneous_objects, output_file=save_path, mode=mode)
     env.start()
     
     poses_collected = 0
@@ -424,5 +441,6 @@ def main(save_path):
     simulation_app.close()
     
 if __name__ == "__main__":
-    output_path = "/home/chris/Chris/placement_ws/src/object_poses_test.json"
-    main(output_path)
+    output_path = "/home/chris/Chris/placement_ws/src/object_poses_box.json"
+    mode = "box"
+    main(output_path, mode)

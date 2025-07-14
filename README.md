@@ -91,3 +91,13 @@ For the robot in the lab, IP address is **192.168.1.209**, i.e. Type "192.168.1.
 7. Cluster usage:
 - Connections:
     - ssh tianyuanl@gandalf-dev.it.deakin.edu.au
+
+8. Ycb box dimensions:
+- use code
+  ```
+  prim = stage.GetPrimAtPath("/World/_09_gelatin_box")
+  bbox = UsdGeom.Boundable(prim).ComputeWorldBound(0.0, UsdGeom.Tokens.default_)
+  extent = bbox.GetRange()
+  print("Object size in meters:", extent.GetSize())
+  ```
+- The dimensions are: (0.0891, 0.0731, 0.0299)

@@ -147,7 +147,7 @@ def visualize_random_samples(data, output_dir, num=5):
     with open(path, "w") as f:
         for idx in np.random.choice(len(data), num, replace=False):
             s = data[idx]
-            f.write(f"Index {idx} | grasp: {s['grasp_pose']} | init: {s['initial_object_pose']} | final: {s['final_object_pose']} | surface: {s['surfaces']} | success: {s['success_label']} | collision: {s['collision_label']}\n")
+            f.write(f"Index {idx} | grasp: {s['grasp_pose']} | init: {s['initial_object_pose']} | final: {s['final_object_pose']}  | success: {s['success_label']} | collision: {s['collision_label']}\n")
     print("    → Saved random_samples.txt")
 
 def write_report(output_dir):
@@ -192,6 +192,120 @@ def write_report(output_dir):
         f.writelines(report)
     print(f"Analysis report saved to {os.path.join(output_dir, 'analysis_report.txt')}")
 
+def calculate_difficulty(new_case, reference_stats):
+    """Calculate difficulty score for a new case"""
+    
+    # How far is angular_distance from average? (higher = harder)
+    angular_deviation = (new_case["angular_distance"] - reference_stats['angular_avg']) / reference_stats['angular_std']
+    
+    # How far is joint_distance from average? (higher = harder)
+    joint_deviation = (new_case["joint_distance"] - reference_stats['joint_avg']) / reference_stats['joint_std']
+    
+    # How far is manipulability from average? (lower = harder, so flip the sign)
+    manip_deviation = -(new_case["manipulability"] - reference_stats['manip_avg']) / reference_stats['manip_std']
+    
+    # Surface transition difficulty (you can adjust these values)
+    transition_scores = {
+        'adjacent': 0.5,    # Medium difficulty
+        'opposite': 1.0,    # Hardest
+        'same': 0.0,        # Easiest
+        # Add other types as needed
+    }
+    surface_score = transition_scores.get(new_case["surface_transition_type"], 0.5)
+    
+    # Combine them (normalize surface score to similar scale)
+    difficulty = (angular_deviation + joint_deviation + manip_deviation + surface_score) / 4
+    
+    return difficulty
+
+def analyze_difficulty_simple(data, output_dir):
+    print("[7/7] Analyzing difficulty metrics...")
+    
+    # Step 1: Filter out cases with missing values and calculate reference statistics
+    valid_data = []
+    for sample in data:
+        if (sample.get("angular_distance") is not None and 
+            sample.get("joint_distance") is not None and 
+            sample.get("manipulability") is not None):
+            valid_data.append(sample)
+    
+    print(f"    → Found {len(valid_data)} valid samples out of {len(data)} total")
+    
+    if len(valid_data) == 0:
+        print("    → No valid samples found! Check your data format.")
+        return
+    
+    angular_distances = [s["angular_distance"] for s in valid_data]
+    joint_distances = [s["joint_distance"] for s in valid_data]
+    manipulabilities = [s["manipulability"] for s in valid_data]
+    
+    reference_stats = {
+        'angular_avg': np.mean(angular_distances),
+        'angular_std': np.std(angular_distances),
+        'joint_avg': np.mean(joint_distances),
+        'joint_std': np.std(joint_distances),
+        'manip_avg': np.mean(manipulabilities),
+        'manip_std': np.std(manipulabilities)
+    }
+    
+    print(f"    → Reference stats calculated:")
+    print(f"      Angular: avg={reference_stats['angular_avg']:.3f}, std={reference_stats['angular_std']:.3f}")
+    print(f"      Joint: avg={reference_stats['joint_avg']:.3f}, std={reference_stats['joint_std']:.3f}")
+    print(f"      Manip: avg={reference_stats['manip_avg']:.3f}, std={reference_stats['manip_std']:.3f}")
+    
+    # Step 2: Calculate difficulty for each valid case
+    difficulties = []
+    for sample in valid_data:
+        difficulty = calculate_difficulty(sample, reference_stats)
+        difficulties.append(difficulty)
+    
+    # Step 3: Save reference stats for future use
+    with open(os.path.join(output_dir, "difficulty_reference_stats.json"), "w") as f:
+        json.dump(reference_stats, f, indent=2)
+    
+    # Step 4: Add difficulty scores to valid data
+    for i, sample in enumerate(valid_data):
+        sample['difficulty_score'] = difficulties[i]
+    
+    # Step 5: Save updated data
+    with open(os.path.join(output_dir, "data_with_difficulty.json"), "w") as f:
+        json.dump(valid_data, f, indent=2)
+    
+    # Step 6: Analyze difficulty distribution
+    difficulties = np.array(difficulties)
+    stats = {
+        "mean_difficulty": float(difficulties.mean()),
+        "std_difficulty": float(difficulties.std()),
+        "min_difficulty": float(difficulties.min()),
+        "max_difficulty": float(difficulties.max()),
+        "percentiles": {
+            "25": float(np.percentile(difficulties, 25)),
+            "50": float(np.percentile(difficulties, 50)),
+            "75": float(np.percentile(difficulties, 75)),
+            "90": float(np.percentile(difficulties, 90))
+        }
+    }
+    
+    with open(os.path.join(output_dir, "difficulty_stats.json"), "w") as f:
+        json.dump(stats, f, indent=2)
+    
+    # Step 7: Plot difficulty distribution
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.hist(difficulties, bins=50, alpha=0.7, color='blue')
+    ax.axvline(difficulties.mean(), color='red', linestyle='--', label=f'Mean: {difficulties.mean():.3f}')
+    ax.axvline(np.percentile(difficulties, 75), color='orange', linestyle='--', label=f'75th percentile: {np.percentile(difficulties, 75):.3f}')
+    ax.set_xlabel('Difficulty Score')
+    ax.set_ylabel('Count')
+    ax.set_title('Difficulty Distribution')
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "difficulty_distribution.png"))
+    plt.close()
+    
+    print(f"    → Saved difficulty scores. Average difficulty: {difficulties.mean():.3f}")
+    print(f"    → Reference stats saved for future use")
+    print(f"    → Difficulty range: {difficulties.min():.3f} to {difficulties.max():.3f}")
+
 def data_analysis(data_path, output_dir):
     ensure_dir(output_dir)
     print(f"Loading data from {data_path}...")
@@ -203,13 +317,21 @@ def data_analysis(data_path, output_dir):
     analyze_pose_distributions(data, output_dir)
     analyze_grasp_pose_variance(data, output_dir)
     analyze_orientation_change_vs_success(data, output_dir)
-    analyze_surface_transitions(data, output_dir)
+    # analyze_surface_transitions(data, output_dir)
     visualize_random_samples(data, output_dir)
     write_report(output_dir)
+    analyze_difficulty_simple(data, output_dir)
 
 if __name__ == "__main__":
-    folder = "/media/chris/OS2/Users/24330/Desktop/placement_quality/unseen"
-    data_path = os.path.join(folder, "all_data.json")
+    folder = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2"
+    data_path = os.path.join(folder, "combined_data/labeled_test_data_full_fixed.json")
     output_path = os.path.join(folder, "analysis")
 
-    data_analysis(data_path, output_path)
+    # Load the data first
+    print(f"Loading data from {data_path}...")
+    with open(data_path) as f:
+        data = json.load(f)
+    print(f"Loaded {len(data)} samples.")
+
+    # data_analysis(data_path, output_path)
+    analyze_difficulty_simple(data, output_path)

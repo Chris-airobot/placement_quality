@@ -10,28 +10,41 @@ def all_data(data_path, output_path):
     os.makedirs(output_path, exist_ok=True)
     
     files = sorted(glob.glob(os.path.join(data_path, "processed_*.json")))
-    all_data = []
+    
+    # Write to file incrementally instead of loading everything into memory
+    output_file = os.path.join(output_path, "all_data.json")
+    
+    print("Writing all_data.json incrementally...")
+    with open(output_file, "w") as f:
+        f.write("[\n")  # Start JSON array
+        
+        first_file = True
+        for file in tqdm(files, desc="Processing files"):
+            with open(file, "r") as data_f:
+                data = json.load(data_f)
 
-    for file in tqdm(files):
-        with open(file, "r") as f:
-            data = json.load(f)
-
-        # Make sure all keys have the same length
-        num_samples = len(data["grasp_poses"])
-        for i in range(num_samples):
-            sample = {
-                "grasp_pose": data["grasp_poses"][i],
-                "initial_object_pose": data["initial_object_poses"][i],
-                "final_object_pose": data["final_object_poses"][i],
-                "success_label": data["success_labels"][i],
-                "collision_label": data["collision_labels"][i],
-            }
-            all_data.append(sample)
-
-    # Save combined list
-    print("Writing all_data.json...")
-    with open(os.path.join(output_path, "all_data.json"), "w") as f:
-        json.dump(all_data, f)
+            # Process each sample in the file
+            num_samples = len(data["grasp_poses"])
+            for i in range(num_samples):
+                sample = {
+                    "grasp_pose": data["grasp_poses"][i],
+                    "initial_object_pose": data["initial_object_poses"][i],
+                    "final_object_pose": data["final_object_poses"][i],
+                    "success_label": data["success_labels"][i],
+                    "collision_label": data["collision_labels"][i],
+                }
+                
+                # Add comma separator between samples
+                if not first_file:
+                    f.write(",\n")
+                else:
+                    first_file = False
+                
+                # Write the sample
+                f.write(json.dumps(sample))
+        
+        f.write("\n]")  # End JSON array
+    
     print("Finished writing.")
 
 
@@ -48,11 +61,11 @@ def split_all_data(all_data_path: str,
     assert abs(train_frac + val_frac + test_frac - 1.0) < 1e-6, "Fractions must sum to 1"
     os.makedirs(all_data_path, exist_ok=True)
 
-    # 1) Load full list
+    # 1) Count total samples first
     with open(all_data_path+"/all_data.json", 'r') as f:
         data = json.load(f)
     N = len(data)
-    print(f"Loaded {N} samples from {all_data_path}")
+    print(f"Found {N} samples in {all_data_path}")
 
     # 2) Shuffle indices
     indices = list(range(N))
@@ -62,33 +75,63 @@ def split_all_data(all_data_path: str,
     # 3) Compute split sizes
     n_train = int(N * train_frac)
     n_val   = int(N * val_frac)
-    # remainder goes to test
     n_test  = N - n_train - n_val
     print(f"Splitting into {n_train} train / {n_val} val / {n_test} test samples")
 
-    # 4) Partition indices
-    train_idxs = indices[:n_train]
-    val_idxs   = indices[n_train:n_train + n_val]
-    test_idxs  = indices[n_train + n_val:]
+    # 4) Create sets for fast lookup
+    train_idxs = set(indices[:n_train])
+    val_idxs   = set(indices[n_train:n_train + n_val])
+    test_idxs  = set(indices[n_train + n_val:])
 
+    # 5) Process and write incrementally
     splits = {
         'train.json': train_idxs,
         'val.json':   val_idxs,
         'test.json':  test_idxs
     }
 
-    # 5) Write out each split
+    # Open all output files
+    split_files = {}
     for fname, idxs in splits.items():
         out_path = os.path.join(all_data_path, fname)
-        with open(out_path, 'w') as out_f:
-            # write only the selected samples
-            subset = [data[i] for i in idxs]
-            json.dump(subset, out_f)
-        print(f"Wrote {len(idxs)} samples → {out_path}")
+        split_files[fname] = open(out_path, 'w')
+        split_files[fname].write("[\n")  # Start JSON array
+
+    # Process each sample and write to appropriate file
+    first_samples = {'train.json': True, 'val.json': True, 'test.json': True}
     
+    for i, sample in enumerate(data):
+        if i in train_idxs:
+            if not first_samples['train.json']:
+                split_files['train.json'].write(",\n")
+            else:
+                first_samples['train.json'] = False
+            split_files['train.json'].write(json.dumps(sample))
+        elif i in val_idxs:
+            if not first_samples['val.json']:
+                split_files['val.json'].write(",\n")
+            else:
+                first_samples['val.json'] = False
+            split_files['val.json'].write(json.dumps(sample))
+        elif i in test_idxs:
+            if not first_samples['test.json']:
+                split_files['test.json'].write(",\n")
+            else:
+                first_samples['test.json'] = False
+            split_files['test.json'].write(json.dumps(sample))
+
+    # Close all files and add closing brackets
+    for fname, f in split_files.items():
+        f.write("\n]")  # End JSON array
+        f.close()
+        print(f"Wrote {len(splits[fname])} samples → {os.path.join(all_data_path, fname)}")
+
 
 # Load data from JSON files
 def load_data_from_json(data_path, output_path):
+    # Create the output directory if it doesn't exist
+    os.makedirs(output_path, exist_ok=True)
+    
     output = {}
     json_files = sorted(glob.glob(os.path.join(data_path, "data_*.json")))
     # json_files.extend(sorted(glob.glob(os.path.join(data_path, "data_1.json"))))
@@ -238,13 +281,13 @@ def extract_data_from_json(data_path, output_path, samples_per_category: int = 2
 
 if __name__ == "__main__":
     # Step 1: Load raw data into the processed individual files
-    raw_data_path = "/home/chris/Chris/placement_ws/src/data/path_simulation/raw_data_v1"
-    processed_data_path = "/home/chris/Chris/placement_ws/src/data/path_simulation/processed_data"
-    load_data_from_json(raw_data_path, processed_data_path)
+    raw_data_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/filtered_data"
+    processed_data_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/processed_data"
+    # load_data_from_json(raw_data_path, processed_data_path)
     
     # Step 2: Combine all the processed files into one
-    combined_data_path = "/home/chris/Chris/placement_ws/src/data/path_simulation"
-    all_data(processed_data_path, combined_data_path)
+    combined_data_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/combined_data"
+    # all_data(processed_data_path, combined_data_path)
 
     # Step 3: Split the combined data into train, val, test
     split_all_data(combined_data_path)

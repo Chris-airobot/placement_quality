@@ -19,18 +19,14 @@ class GroundCollisionDetector:
         self.non_colliding_part = non_colliding_part
         self.ground_path = "/World/defaultGroundPlane/GroundPlane/CollisionPlane"
         self.obstacle = "/World/CollisionGround"
-        self.pedestal = "/World/Pedestal_view"
-        self.box_path = "/World/Ycb_object"
+        self.pedestal = "/World/Pedestal"
         self.excluded_paths = {
             non_colliding_part,
             "/World/Ycb_object",
             "/World/defaultGroundPlane/GroundPlane/CollisionPlane",
             "/World/CollisionGround",
-            "/World/Pedestal_view",
-            "/World/PreviewBox",
-            "/World/Pedestal",
+            "/World/Pedestal"
         }
-        # Note: Box path is NOT excluded - we want to detect collisions with the box
         
     def create_virtual_ground(self, path="/World/VirtualGround", 
                               size_x=10.0, size_y=10.0, 
@@ -55,9 +51,7 @@ class GroundCollisionDetector:
         
         return self.stage.GetPrimAtPath(path)
     
-
-
-    def create_virtual_pedestal(self, path="/World/Pedestal_view", 
+    def create_virtual_pedestal(self, path="/World/Pedestal", 
                                 radius=0.08, height=0.10,
                                 position=Gf.Vec3f(0.2, -0.3, 0.05),
                                 color=Gf.Vec3f(0.6, 0.6, 0.6)):
@@ -67,6 +61,7 @@ class GroundCollisionDetector:
         pedestal_geom.AddTranslateOp().Set(position)
         pedestal_geom.CreateDisplayColorAttr().Set([color])
         return self.stage.GetPrimAtPath(path)
+
     
     def is_colliding_with_ground(self, robot_part_path):
         """
@@ -103,7 +98,7 @@ class GroundCollisionDetector:
                 if hit_path_str not in self.excluded_paths:
                     collision_detected[0] = True
                     self.colliding_parts.add(hit_path_str)
-                    print(f"Right now, the colliding parts are: {self.colliding_parts}")
+                    # print(f"Right now, the colliding parts are: {self.colliding_parts}")
                     
                     # Change the color of the virtual ground instead of the robot parts
                     try:
@@ -160,7 +155,6 @@ class GroundCollisionDetector:
                 hit_path_str = str(hit.rigid_body)
                 # Exclude the pedestal itself, and (optionally) other exclusions
                 if hit_path_str not in self.excluded_paths:
-                    print(f"hitted part: {hit_path_str}")
                     collision_detected[0] = True
                     self.colliding_parts.add(hit_path_str)
                     # Optional: change pedestal color if you want visual feedback
@@ -196,103 +190,41 @@ class GroundCollisionDetector:
             print(f"Error in mesh overlap detection (pedestal): {e}")
             return False
 
-    def is_colliding_with_box(self, robot_part_path):
-        """
-        Check if a robot part mesh is colliding with the box object using mesh overlap.
-        Returns True if collision detected, False otherwise.
-        """
-        if not self.box_path:
-            print("Box path not specified.")
-            return False
 
-        scene_query = get_physx_scene_query_interface()
 
-        try:
-            path_tuple = PhysicsSchemaTools.encodeSdfPath(Sdf.Path(self.box_path))
-            collision_detected = [False]
 
-            def report_hit(hit):
-                hit_path_str = str(hit.rigid_body)
-                # Check all robot parts for collision with the box
-                # Exclude the box itself and other non-robot parts
-                if hit_path_str not in self.excluded_paths:
-                    collision_detected[0] = True
-                    self.colliding_parts.add(hit_path_str)
-                return True
 
-            num_hits = scene_query.overlap_shape(
-                path_tuple[0],
-                path_tuple[1],
-                report_hit,
-                False
-            )
 
-            return collision_detected[0]
 
-        except Exception as e:
-            print(f"Error in mesh overlap detection (box): {e}")
-            return False
 
-    def is_object_colliding_with_pedestal(self):
-        """
-        Check if the object is colliding with the pedestal using mesh overlap.
-        This is specifically for detecting when the grasped object hits the pedestal.
-        Returns True if collision detected, False otherwise.
-        """
-        if not self.box_path or not self.pedestal:
-            print("Box path or pedestal not specified.")
-            return False
 
-        scene_query = get_physx_scene_query_interface()
 
-        try:
-            # Use the pedestal as the query shape to check for overlaps with the object
-            path_tuple = PhysicsSchemaTools.encodeSdfPath(Sdf.Path(self.pedestal))
-            collision_detected = [False]
-
-            def report_hit(hit):
-                hit_path_str = str(hit.rigid_body)
-                # Check if the object is colliding with the pedestal
-                if hit_path_str == self.box_path:
-                    collision_detected[0] = True
-                    print(f"hit path: {hit_path_str}")
-                    print(f"⚠️ Object collision with pedestal detected!")
-                    # Optional: change pedestal color for visual feedback
-                    try:
-                        from pxr import UsdGeom, Gf
-                        pedestal_geom = UsdGeom.Cylinder(self.stage.GetPrimAtPath(self.pedestal))
-                        if pedestal_geom:
-                            pedestal_geom.CreateDisplayColorAttr().Set([Gf.Vec3f(1.0, 0.0, 0.0)])  # Red
-                    except Exception as e:
-                        print(f"Error changing pedestal color: {e}")
-                return True
-
-            num_hits = scene_query.overlap_shape(
-                path_tuple[0],
-                path_tuple[1],
-                report_hit,
-                False
-            )
-
-            # Reset pedestal color if no collision
-            if not collision_detected[0]:
-                try:
-                    from pxr import UsdGeom, Gf
-                    pedestal_geom = UsdGeom.Cylinder(self.stage.GetPrimAtPath(self.pedestal))
-                    if pedestal_geom:
-                        pedestal_geom.CreateDisplayColorAttr().Set([Gf.Vec3f(0.6, 0.6, 0.6)])  # Default gray
-                except Exception as e:
-                    print(f"Error resetting pedestal color: {e}")
-
-            return collision_detected[0]
-
-        except Exception as e:
-            print(f"Error in object-pedestal collision detection: {e}")
-            return False
-
+    
     def is_any_part_colliding(self, robot_parts_paths):
         """
         Check if any part of the robot is colliding with the virtual ground.
         """
         return any(self.is_colliding_with_ground(part) for part in robot_parts_paths)
 
+
+# Example usage:
+"""
+# Setup the stage
+stage = omni.usd.get_context().get_stage()
+
+# Create the detector
+detector = GroundCollisionDetector(stage)
+
+# Create a virtual ground
+detector.create_virtual_ground(size_x=20.0, size_y=20.0, position=Gf.Vec3f(0, 0, -0.0005))
+
+# In your simulation loop
+robot_path = "/World/Robot"
+if detector.is_colliding_with_ground(robot_path):
+    print("Robot is colliding with ground!")
+
+# Check multiple parts
+robot_parts = ["/World/Robot/Base", "/World/Robot/Arm1", "/World/Robot/Gripper"]
+if detector.is_any_part_colliding(robot_parts):
+    print("At least one robot part is colliding with ground!")
+"""

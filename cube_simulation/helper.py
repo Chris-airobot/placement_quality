@@ -467,30 +467,7 @@ def draw_frame(
 
     # Draw the three axes.
     draw.draw_lines(start_points, end_points, colors, sizes)
-    # print(f"position: {position}")
-    # print(f"orientation: {orientation}")
-    # if world is not None:
-    #     from omni.isaac.core.objects import VisualCuboid
-    #     cube = world.scene.add(
-    #             VisualCuboid(
-    #                 name="test",
-    #                 position=position,
-    #                 orientation=orientation,
-    #                 prim_path="/World/test",
-    #                 scale=[0.1, 0.1, 0.1],
-    #                 size=1.0,
-    #                 color=np.array([0, 0, 1]),
-    #             )
-    #         )
 
-    
-
-
-
-
-
-
-# def draw_axis(position, orientation, world):
     
 
 
@@ -579,7 +556,7 @@ def filter_points_in_bounding_box(points, box_center, box_size):
     return points[~inside_mask]
 
 
-def process_pointcloud(msg: PointCloud2) -> np.ndarray:
+def process_pointcloud(msg: PointCloud2, height_offset: float = 0.0) -> np.ndarray:
     """
     Saves a ROS PointCloud2 (with x,y,z,[rgb]) to an ASCII PCD file.
     The file includes a voxel-based downsampling step to reduce size.
@@ -630,7 +607,7 @@ def process_pointcloud(msg: PointCloud2) -> np.ndarray:
     # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
     # --- NEW: remove ground plane at z≈0 ---
-    ground_height    = 0.0     # floor plane height in world frame
+    ground_height    = 0.0 + height_offset     # floor plane height in world frame
     ground_tolerance = 0.01    # 1cm above the floor
     # keep only points strictly above the floor plane + tolerance
     mask = points_filtered[:, 2] > (ground_height + ground_tolerance)

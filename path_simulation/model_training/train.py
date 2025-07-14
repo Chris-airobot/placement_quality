@@ -141,12 +141,12 @@ def main(dir_path):
     # ——— 2) Device & data splits —————————————————————————————
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"=== Training started on {device} ===")
-    train_data_json = os.path.join(dir_path, 'train.json')
-    val_data_json = os.path.join(dir_path, 'val.json')
+    train_data_json = os.path.join(dir_path, 'combined_data/train.json')
+    val_data_json = os.path.join(dir_path, 'combined_data/val.json')
     print(f"Loading train dataset from {train_data_json}...")
-    print(f"Loading val dataset from {val_data_json}...")
-
     train_dataset = KinematicFeasibilityDataset(train_data_json)
+
+    print(f"Loading val dataset from {val_data_json}...")
     val_dataset = KinematicFeasibilityDataset(val_data_json)
     N_train = len(train_dataset); print(f"  → {N_train} train samples")
     N_val = len(val_dataset); print(f"  → {N_val}   val samples\n")
@@ -188,7 +188,7 @@ def main(dir_path):
 
     # ——— 5) Static point‐cloud embedding ———————————————————————
     print("Computing static point-cloud embedding …")
-    pcd_path      = '/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/pointcloud_no_plane.pcd'
+    pcd_path      = '/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/perfect_cube.pcd'
     object_pcd_np = load_pointcloud(pcd_path)
     object_pcd = torch.tensor(object_pcd_np, dtype=torch.float32).to(device)
     print(f"Loaded point cloud with {object_pcd.shape[0]} points...")
@@ -205,7 +205,7 @@ def main(dir_path):
     model = torch.compile(model)
     scaler = GradScaler(init_scale=2**16, growth_interval=2000, device=device)
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
 
     from torch.optim.lr_scheduler import OneCycleLR
     scheduler = OneCycleLR(
@@ -233,6 +233,8 @@ def main(dir_path):
     ]}
 
     best_val_loss = float("inf")
+    patience = 30
+    no_improve = 0
 
     print("Start training...")
 
@@ -256,7 +258,9 @@ def main(dir_path):
                 log_s, log_c = model(None, grasp, init, final)
                 loss_s = criterion(log_s, sl)
                 loss_c = criterion(log_c, cl)
-                loss   = loss_s + loss_c
+                alpha = 0.5  # You can adjust this weight based on your preference
+                beta = 0.5  # You can adjust this weight based on your preference
+                loss = alpha * loss_s + beta * loss_c
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)  
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -395,10 +399,16 @@ def main(dir_path):
         # save best-model only
         if val_total_loss < best_val_loss:
             best_val_loss = val_total_loss
+            no_improve = 0
             ckpt = os.path.join(model_dir, f"best_model_{best_val_loss:.4f}.pth".replace('.', '_'))
             torch.save(model.state_dict(), ckpt)
             print(f"→ Saved new best model: {os.path.basename(ckpt)}\n")
+        else:
+            no_improve += 1
         
+        if no_improve >= patience:
+            print(f"Early stopping at epoch {epoch}")
+            break
 
     print("Training completed!")
     log_file.close()
@@ -406,10 +416,20 @@ def main(dir_path):
      # ——— 8) Post-training plots —————————————————————————————
     save_plots(history, log_dir)
 
+    # Find optimal threshold on validation set
+    thresholds = np.arange(0.1, 0.9, 0.05)
+    best_f1 = 0
+    best_threshold = 0.5
+    for thresh in thresholds:
+        # evaluate with threshold
+        if val_f1_s > best_f1:
+            best_f1 = val_f1_s
+            best_threshold = thresh
+
 
 
 
 if __name__ == "__main__":
     # Paths
-    my_dir = "/home/chris/Chris/placement_ws/src/data/path_simulation"
+    my_dir = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2"
     main(my_dir)

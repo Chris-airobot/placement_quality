@@ -1161,6 +1161,7 @@ def pcd_processing_visualization(input_path="/home/chris/Chris/placement_ws/src/
 
 
 def transform_relative_pose(grasp_pose, relative_translation, relative_rotation=None):
+
     from pyquaternion import Quaternion
     """
     Transforms a grasp pose using a relative transformation.

@@ -2,7 +2,8 @@ from collections import OrderedDict
 from typing import List, Optional, Tuple
 
 import numpy as np
-from omni.isaac.core.objects import FixedCuboid, VisualCuboid, DynamicCuboid
+import omni
+from omni.isaac.core.objects import FixedCuboid, VisualCuboid, DynamicCuboid, FixedCylinder
 from omni.isaac.core.prims.xform_prim import XFormPrim
 from omni.isaac.core.scenes.scene import Scene
 from omni.isaac.core.tasks import BaseTask
@@ -12,8 +13,12 @@ from omni.isaac.core.utils.stage import get_stage_units, add_reference_to_stage
 from omni.isaac.core.utils.string import find_unique_string_name
 from omni.isaac.franka import Franka
 from omni.isaac.nucleus import get_assets_root_path
+from omni.isaac.core.objects import VisualCylinder
 
-from pxr import UsdPhysics
+from pxr import UsdPhysics, Usd, UsdGeom, Gf
+
+PEDESTAL_SIZE = np.array([0.08, 0.10])   # radius, height in meters
+
 class RRTTask(BaseTask):
     def __init__(
         self,
@@ -32,12 +37,21 @@ class RRTTask(BaseTask):
         self._ycb = None
         self._ycb_prim_path = None
         self._frame = None
+        self.box_dims = np.array([0.143, 0.0915, 0.051])
         self._ycb_initial_position = initial_position
         self._ycb_initial_orientation = initial_orientation
         self._ycb_target_position = target_position
         self._ycb_target_orientation = target_orientation
         self._obstacle_walls = OrderedDict()
         self.ground_plane = None
+
+        # Pedestal params
+        self.pedestal_radius = 0.08  # meters
+        self.pedestal_height = 0.10  # meters
+
+        # Place the pedestal so its top is at z=0 (i.e., flush with ground)
+        self.pedestal_center_z = self.pedestal_height / 2
+
         return
 
     def set_up_scene(self, scene: Scene) -> None:
@@ -59,17 +73,72 @@ class RRTTask(BaseTask):
             )
             scene.add(self.ground_plane)
 
+    
+
         # Add the object to the scene
-        self._ycb = self.set_ycb(name="ycb_object", prim_path="/World/Ycb_object", use_physics=self.use_physics)
+        self._ycb = self.set_ycb(name="ycb_object", 
+                                 prim_path="/World/Ycb_object", 
+                                 use_physics=True)
         scene.add(self._ycb)
 
-        # Add the target to the scene
-        # self._target = self.set_ycb(name="target_object", prim_path="/World/Target_object")
-        # scene.add(self._target)
+        
 
         # Add the robot to the scene
         self._robot = self.set_robot()
         scene.add(self._robot)
+
+
+        # Add the visual object:
+        placement_pos = np.array([300000, 0.2, 0.1])         # [x, y, z] in meters
+        placement_quat = np.array([0, 0, 0, 1])           # [x, y, z, w]
+
+        self.preview_box = VisualCuboid(
+                prim_path="/World/PreviewBox",
+                name="preview_box",
+                position=placement_pos,
+                orientation=placement_quat,
+                scale=self.box_dims,  # Match your YCB object size
+                color=np.array([0.0, 1.0, 0.0])
+        )
+        scene.add(self.preview_box)
+
+        self.pedestal = FixedCylinder(
+            prim_path="/World/Pedestal",
+            name="pedestal",
+            position=np.array([0.2, -0.3, 0.05]),
+            radius=0.08,
+            height=0.10,
+            color=np.array([0.6, 0.6, 0.6])
+        )
+
+        scene.add(self.pedestal)
+
+
+
+
+        # # ---- Invisible box for path planning ----
+        # self.pedestal_planner_box = FixedCuboid(
+        #     prim_path="/World/PedestalPlanningObstacle",
+        #     name="pedestal_planning_obstacle",
+        #     position=np.array([0.2, -0.3, 0.05]),    # same center as cylinder
+        #     scale=np.array([0.1, 0.1, 0.10]),      # box size: X=Y=diameter, Z=height
+        #     color=np.array([0, 0, 0])                # black (but we will make it invisible below)
+        # )
+        # scene.add(self.pedestal_planner_box)
+
+        # # REMOVE PHYSICS/COLLISION so it's invisible for physics
+        # stage = omni.usd.get_context().get_stage()
+        # prim = stage.GetPrimAtPath("/World/PedestalPlanningObstacle")
+        # if prim.IsValid():
+        #     UsdPhysics.CollisionAPI(prim).GetPrim().RemoveAPI(UsdPhysics.CollisionAPI)
+        #     UsdPhysics.RigidBodyAPI(prim).GetPrim().RemoveAPI(UsdPhysics.RigidBodyAPI)
+
+        # # Make the box invisible (if not already)
+        # self.set_prim_color("/World/PedestalPlanningObstacle", color=[0,0,0], alpha=0.0)
+
+
+
+
 
         add_reference_to_stage(get_assets_root_path() + "/Isaac/Props/UIElements/frame_prim.usd", "/World/target")
         self._frame = XFormPrim("/World/target", scale=[.04,.04,.04], name="target")
@@ -112,17 +181,12 @@ class RRTTask(BaseTask):
 
 
     def set_ycb(self, name: str, prim_path: str, use_physics: bool=False) -> XFormPrim:
-        """[summary]
-
+        """Create a simple rigid box with the specified dimensions.
+        
         Returns:
-            [type]: [description]
+            XFormPrim: The created box object
         """
-        selected_object = "009_gelatin_box.usd"
-        ROOT_PATH = get_assets_root_path() + "/Isaac/Props/YCB/Axis_Aligned/"
-
-        usd_path = ROOT_PATH + selected_object
-
-        # Create the initial object.
+        # Create the initial object prim path and name
         self._ycb_prim_path = find_unique_string_name(
             initial_name=prim_path, is_unique_fn=lambda x: not is_prim_path_valid(x)
         )
@@ -130,27 +194,25 @@ class RRTTask(BaseTask):
             initial_name=name, is_unique_fn=lambda x: not self.scene.object_exists(x)
         )
 
-        object_prim = add_reference_to_stage(usd_path=usd_path, prim_path=prim_path)
-
         if use_physics:
             import omni
             import omni.physx
             from pxr import UsdGeom, UsdShade, PhysxSchema
             stage = omni.usd.get_context().get_stage()
 
-            # -- REMOVE existing collision/mesh colliders under object_prim
-            children = [c for c in stage.GetPrimAtPath(prim_path).GetChildren()]
-            for child in children:
-                # Remove any child prims named 'collision', 'collider', or that are meshes
-                if 'collis' in child.GetName().lower() or child.GetTypeName() in ['Mesh', 'TriangleMesh', 'GeomMesh']:
-                    print(f"Removing existing collider: {child.GetPath()}")
-                    stage.RemovePrim(child.GetPath())
-
+            # Create the main box prim
+            object_prim = UsdGeom.Cube.Define(stage, prim_path)
+            
             # Set RigidBody and Mass
-            rigid_api = UsdPhysics.RigidBodyAPI.Apply(object_prim)
-            UsdPhysics.CollisionAPI.Apply(object_prim)
-            mass_api = UsdPhysics.MassAPI.Apply(object_prim)
-            mass_api.CreateMassAttr(0.086)
+            rigid_api = UsdPhysics.RigidBodyAPI.Apply(object_prim.GetPrim())
+            UsdPhysics.CollisionAPI.Apply(object_prim.GetPrim())
+            mass_api = UsdPhysics.MassAPI.Apply(object_prim.GetPrim())
+            mass_api.CreateMassAttr(0.5)
+            
+            # Set the box dimensions using the box_dims from line 40
+            object_prim.CreateSizeAttr(1.0)  # Base size of 1
+            object_prim.AddScaleOp().Set(tuple(self.box_dims))  # Scale to actual dimensions
+            object_prim.AddTranslateOp().Set((0, 0, 0))  # Centered
             
             # ---- PhysX Material ----
             material_path = prim_path + "/physx_material"
@@ -162,46 +224,48 @@ class RRTTask(BaseTask):
                     mat_prim = stage.GetPrimAtPath(material_path)
                 # Set attributes if they exist
                 try:
-                    mat_prim.GetAttribute("physxStaticFriction").Set(2.0)
-                    mat_prim.GetAttribute("physxDynamicFriction").Set(2.0)
+                    mat_prim.GetAttribute("physxStaticFriction").Set(1)
+                    mat_prim.GetAttribute("physxDynamicFriction").Set(1)
                     mat_prim.GetAttribute("physxRestitution").Set(0.0)
                     break  # Succeed and exit loop
                 except Exception:
                     continue
-
-            # Create a cube under /World/Ycb_object
-            collider_path = prim_path + "/box_collider"
-            collider = UsdGeom.Cube.Define(stage, collider_path)
-            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
-
-            # Set the cube to be scaled as the gelatin box dimensions (YCB 009: 0.073 x 0.032 x 0.101 meters)
-            collider.CreateSizeAttr(1.0)
-            collider.AddScaleOp().Set((0.08, 0.065, 0.025))
-            collider.AddTranslateOp().Set((0, 0, 0))  # Centered; adjust if necessary
-            # collider.GetPrim().GetAttribute('visibility').Set('invisible')
 
             # ---- Material Binding ----
             def bind_physx_material(prim, mat_prim):
                 binding_api = UsdShade.MaterialBindingAPI(prim)
                 binding_api.Bind(UsdShade.Material(mat_prim))
 
-            bind_physx_material(object_prim, mat_prim)
-            bind_physx_material(collider.GetPrim(), mat_prim)
+            bind_physx_material(object_prim.GetPrim(), mat_prim)
 
+        else:
+            # For non-physics case, just create a visual cube
+            import omni
+            from pxr import UsdGeom
+            stage = omni.usd.get_context().get_stage()
+            object_prim = UsdGeom.Cube.Define(stage, prim_path)
+            object_prim.CreateSizeAttr(1.0)
+            object_prim.AddScaleOp().Set(tuple(self.box_dims))
+            object_prim.AddTranslateOp().Set((0, 0, 0))
 
-        return XFormPrim(prim_path=prim_path, name=name, )
+        return XFormPrim(prim_path=prim_path, name=name)
+
 
 
     def set_params(
         self,
         object_position: Optional[np.ndarray] = None,
         object_orientation: Optional[np.ndarray] = None,
+        preview_box_position: Optional[np.ndarray] = None,
+        preview_box_orientation: Optional[np.ndarray] = None,
         # object_target_position: Optional[np.ndarray] = None,
         # object_target_orientation: Optional[np.ndarray] = None,
     ) -> None:
         """Set the object parameters."""
         if object_position is not None or object_orientation is not None:
             self._ycb.set_world_pose(position=object_position, orientation=object_orientation)
+        if preview_box_position is not None or preview_box_orientation is not None:
+            self.preview_box.set_world_pose(position=preview_box_position, orientation=preview_box_orientation)
         # if object_target_position is not None or object_target_orientation is not None:
         #     self._target.set_world_pose(position=object_target_position, orientation=object_target_orientation)
         return
@@ -339,31 +403,32 @@ class RRTTask(BaseTask):
         return (1e15 * np.ones(9), 1e13 * np.ones(9))
 
 
-# class FrankaPathPlanningTask(RRTTask):
-#     def __init__(
-#         self,
-#         name: str,
-#         ycb_prim_path: Optional[str] = None,
-#         ycb_name: Optional[str] = None,
-#         ycb_position: Optional[np.ndarray] = None,
-#         ycb_orientation: Optional[np.ndarray] = None,
-#         offset: Optional[np.ndarray] = None,
-#         franka_prim_path: Optional[str] = None,
-#         franka_robot_name: Optional[str] = None,
-#     ) -> None:
-#         RRTTask.__init__(
-#             self,
-#             name=name,
-#             ycb_prim_path=ycb_prim_path,
-#             ycb_name=ycb_name,
-#             ycb_position=ycb_position,
-#             ycb_orientation=ycb_orientation,
-#             offset=offset,
-#         )
-#         self._franka_prim_path = franka_prim_path
-#         self._franka_robot_name = franka_robot_name
-#         self._franka = None
-#         return
+    def set_prim_color(self, prim_path, color=[1,0,0], alpha=1.0):
+        """
+        Sets the display color and (optionally) alpha for a prim at prim_path.
+        - prim_path: str, absolute USD path (e.g. "/World/VisualCube")
+        - color: list/tuple of 3 floats [R,G,B], each in [0,1]
+        - alpha: float in [0,1], only works if supported
+        """
+        stage = omni.usd.get_context().get_stage()
+        prim = stage.GetPrimAtPath(prim_path)
+        if not prim.IsValid():
+            print(f"[set_prim_color] Prim {prim_path} not found!")
+            return False
 
+        try:
+            geom = UsdGeom.Gprim(prim)
+            # Set color
+            geom.CreateDisplayColorAttr().Set([Gf.Vec3f(*color)])
+            # Set alpha (if supported)
+            if alpha < 1.0:
+                try:
+                    geom.CreateDisplayOpacityAttr().Set([alpha])
+                except Exception:
+                    print(f"[set_prim_color] Alpha not supported for {prim_path}.")
+            return True
+        except Exception as e:
+            print(f"[set_prim_color] Failed to set color for {prim_path}: {e}")
+            return False
 
     

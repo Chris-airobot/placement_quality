@@ -61,7 +61,7 @@ from model_training.train import load_pointcloud
 
 # # Before running simulation
 # sim = SimulationContext(physics_dt=1.0/240.0)  # 240 Hz
-
+PEDESTAL_SIZE = np.array([0.09, 0.11, 0.1])   # X, Y, Z in meters
 
 # Enable ROS2 bridge extension
 extensions.enable_extension("omni.isaac.ros2_bridge")
@@ -78,15 +78,21 @@ GRIP_HOLD_STEPS = 40
 
 
 def model_prediction(model, data, device):
-    
+    data["final_object_pose"][1] = 0.720
+    data["final_object_pose"][2] = 0.694
+    data["final_object_pose"][3] = -0.009
+    data["final_object_pose"][4] = 0.005
     # Define constant values as in the dataset
-    const_xy = torch.tensor([0.35, 0.0], dtype=torch.float32)
+    const_xy = torch.tensor([0.2, -0.3], dtype=torch.float32)
     
     # Preprocess the initial and final poses as done in the dataset
     initial_pose = torch.cat([const_xy, torch.tensor(data["initial_object_pose"], dtype=torch.float32)])
     final_pose = torch.cat([const_xy, torch.tensor(data["final_object_pose"], dtype=torch.float32)])
     
     # Now use the preprocessed tensors with batch dimension
+    print(f"input 1: {torch.tensor(data['grasp_pose'], dtype=torch.float32).unsqueeze(0).to(device)}")
+    print(f"input 2: {initial_pose.unsqueeze(0).to(device)}")
+    print(f"input 3: {final_pose.unsqueeze(0).to(device)}")
     raw_success, raw_collision = model(None, 
                                      torch.tensor(data["grasp_pose"], dtype=torch.float32).unsqueeze(0).to(device), 
                                      initial_pose.unsqueeze(0).to(device), 
@@ -108,8 +114,45 @@ def model_prediction(model, data, device):
     return pred_success_binary.item(), pred_collision_binary.item()
 
 
+def robot_action(env: Simulator, grasp_pose, current_state, next_state):
+    grasp_position, grasp_orientation = grasp_pose[0], grasp_pose[1]
+    env.task._frame.set_world_pose(np.array(grasp_position), 
+                                    np.array(grasp_orientation))
+
+    actions = env.controller.forward(
+        target_end_effector_position=np.array(grasp_position),
+        target_end_effector_orientation=np.array(grasp_orientation),
+    )
+    
+    if env.controller.ik_check:
+        kps, kds = env.task.get_custom_gains()
+        env.articulation_controller.set_gains(kps, kds)
+        env.articulation_controller.apply_action(actions)
+
+        if env.check_for_collisions():
+            env.collision_counter += 1
+            print(f"⚠️ Collision during {current_state} (strike {env.collision_counter}/3)")
+
+        if env.collision_counter >= 3:
+            print(f"🛑 Too many collisions during {current_state} — trying next grasp")
+            env.collision_counter = 0
+            env.state = "FAIL"
+            return False
+        if env.controller.is_done():
+            print(f"----------------- {next_state} Plan Complete -----------------")
+            env.collision_counter = 0
+            env.state = next_state
+            env.controller.reset()
+            return True
+    else:
+        print(f"----------------- RRT cannot find a path for {current_state}, going to next grasp -----------------")
+        env.state = "FAIL"
+        return False
+    
+
+
 def main(checkpoint, use_physics, test_mode=False):
-    test_mode = False
+    test_mode = True
     object_frame_path = "/World/Ycb_object"
     pcd_topic = "/cam0/depth_pcl"
 
@@ -125,7 +168,7 @@ def main(checkpoint, use_physics, test_mode=False):
     env.start()
     
 
-    object_position = [0.35, 0, env.current_data["initial_object_pose"][0]]
+    object_position = [0.2, -0.3, env.current_data["initial_object_pose"][0]]
     object_orientation = env.current_data["initial_object_pose"][1:]
     if not test_mode:   
         helper.tf_graph_generation(object_frame_path)
@@ -135,9 +178,7 @@ def main(checkpoint, use_physics, test_mode=False):
 
     # Add a flag to check if we have computed the static object feature
     static_feature_computed = False
-    collision_detected = False
     grasp_poses = []
-    # logger = Logger(env, DIR_PATH)
 
     while simulation_app.is_running():
         # Handle simulation step
@@ -166,7 +207,7 @@ def main(checkpoint, use_physics, test_mode=False):
                                                                             "panda_link0")
             
                 # Step 2: Process the pointcloud (filtering/downsampling)
-                processed_points = helper.process_pointcloud(transformed_pcd_robot)
+                processed_points = helper.process_pointcloud(transformed_pcd_robot, height_offset=PEDESTAL_SIZE[2])
                 
                 # Step 3: Transform from robot base frame to object frame
                 # Create a PointCloud2 message for the processed points
@@ -236,9 +277,13 @@ def main(checkpoint, use_physics, test_mode=False):
             # Step 6: Find all grasps with their scores and sort them
             grasp_scores = []  # List to store (grasp, score, success_val, collision_val)
             
-            object_position = [0.35, 0, env.current_data["initial_object_pose"][0]]
+            object_position = [0.2, -0.3, env.current_data["initial_object_pose"][0]]
             object_orientation = env.current_data["initial_object_pose"][1:]
-            env.task._ycb.set_world_pose(object_position, object_orientation)
+            # env.task._ycb.set_world_pose(object_position, object_orientation)
+            env.task.set_params(
+                object_position=object_position,
+                object_orientation=object_orientation,
+            )
             for grasp_pose in grasp_poses:
                 grasp_pose_local = [grasp_pose[0], grasp_pose[1]]
                 grasp_pose_world = helper.transform_relative_pose(grasp_pose_local, 
@@ -248,12 +293,7 @@ def main(checkpoint, use_physics, test_mode=False):
                 # grasp_pose_center = grasp_pose_world
                 env.current_data["grasp_pose"] = grasp_pose_center[0] + grasp_pose_center[1]
                 pred_success_val, pred_collision_val = model_prediction(model, env.current_data, device)
-                # pred_success_val = 0.5
-                # pred_collision_val = 0.5
-                
-                # Define a score that prioritizes high success and low collision probability
-                # collision_val is the probability of collision, so higher is better
-                score = pred_success_val * 0.3 + pred_collision_val * 0.7  # Weighted combination
+                score = pred_success_val * pred_collision_val
                 
                 # Add this grasp and its score to our list
                 grasp_scores.append((grasp_pose_center, score, pred_success_val, pred_collision_val))
@@ -266,360 +306,111 @@ def main(checkpoint, use_physics, test_mode=False):
             print("\nTop 5 grasps:")
             for i, (grasp, score, success, no_collision) in enumerate(grasp_scores[:5]):
                 print(f"#{i+1}: Score: {score:.4f} (success: {success:.4f}, no collision: {no_collision:.4f})")
+
+
+            ############################################################
+            #### TODO: Filter out invalid grasps 
+            ############################################################
             
             # Use the best grasp for execution
             if grasp_scores:
                 env.state = "PREGRASP"  
                 current_grasp = grasp_scores.pop(0)
-                print(f"There are {len(grasp_scores)} grasps left")
+                # print(f"There are {len(grasp_scores)} grasps left")
+                grasp_position, grasp_orientation = current_grasp[0][0], current_grasp[0][1]
+                pregrasp_position = grasp_position + np.array([0, 0, 0.2])
 
-        if env.state == "PREGRASP":
+        elif env.state == "FAIL":
+            # Try next grasp if available
+            if grasp_scores:    
+                current_grasp = grasp_scores.pop(0)
+                grasp_position, grasp_orientation = current_grasp[0][0], current_grasp[0][1]
+                pregrasp_position = grasp_position + np.array([0, 0, 0.2])
+                env.state = "PREGRASP"  # Restart with new grasp
+            else:
+                print("No more grasps to try")
+                env.data_index += 1
+                env.current_data = env.test_data[env.data_index]
+                env.state = "SETUP"
+            env.reset()
+            continue
+
+        elif env.state == "PREGRASP":
             # On first entry to PREGRASP, initialize collision counter
-            if not hasattr(env, 'pregrasp_collision_counter'):
-                env.pregrasp_collision_counter = 0
-                env.gripper.open()
-                
-                # Calculate pregrasp pose (offset from grasp position)
-                env.pregrasp_position = np.array(current_grasp[0][0]).copy()
-                env.pregrasp_orientation = np.array(current_grasp[0][1]).copy()
-                
-                # Move the pregrasp position 20 cm above the grasp point (assuming z is up)
-                env.pregrasp_position[2] += 0.2
-                
-                # Visualize pregrasp target
-                env.task._frame.set_world_pose(env.pregrasp_position, env.pregrasp_orientation)
-                
-                # Reset the controller for new planning
-                env.controller.reset()
-                print("Planning movement to pregrasp position...")
-            
-            # Generate actions for moving to pregrasp pose
-            actions = env.controller.forward(
-                target_end_effector_position=env.pregrasp_position,
-                target_end_effector_orientation=env.pregrasp_orientation,
-            )
-            
-            # Apply the actions if planning successful
-            if env.controller.ik_check:
-                kps, kds = env.task.get_custom_gains()
-                env.articulation_controller.set_gains(kps, kds)
-                env.articulation_controller.apply_action(actions)
-            else:
-                print(f"----------------- RRT cannot find path to pregrasp, trying next grasp -----------------")
-                # Clean up state before trying next grasp
-                delattr(env, 'pregrasp_collision_counter')
-                if hasattr(env, 'pregrasp_position'):
-                    delattr(env, 'pregrasp_position')
-                if hasattr(env, 'pregrasp_orientation'):
-                    delattr(env, 'pregrasp_orientation')
-                
-                # Try next grasp if available
-                if grasp_scores:    
-                    current_grasp = grasp_scores.pop(0)
-                    env.state = "PREGRASP"  # Restart with new grasp
-                else:
-                    print("No more grasps to try")
-                    env.data_index += 1
-                    env.current_data = env.test_data[env.data_index]
-                    env.state = "SETUP"
-                    env.reset()
-                continue
-            
-            # Check for collisions during pregrasp movement
-            if env.check_for_collisions():
-                env.pregrasp_collision_counter += 1
-                print(f"⚠️ Collision during PREGRASP (strike {env.pregrasp_collision_counter}/3)")
-                
-                # If we've hit 3 strikes, try next grasp
-                if env.pregrasp_collision_counter >= 3:
-                    print("🛑 Too many collisions during pregrasp — trying next grasp")
-                    # Clean up state
-                    delattr(env, 'pregrasp_collision_counter')
-                    if hasattr(env, 'pregrasp_position'):
-                        delattr(env, 'pregrasp_position')
-                    if hasattr(env, 'pregrasp_orientation'):
-                        delattr(env, 'pregrasp_orientation')
-                    
-                    # Try next grasp if available
-                    if grasp_scores: 
-                        current_grasp = grasp_scores.pop(0)
-                        env.state = "PREGRASP"  # Restart with new grasp
-                    else:
-                        print("No more grasps to try")
-                        env.data_index += 1
-                        env.current_data = env.test_data[env.data_index]
-                        env.state = "SETUP"
-                    
-                    env.reset()
-                    continue
-            
-            # When pregrasp movement is complete, transition to GRASP state
-            if env.controller.is_done():
-                print("----------------- Pregrasp Complete, Moving to Final Grasp -----------------")
-                # Clean up pregrasp state
-                delattr(env, 'pregrasp_collision_counter')
-                # Keep pregrasp_position and pregrasp_orientation for reference
-                
-                # Reset controller for the next planning phase
-                env.controller.reset()
-                
-                # Update visualization frame to show actual grasp target
-                env.task._frame.set_world_pose(np.array(current_grasp[0][0]), 
-                                              np.array(current_grasp[0][1]))
-                
-                # Transition to GRASP state
-                env.state = "GRASP"
-
-        if env.state == "GRASP":
             env.gripper.open()
-
-            # on first entry to GRASP, open the gripper and zero the collision counter
-            if not hasattr(env, 'grasp_collision_counter'):
-                env.grasp_collision_counter = 0
-
-            # tmp_grasp = grasp_scores[1]
-            env.task._frame.set_world_pose(np.array(current_grasp[0][0]), 
-                                            np.array(current_grasp[0][1]))
             
-            actions = env.controller.forward(
-                target_end_effector_position=np.array(current_grasp[0][0]),
-                target_end_effector_orientation=np.array(current_grasp[0][1]),
-            )
-
-            print(f" The actual grasp is: {current_grasp[0][0]} and {current_grasp[0][1]}")
-            if env.controller.ik_check:
-                kps, kds = env.task.get_custom_gains()
-                env.articulation_controller.set_gains(kps, kds)
-                # Apply the actions to the robot
-                env.articulation_controller.apply_action(actions)
-            else:
-                print(f"----------------- RRT cannot find a path, going to next grasp -----------------")
-                if grasp_scores:    
-                    current_grasp = grasp_scores.pop(0)
-                    env.state = "PREGRASP"
-                    continue
-                else:
-                    print("No more grasps to try")
-                    env.data_index += 1
-                    env.current_data = env.test_data[env.data_index]
-                    env.state = "SETUP"
-                    env.reset()
-                    continue
+            pregrasp_pose = [pregrasp_position, grasp_orientation]
+            robot_action(env, pregrasp_pose, "PREGRASP", "GRASP")
             
-            # check for collision this step
-            if env.check_for_collisions():
-                env.grasp_collision_counter += 1
-                print(f"⚠️ Collision during GRASP (strike {env.grasp_collision_counter}/3)")
-                # if we’ve hit 3 strikes, reset entire episode
-                if env.grasp_collision_counter >= 100:
-                    print("🛑 Too many collisions — resetting environment")
-                    # clear the counter before resetting
-                    delattr(env, 'grasp_collision_counter')
-                    if grasp_scores: 
-                        current_grasp = grasp_scores.pop(0)
-                        env.state = "PREGRASP"
-                    else:
-                        print("No more grasps to try")
-                        env.data_index += 1
-                        env.current_data = env.test_data[env.data_index]
-                        env.state = "SETUP"
-                    
-                    env.reset()
-                    continue
-            # else:
-            #     # clean step → reset the strike counter
-            #     env.grasp_collision_counter = 0
-            
-            if env.controller.is_done():
-                print("----------------- RRT Grasp Plan Complete -----------------")
-                env.state = "GRIP"
-                IK = True
+        elif env.state == "GRASP":
+            env.gripper.open()
+            grasp_pose = [current_grasp[0][0], current_grasp[0][1]]
+            if robot_action(env, grasp_pose, "GRASP", "GRIPPER"):
                 env.open = False
-                delattr(env, 'grasp_collision_counter')
-                
-            
-        elif env.state == "GRIP":
-            # if this is the first time we enter GRIP, reset our counter
-            if not hasattr(env, "grip_step_counter"):
-                env.grip_step_counter = 0
+
+
+        elif env.state == "GRIPPER":
             if env.open:
                 env.gripper.open()  
             else:
                 env.gripper.close()
-                
-
-            env.grip_step_counter += 1
-            if env.grip_step_counter < GRIP_HOLD_STEPS:
+            env.step_counter += 1
+            if env.step_counter < GRIP_HOLD_STEPS:
                 continue   # stay here until we've done enough steps
-
+            # After grasp
             if not env.open:
                 if env.check_grasp_success():
                     print("Successfully grasped the object")
                     env.state = "PREPLACE"
                     env.controller.reset()
+                    # This one is ee's
+                    placement_position, placement_orientation = env.calculate_placement_pose(env.current_data["grasp_pose"], 
+                                                                                         env.current_data["initial_object_pose"], 
+                                                                                         env.current_data["final_object_pose"])
+                    pre_placement_position = placement_position + np.array([0, 0, 0.2])
+
+                    # This one is object's placement preview
+                    final_object_position = np.array([0.2, -0.3, env.current_data["final_object_pose"][0] + PEDESTAL_SIZE[2]])
+                    final_object_orientation = env.current_data["final_object_pose"][1:]
+                    env.task._placement_preview.set_world_pose(final_object_position, final_object_orientation)
+
+
+
                 else:
                     print("----------------- Grasp failed -----------------")
                     # reset state & counter for a retry
-                    delattr(env, "grip_step_counter")
                     env.task.set_params(
-                        object_position=np.array([0.35, 0, env.current_data["initial_object_pose"][0]]),
+                        object_position=np.array([0.2, -0.3, env.current_data["initial_object_pose"][0]]),
                         object_orientation=np.array(env.current_data["initial_object_pose"][1:]),
                     )
-                    if grasp_scores: 
-                        current_grasp = grasp_scores.pop(0)
-                        env.state = "PREGRASP"
-                    else:
-                        print("No more grasps to try")
-                        env.data_index += 1
-                        env.current_data = env.test_data[env.data_index]
-                        env.state = "SETUP"
+                    env.state = "FAIL"
                     env.reset()
                     env.gripper.open()
+
+            # After placement
             else:
                 print("----------------- Gripper Open, Going to next grasp -----------------")
                 env.state = "PREGRASP"
                 current_grasp = grasp_scores.pop(0)
+                grasp_position, grasp_orientation = current_grasp[0][0], current_grasp[0][1]
+                pregrasp_position = grasp_position + np.array([0, 0, 0.2])
                 env.reset()
 
 
 
         elif env.state == "PREPLACE":
-            if not hasattr(env, 'place_collision_counter'):
-                env.place_collision_counter = 0
-            # Wait for replay to finish if planner is not at event 4 (post-grasp)
-            final_grasp_position, final_grasp_orientation = env.calculate_placement_pose(env.current_data["grasp_pose"], 
-                                                                                         env.current_data["initial_object_pose"], 
-                                                                                         env.current_data["final_object_pose"])
+            preplace_pose = [pre_placement_position, placement_orientation]
+            robot_action(env, preplace_pose, "PREPLACE", "PLACE")
             
-
-            pre_final_grasp_position = np.array(current_grasp[0][0]).copy()
-            pre_final_grasp_position[2] += 0.2
-
-            env.task._frame.set_world_pose(np.array(pre_final_grasp_position), 
-                                           np.array(final_grasp_orientation))
-            # Generate actions for placement
-            actions = env.controller.forward(
-                target_end_effector_position=pre_final_grasp_position,
-                target_end_effector_orientation=final_grasp_orientation,
-            )
-            
-            # Apply the actions to the robot
-            if env.controller.ik_check:
-                kps, kds = env.task.get_custom_gains()
-                env.articulation_controller.set_gains(kps, kds)
-                env.articulation_controller.apply_action(actions)
-            else:
-                print(f"----------------- RRT cannot find a path, going to next grasp -----------------")
-                if grasp_scores:    
-                    current_grasp = grasp_scores.pop(0)
-                    env.state = "PREGRASP"
-                    env.reset()
-                    continue
-                else:
-                    print("No more grasps to try")
-                    env.data_index += 1
-                    env.current_data = env.test_data[env.data_index]
-                    env.state = "SETUP"
-                    env.reset()
-                    continue
-            
-            if env.check_for_collisions():
-                env.place_collision_counter += 1
-                print(f"⚠️ Collision during PLACE (strike {env.place_collision_counter}/3)")
-                # if we’ve hit 3 strikes, reset entire episode
-                if env.place_collision_counter >= 3:
-                    print("🛑 Too many collisions — resetting environment")
-                    # clear the counter before resetting
-                    delattr(env, 'place_collision_counter')
-                    if grasp_scores: 
-                        current_grasp = grasp_scores.pop(0)
-                        env.state = "PREGRASP"
-                    else:
-                        print("No more grasps to try")
-                        env.data_index += 1
-                        env.current_data = env.test_data[env.data_index]
-                        env.state = "SETUP"
-                    
-                    env.reset()
-                    continue
-            # else:
-            #     # clean step → reset the strike counter
-            #     env.grasp_collision_counter = 0
-            
-            if env.controller.is_done():
-                print("----------------- Pre Placement Plan Complete -----------------")
-                env.state = "PLACE"
-                env.controller.reset()
-                
-                # Update visualization frame to show actual grasp target
-                env.task._frame.set_world_pose(final_grasp_position, 
-                                              final_grasp_orientation)
-                
-                delattr(env, 'place_collision_counter')
-
         elif env.state == "PLACE":
-            if not hasattr(env, 'place_collision_counter'):
-                env.place_collision_counter = 0
-        
-            # Generate actions for placement
-            actions = env.controller.forward(
-                target_end_effector_position=final_grasp_position,
-                target_end_effector_orientation=final_grasp_orientation,
-            )
-            
-            # Apply the actions to the robot
-            if env.controller.ik_check:
-                kps, kds = env.task.get_custom_gains()
-                env.articulation_controller.set_gains(kps, kds)
-                env.articulation_controller.apply_action(actions)
-            else:
-                print(f"----------------- RRT cannot find a path, going to next grasp -----------------")
-                if grasp_scores:    
-                    current_grasp = grasp_scores.pop(0)
-                    env.state = "PREGRASP"
-                    env.reset()
-                    continue
-                else:
-                    print("No more grasps to try")
-                    env.data_index += 1
-                    env.current_data = env.test_data[env.data_index]
-                    env.state = "SETUP"
-                    env.reset()
-                    continue
-            
-            if env.check_for_collisions():
-                env.place_collision_counter += 1
-                print(f"⚠️ Collision during PLACE (strike {env.place_collision_counter}/3)")
-                # if we’ve hit 3 strikes, reset entire episode
-                if env.place_collision_counter >= 3:
-                    print("🛑 Too many collisions — resetting environment")
-                    # clear the counter before resetting
-                    delattr(env, 'place_collision_counter')
-                    if grasp_scores: 
-                        current_grasp = grasp_scores.pop(0)
-                        env.state = "GRASP"
-                    else:
-                        print("No more grasps to try")
-                        env.data_index += 1
-                        env.current_data = env.test_data[env.data_index]
-                        env.state = "SETUP"
-                    
-                    env.reset()
-                    continue
-            # else:
-            #     # clean step → reset the strike counter
-            #     env.grasp_collision_counter = 0
-            
-            if env.controller.is_done():
-                print("----------------- Placement Plan Complete -----------------")
-                env.open = True
-                env.state = "GRIP"
-                delattr(env, 'place_collision_counter')
-            
+            place_pose = [placement_position, placement_orientation]
+            if robot_action(env, place_pose, "PLACE", "GRIPPER"):
+                env.open = True    
+                
     # Cleanup when simulation ends
     simulation_app.close()
 
 if __name__ == "__main__":
-    model_path = "/home/chris/Chris/placement_ws/src/data/path_simulation/models/model_20250520_210301/best_model_0_1069_pth"
+    model_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/models/model_20250626_220307/best_model_0_1045_pth"
     use_physics = True
     main(model_path, use_physics)

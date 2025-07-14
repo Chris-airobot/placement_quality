@@ -169,6 +169,7 @@ class YcbPlanner(BaseController):
 
         return target_joint_positions
 
+
     def is_stage_task_done(self, ee_target_position, threshold) -> bool:
         """
         Checks if the end-effector has reached the target position within a specified tolerance.

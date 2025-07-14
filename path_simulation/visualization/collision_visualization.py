@@ -1,12 +1,14 @@
-import os
-import sys
-# Add the parent directory to the Python path
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+import os, sys 
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
+# Add the parent directory to the Python path to access collision_check.py
+parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from isaacsim import SimulationApp
-import json
 
 # Display options for the simulation viewport
 DISP_FPS        = 1<<0
@@ -34,11 +36,7 @@ import os
 import rclpy
 import datetime 
 from omni.isaac.core.utils import extensions
-# from path_simulation.simulation.logger import Logger
-# from path_simulation.simulation.simulator import Simulator
-# from ycb_simulation.utils.helper import draw_frame
 import rclpy
-
 
 from omni.isaac.core import World
 from omni.isaac.core.utils import extensions
@@ -68,9 +66,6 @@ from rclpy.node import Node
 from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
-# from path_simulation.simulation.RRT_controller import RRTController
-# from path_simulation.simulation.RRT_task import RRTTask
-# from ycb_simulation.utils.helper import tf_graph_generation
 import numpy as np
 
 import carb
@@ -85,8 +80,7 @@ from pxr import Sdf, UsdLux
 
 # Import the collision detection functionality
 from collision_check import GroundCollisionDetector
-from pxr import Gf
-from ycb_simulation.utils.helper import transform_relative_pose
+from pxr import UsdGeom, Gf, Usd
 
 # Enable ROS2 bridge extension
 extensions.enable_extension("omni.isaac.ros2_bridge")
@@ -97,43 +91,20 @@ time_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 DIR_PATH = os.path.join(base_dir, f"run_{time_str}/")
 
 
-class StandaloneIK:
+class StandaloneIKWithCollision:
     def __init__(self):
         # Core variables for the kinematic solver
         self._kinematics_solver = None
         self._articulation_kinematics_solver = None
         self._articulation = None
         self._target = None
-        self.world = None
+        self.world: World = None
+        
+        # Collision detection variables
         self.collision_detector = None
         self.base_path = "/World/panda"
         self.robot_parts_to_check = []
         self.collision_detected = False
-
-
-        # File reads
-        object_poses_file = "/home/chris/Chris/placement_ws/src/object_poses.json"
-        all_object_poses = json.load(open(object_poses_file))
-        
-        # Select a random object pose
-        # Randomly select 201 non-repeating poses
-        selected_indices = np.random.choice(len(all_object_poses), 201, replace=False)
-        self.object_poses = [all_object_poses[i] for i in selected_indices]
-        # Initialize with the first pose
-        self.object_pose_at_grasp = self.object_poses[0]
-        self.object_pose_at_grasp['position'][0] = 0.4
-        self.object_pose_at_grasp['position'][1] = 0.0
-
-        self.grasp_poses_file = "/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/grasp_generation/grasp_poses.json"
-        self.grasp_poses = json.load(open(self.grasp_poses_file))
-        self.grasp_index = "1"
-
-        # Offset of the grasp from the object center
-        # Grasp poses are based on the gripper center, so we need to offset it to transform it to the tool_center, i.e. 
-        # the middle of the gripper fingers
-        self.grasp_offset = [0, 0, 0.062] 
-
-    
 
     def setup_scene(self):
         """Create a new stage and set up the scene with lighting and camera"""
@@ -149,10 +120,19 @@ class StandaloneIK:
         # Add assets to the world scene
         self.world.scene.add(self._articulation)
         self.world.scene.add(self._target)
-        self._target.set_world_pose(self.object_pose_at_grasp["position"], 
-                                    self.object_pose_at_grasp["orientation_quat"])
         
-        self._articulation.set_enabled_self_collisions(True)
+        # Add the box object to the scene for collision detection
+        from omni.isaac.core.objects import VisualCuboid
+        box_dims = np.array([0.143, 0.0915, 0.051])
+        self._box = VisualCuboid(
+            prim_path="/World/Ycb_object",
+            name="Ycb_object",
+            position=np.array([0.2, -0.3, 0.125]),  # Adjusted z to sit properly on pedestal (0.05 + 0.10 + 0.051/2)
+            scale=box_dims.tolist(),
+            color=np.array([0.8, 0.8, 0.8])
+        )
+        self.world.scene.add(self._box)
+        
         # Set up the ground collision detector
         self.setup_collision_detection()
         
@@ -177,11 +157,10 @@ class StandaloneIK:
         add_reference_to_stage(path_to_robot_usd, robot_prim_path)
         articulation = Articulation(robot_prim_path)
         
-        # Add the target frame to the stage
-        add_reference_to_stage(get_assets_root_path() + "/Isaac/Props/YCB/Axis_Aligned/009_gelatin_box.usd", "/World/Ycb_object")
-        target = XFormPrim("/World/Ycb_object", scale=[0.8, 0.8, 0.8])
-        # target.set_default_state(np.array([0.3, 0, 0.5]), euler_angles_to_quats([0, np.pi, 0]))
-        
+        # Add the target frame to the stage (for IK control)
+        add_reference_to_stage(get_assets_root_path() + "/Isaac/Props/UIElements/frame_prim.usd", "/World/target")
+        target = XFormPrim("/World/target", scale=[0.04, 0.04, 0.04])
+        target.set_default_state(np.array([0.3, 0, 0.5]), euler_angles_to_quats([0, np.pi, 0]))
         
         return articulation, target
 
@@ -196,7 +175,7 @@ class StandaloneIK:
         print("Valid frame names at which to compute kinematics:", self._kinematics_solver.get_all_frame_names())
         
         # Configure the articulation kinematics solver with the end effector
-        end_effector_name = "right_gripper"
+        end_effector_name = "panda_hand"
         self._articulation_kinematics_solver = ArticulationKinematicsSolver(
             self._articulation, 
             self._kinematics_solver, 
@@ -206,13 +185,17 @@ class StandaloneIK:
     def setup_collision_detection(self):
         """Set up the ground collision detector"""
         stage = omni.usd.get_context().get_stage()
-        self.collision_detector = GroundCollisionDetector(stage)
+        self.collision_detector = GroundCollisionDetector(stage, non_colliding_part="/World/panda/panda_link0")
         
-        # Create a virtual ground plane at z=-0.05 (lowered to avoid false positives)
+        # Create a virtual ground plane at z=0 (ground level)
         self.collision_detector.create_virtual_ground(
             size_x=20.0, 
             size_y=20.0, 
-            position=Gf.Vec3f(0, 0, -0.05)  # Lower the ground to avoid false positives
+            position=Gf.Vec3f(0, 0, 0)  # Ground level
+        )
+
+        self.collision_detector.create_virtual_pedestal(
+            position=Gf.Vec3f(0.2, -0.3, 0.05)
         )
         
         # Define robot parts to check for collisions (explicitly excluding the base link0)
@@ -230,27 +213,55 @@ class StandaloneIK:
         ]
         # Note: panda_link0 is deliberately excluded since it's expected to touch the ground
 
-    def check_for_collisions(self):
-        """Check if any robot parts are colliding with the ground"""
-        for part_path in self.robot_parts_to_check:
-            if self.collision_detector.is_colliding_with_ground(part_path):
-                print(f"Collision detected")
-                self.collision_detected = True
-                return True
+    def change_box_color(self, is_colliding):
+        """Change the box color based on collision status"""
+        try:
+            if is_colliding:
+                self._box.color = np.array([1.0, 0.0, 0.0])  # Red
             else:
-                print(f"No collision detected")
-                self.collision_detected = False
-                return False
+                self._box.color = np.array([0.8, 0.8, 0.8])  # Light gray
+        except Exception as e:
+            print(f"Error changing box color: {e}")
+
+    def check_for_collisions(self):
+        """Check if any robot parts are colliding with ground, pedestal, or box."""
+        ground_hit = any(
+            self.collision_detector.is_colliding_with_ground(part_path)
+            for part_path in self.robot_parts_to_check
+        )
+        pedestal_hit = any(
+            self.collision_detector.is_colliding_with_pedestal(part_path)
+            for part_path in self.robot_parts_to_check
+        )
+        box_hit = any(
+            self.collision_detector.is_colliding_with_box(part_path)
+            for part_path in self.robot_parts_to_check
+        )
+        self.collision_detected = ground_hit or pedestal_hit or box_hit
+        
+        # Change box color based on collision status
+        self.change_box_color(box_hit)
+        
+        # Print detailed collision status for debugging
+        if self.collision_detected:
+            collision_types = []
+            if ground_hit:
+                collision_types.append("GROUND")
+            if pedestal_hit:
+                collision_types.append("PEDESTAL")
+            if box_hit:
+                collision_types.append("BOX")
+            print(f"COLLISION DETECTED! Types: {', '.join(collision_types)}")
+        else:
+            print("No collision detected.")
+        print("Valid frame names at which to compute kinematics:", self._kinematics_solver.get_all_frame_names())
+            
+        return self.collision_detected
 
     def update(self, step):
         """Update the robot's position based on the target's position"""
-        object_position, object_orientation = self._target.get_world_pose()
-        # Local grasp pose in gripper frame  
-        grasp_pose_local = [self.grasp_poses[self.grasp_index]["position"], self.grasp_poses[self.grasp_index]["orientation_wxyz"]]
-        # World grasp pose in gripper frame
-        grasp_pose_world = transform_relative_pose(grasp_pose_local, object_position, object_orientation)
-        # World grasp pose in tool center frame
-        grasp_pose_center = transform_relative_pose(grasp_pose_world, self.grasp_offset)
+        # Get the target position and orientation
+        target_position, target_orientation = self._target.get_world_pose()
         
         # Track any movements of the robot base
         robot_base_translation, robot_base_orientation = self._articulation.get_world_pose()
@@ -258,8 +269,8 @@ class StandaloneIK:
         
         # Compute inverse kinematics to find joint positions
         action, success = self._articulation_kinematics_solver.compute_inverse_kinematics(
-            np.array(grasp_pose_center[0]), 
-            np.array(grasp_pose_center[1])
+            target_position, 
+            target_orientation
         )
         
         # Apply the joint positions if IK was successful
@@ -269,8 +280,8 @@ class StandaloneIK:
             carb.log_warn("IK did not converge to a solution. No action is being taken")
         
         # Check for collisions with the ground
-        self.check_for_collisions()
-    
+        collision = self.check_for_collisions()
+
     def reset(self):
         """Reset the simulation"""
         if self.world:
@@ -281,31 +292,44 @@ class StandaloneIK:
         # Set up the scene
         self.setup_scene()
         
-        print("Starting simulation loop. Press Ctrl+C to exit.")
+        print("=== IK with Collision Detection Tool ===")
+        print("This tool allows you to test IK and collision detection.")
+        print("You can drag the target frame to move the robot via IK.")
+        print("The system will detect collisions with:")
+        print("  - Ground (virtual ground plane)")
+        print("  - Pedestal (cylinder)")
+        print("  - Box (gripper finger contact)")
+        print("Collision status will be printed to the console.")
+        print("Press Ctrl+C to exit.")
+        print("=====================================")
         
         # Main simulation loop
         while simulation_app.is_running():
             # Step the simulation
-           
             self.world.step(render=True)
- 
+            
             # Update the robot's position
-
             self.update(step=1.0/60.0)
-            
-            
-            # Optional: Break the loop if a collision is detected
-            # if self.collision_detected:
-            #     print("Stopping simulation due to collision with ground.")
-            #     break
+
+            # Now access the Jacobian safely!
+            ee_index = self._articulation._articulation_view.get_link_index("panda_hand")
+            physx_interface = self._articulation._articulation_view._physics_view
+            jacobian = np.zeros((6, 7))
+            jacobians =physx_interface.get_jacobians()
+            # Get index of the end-effector link
+
+            # Extract the Jacobian for your robot and EE link:
+            # First index: env/robot (usually 0 if just one), second: link index
+            jacobian = jacobians[0, ee_index, :, :]  # shape (6, 7)
+            print(f"Jacobian is:\n{jacobian}")
 
         # Cleanup when simulation ends
         print("Simulation ended.")
 
 
 if __name__ == "__main__":
-    # Create and run the standalone IK example
-    env = StandaloneIK()
+    # Create and run the standalone IK example with collision detection
+    env = StandaloneIKWithCollision()
     env.run()
     
     # Close the simulation application

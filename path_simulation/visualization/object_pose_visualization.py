@@ -9,6 +9,7 @@ if parent_dir not in sys.path:
 from isaacsim import SimulationApp
 import json
 import time
+from scipy.spatial.transform import Rotation as R
 
 DISP_FPS        = 1<<0
 DISP_AXIS       = 1<<1
@@ -41,12 +42,42 @@ from omni.isaac.core import World
 from transforms3d.euler import euler2quat
 from omni.isaac.nucleus import get_assets_root_path
 import random
-from pxr import UsdPhysics
+from pxr import UsdPhysics, Gf, UsdGeom
 from omni.isaac.core.prims import XFormPrim
+from omni.isaac.core.objects import DynamicCuboid
 
 ROOT_PATH = get_assets_root_path() + "/Isaac/Props/YCB/Axis_Aligned/"
 
-class PoseCollection:
+# --- Surface labeling helper functions ---
+def get_surface_up_label(orientation_quat):
+    """Determine which surface of the box is facing up using the correct approach"""
+    # Define local normals for each face of the cube
+    local_normals = {
+        "z_up": np.array([0, 0, 1]),    # +z going up
+        "x_up": np.array([1, 0, 0]),    # +x going up  
+        "z_down": np.array([0, 0, -1]), # -z going up
+        "x_down": np.array([-1, 0, 0]), # -x going up
+        "y_down": np.array([0, -1, 0]), # -y going up
+        "y_up": np.array([0, 1, 0]),    # +y going up
+    }
+    
+    global_up = np.array([0, 0, 1])
+    
+    # Convert quaternion to rotation matrix and apply to normals
+    quat_wxyz = orientation_quat
+    quat_xyzw = np.array([quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]])
+    rotation = R.from_quat(quat_xyzw)
+    
+    # Transform normals to the world frame
+    world_normals = {face: rotation.apply(local_normal) for face, local_normal in local_normals.items()}
+    
+    # Find the face with the highest dot product with the global up direction
+    upward_face = max(world_normals, key=lambda face: np.dot(world_normals[face], global_up))
+    
+    return upward_face
+
+
+class PoseVisualization:
     def __init__(self, num_poses=1000, num_simultaneous=1000, output_file="/home/chris/Chris/placement_ws/src/object_poses.json"):
         # Basic variables
         self.world = None
@@ -55,28 +86,21 @@ class PoseCollection:
         self.num_poses = num_poses
         self.num_simultaneous = min(num_simultaneous, num_poses)  # Number of objects to drop at once
         self.output_file = output_file
-        self.collected_poses = []
         self.object_name = "009_gelatin_box.usd"  # Fixed to one object
-        self.settlement_threshold = 0.001  # Position change threshold in meters
-        self.settlement_time = 1.5  # Time object must be still to be considered settled
-        self.drop_height = 1.5  # Height above ground to drop objects from (meters)
-        # Area dimensions for distributing objects
-        self.area_size = max(5.0, (self.num_simultaneous ** 0.5) * 0.3)  # Scale area based on object count
-        # Add tracking for previous positions
-        self.previous_positions = {}
-        self.position_history = {}
-        self.position_timestamps = {}
-        self.save_buffer = []  # Buffer to collect poses before saving
-        self.save_buffer_size = 5000  # Save every 5000 poses (adjust as needed)
+
+        self.box_dims = np.array([0.143, 0.0915, 0.051])
         
-    def start(self):
+
+    def start(self, ycb=True):
         self.world: World = World(stage_units_in_meters=1.0, physics_dt=1.0/60.0)
         self.scene = self.world.scene
         self.scene.add_default_ground_plane()
         self.world.reset()
-        self.create_objects()
+        self.create_objects(ycb)
+
+
         
-    def create_objects(self):
+    def create_objects(self, ycb=True):
         """Create multiple YCB objects as rigid bodies with physics enabled"""
         self.objects = []
         
@@ -84,33 +108,41 @@ class PoseCollection:
         for i in range(self.num_simultaneous):
             prim_path = f"/World/Ycb_object_{i}"
             name = f"ycb_object_{i}"
-            
-            unique_prim_path = find_unique_string_name(
-                initial_name=prim_path, is_unique_fn=lambda x: not is_prim_path_valid(x)
-            )
-            unique_name = find_unique_string_name(
-                initial_name=name, is_unique_fn=lambda x: not self.scene.object_exists(x)
-            )
-            
-            usd_path = ROOT_PATH + self.object_name
-            
-            # Add reference to stage and get the prim
-            object_prim = add_reference_to_stage(usd_path=usd_path, prim_path=unique_prim_path)
-            
-            # # Apply physics properties directly to the prim
-            UsdPhysics.RigidBodyAPI.Apply(object_prim)
-            UsdPhysics.CollisionAPI.Apply(object_prim)
-            
-            # Create the RigidPrim object after applying physics properties
-            obj = RigidPrim(
-                prim_path=unique_prim_path,
-                name=unique_name,
-                position=np.array([0, 0, 0]),
-                scale=[0.8, 0.8, 0.8]
-            )
-            
-            # Make sure physics is enabled
-            obj.enable_rigid_body_physics()
+            if ycb:
+                unique_prim_path = find_unique_string_name(
+                    initial_name=prim_path, is_unique_fn=lambda x: not is_prim_path_valid(x)
+                )
+                unique_name = find_unique_string_name(
+                    initial_name=name, is_unique_fn=lambda x: not self.scene.object_exists(x)
+                )
+                
+                usd_path = ROOT_PATH + self.object_name
+                
+                # Add reference to stage and get the prim
+                object_prim = add_reference_to_stage(usd_path=usd_path, prim_path=unique_prim_path)
+                
+                # # Apply physics properties directly to the prim
+                UsdPhysics.RigidBodyAPI.Apply(object_prim)
+                UsdPhysics.CollisionAPI.Apply(object_prim)
+                
+                # Create the RigidPrim object after applying physics properties
+                obj = RigidPrim(
+                    prim_path=unique_prim_path,
+                    name=unique_name,
+                    position=np.array([0, 0, 0]),
+                    scale=[0.8, 0.8, 0.8]
+                )
+                
+                # Make sure physics is enabled
+                obj.enable_rigid_body_physics()
+            else:
+                obj = DynamicCuboid(
+                        prim_path=prim_path,
+                        name=name,
+                        position=np.array([0, 0, 0]),
+                        scale=self.box_dims.tolist(),  # [x, y, z]
+                        color=np.array([0.8, 0.8, 0.8])  # Default gray
+                    )
             
             self.scene.add(obj)
             self.objects.append(obj)
@@ -118,65 +150,13 @@ class PoseCollection:
         return self.objects
     
 
-
-    def sample_uniform_orientations(self, save_path="/home/chris/Chris/placement_ws/src/object_orientations.json", step_deg=0.5):
-        """
-        Returns a dict mapping each surface name to a list of quaternions
-        sampled every `step_deg` degrees around the "free" axis.
-        """
-        # baseline Euler angles (deg) for each surface, and which index to vary:
-        # roll (0), pitch (1), yaw (2)
-        configs = {
-            "top_surface":    (np.array([   0.0,   0.0,   0.0]), 2), # 0.01475
-            "bottom_surface": (np.array([-180.0,   0.0,   0.0]), 2), # 0.01415
-            "left_surface":   (np.array([  90.0,   0.0,   0.0]), 1), # 0.03586
-            "right_surface":  (np.array([ -90.0,   0.0,   0.0]), 1), # 0.03644
-            "front_surface":  (np.array([  90.0,   0.0,  90.0]), 1), # 0.04427
-            "back_surface":   (np.array([  90.0,   0.0, -90.0]), 1), # 0.04447
-        }
-
-        # generate 720 samples from -180° to +179.5°
-        angles = np.arange(-180, 180, step_deg)
-
-        all_orients = {}
-        for name, (base_euler, var_idx) in configs.items():
-            quats = []
-            for a in angles:
-                e = base_euler.copy()
-                e[var_idx] = a
-                # convert to radians and then quaternion
-                q = euler2quat(*np.deg2rad(e), axes='rxyz')
-                quats.append(q)
-            all_orients[name] = quats
-        
-        # Save orientations to file
-        save_data = {}
-        for surface, quaternions in all_orients.items():
-            # Convert numpy arrays to lists for JSON serialization
-            save_data[surface] = [q.tolist() for q in quaternions]
-            
-        # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(save_path) if os.path.dirname(save_path) else '.', exist_ok=True)
-        
-        # Save to file
-        with open(save_path, 'w') as f:
-            json.dump(save_data, f, indent=2)
-            
-        print(f"Saved {len(angles)} orientations per surface to {save_path}")
-
-        return all_orients
-
-
-
-
-
 def main():
     # Create 6 objects instead of just 1
-    env = PoseCollection(num_poses=432, num_simultaneous=6)
-    env.start()
+    env = PoseVisualization(num_poses=432, num_simultaneous=6)
+    env.start(ycb=False)
 
     # Load the pose file
-    poses = json.load(open("/home/chris/Chris/placement_ws/src/object_poses_v2.json"))
+    poses = json.load(open("/home/chris/Chris/placement_ws/src/object_poses_box.json"))
     total_poses = len(poses)
     
     # Number of poses per object
@@ -185,6 +165,16 @@ def main():
     # Main simulation loop
     step = 0
     max_steps = poses_per_object  # We'll run for 72 steps
+    
+    print("\n=== Surface Label Visualization ===")
+    print("Color Legend:")
+    print("  Red = Z-up (top face pointing up)")
+    print("  Green = Z-down (bottom face pointing up)")
+    print("  Blue = X-up (side face pointing up)")
+    print("  Yellow = X-down (opposite side pointing up)")
+    print("  Magenta = Y-up (front face pointing up)")
+    print("  Cyan = Y-down (back face pointing up)")
+    print("=====================================\n")
     
     while simulation_app.is_running():
         if step < max_steps:
@@ -204,8 +194,23 @@ def main():
                     position=position,
                     orientation=poses[pose_idx]["orientation_quat"]
                 )
-            
-            print(f"Step: {step}/{max_steps} - displaying poses {step} to {step+6*poses_per_object-1}")
+                
+                # Determine which surface is up and color the object
+                surface_label_0 = get_surface_up_label(poses[0*poses_per_object + step]["orientation_quat"])
+                surface_label_1 = get_surface_up_label(poses[1*poses_per_object + step]["orientation_quat"])
+                surface_label_2 = get_surface_up_label(poses[2*poses_per_object + step]["orientation_quat"])
+                surface_label_3 = get_surface_up_label(poses[3*poses_per_object + step]["orientation_quat"])
+                surface_label_4 = get_surface_up_label(poses[4*poses_per_object + step]["orientation_quat"])
+                surface_label_5 = get_surface_up_label(poses[5*poses_per_object + step]["orientation_quat"])
+   
+                
+                # Print surface label for the first object (to avoid spam)
+                print(f"Step {step}: Object 0 surface = {surface_label_0}")
+                print(f"Step {step}: Object 1 surface = {surface_label_1}")
+                print(f"Step {step}: Object 2 surface = {surface_label_2}")
+                print(f"Step {step}: Object 3 surface = {surface_label_3}")
+                print(f"Step {step}: Object 4 surface = {surface_label_4}")
+                print(f"Step {step}: Object 5 surface = {surface_label_5}")
             
             # Advance simulation
             env.world.step(render=True)
@@ -215,10 +220,11 @@ def main():
             step += 1
             
             # Optional: add a small delay to make visualization clearer
-            time.sleep(0.05)
+            time.sleep(0.1)  # Increased delay to better see the surface changes
         else:
             # Reset the loop to start over
             step = 0
+            print("\n=== Restarting visualization loop ===\n")
     
     print("Pose visualization complete")
     simulation_app.close()

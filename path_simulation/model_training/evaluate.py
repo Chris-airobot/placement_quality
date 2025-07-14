@@ -37,11 +37,10 @@ def evaluate_checkpoint(checkpoint, test_loader, device, static_obj_feat):
       'true_pos_collision':0,'false_pos_collision':0,'true_neg_collision':0,'false_neg_collision':0
     }
     with torch.no_grad():
-        for grasp, init, final, success_label, collision_label, surfaces in test_loader:
+        for grasp, init, final, success_label, collision_label in test_loader:
             grasp, init, final = [t.to(device) for t in (grasp, init, final)]
-            surfaces = surfaces.to(device)
             success_label, collision_label = success_label.to(device).unsqueeze(1), collision_label.to(device).unsqueeze(1)
-            raw_success, raw_collision = model(None, grasp, init, final, surfaces)
+            raw_success, raw_collision = model(None, grasp, init, final)
             pred_success = (torch.sigmoid(raw_success)>0.5).long(); pred_collision = (torch.sigmoid(raw_collision)>0.5).long()
 
             metrics['true_pos_success'] += ((pred_success==1)&(success_label==1)).sum().item()
@@ -82,7 +81,7 @@ def evaluate_checkpoint(checkpoint, test_loader, device, static_obj_feat):
 
 
 def main(dir_path):
-    test_data_json = os.path.join(dir_path, 'unseen', 'balanced_samples.json')
+    test_data_json = os.path.join(dir_path, 'combined_data', 'test.json')
 
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -107,11 +106,11 @@ def main(dir_path):
     #             ckpts.append(os.path.join(root, f))
     # ckpts.sort()
     # print(f"Found {len(ckpts)} checkpoints to evaluate\n")
-    ckpt = os.path.join(dir_path, 'models', 'model_20250427_224148', 'best_model_0_0520_pth')
+    ckpt = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/models/model_20250626_220307/best_model_0_1045_pth"
 
     # ——— 5) Static point‐cloud embedding ———————————————————————
     print("Computing static point-cloud embedding …")
-    pcd_path      = '/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/perfect_pointcloud.pcd'
+    pcd_path      = '/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/perfect_cube.pcd'
     object_pcd_np = load_pointcloud(pcd_path)
     object_pcd = torch.tensor(object_pcd_np, dtype=torch.float32).to(device)
     print(f"Loaded point cloud with {object_pcd.shape[0]} points...")
@@ -135,5 +134,5 @@ def main(dir_path):
 
 
 if __name__ == '__main__':
-    dir_path = '/media/chris/OS2/Users/24330/Desktop/placement_quality'
+    dir_path = '/home/chris/Chris/placement_ws/src/data/box_simulation/v2'
     main(dir_path)

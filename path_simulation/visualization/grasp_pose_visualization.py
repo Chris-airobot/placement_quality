@@ -68,7 +68,7 @@ from transforms3d.euler import euler2quat
 from omni.isaac.nucleus import get_assets_root_path
 from omni.isaac.core.prims import XFormPrim
 from ycb_simulation.utils.helper import draw_frame, transform_relative_pose, local_transform
-
+from scipy.spatial.transform import Rotation as R
 import pyquaternion
 ROOT_PATH = get_assets_root_path() + "/Isaac/Props/YCB/Axis_Aligned/"
 
@@ -93,13 +93,14 @@ class GraspVisualizer(Node):
 
         # --- Load the PCD file ---
         # NOTE: Update the file path to your actual PCD file!
-        pcd_file = '/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/pointcloud.pcd'
-        grasps_file = "/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/grasp_generation/tests.json"
+        pcd_file = '/home/chris/Chris/placement_ws/src/perfect_cube.pcd'
+        grasps_file = "/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/grasp_generation/box_grasps.json"
+        object_poses_file = "/home/chris/Chris/placement_ws/src/object_poses_box.json"
         
         # Load the original PCD data once
         self.original_pcd = o3d.io.read_point_cloud(pcd_file)
         
-        
+        self.all_object_poses = json.load(open(object_poses_file))
         
         # --- Read Grasp Poses in Object Local Frame ---
         with open(grasps_file, 'r') as f:
@@ -110,17 +111,7 @@ class GraspVisualizer(Node):
         # --- Object Pose in the Global Frame ---
         # This pose is normally provided by your simulator (or set randomly). For now, we use the identity (no translation/rotation).
         # When the simulator sets a random object pose, update this dictionary.
-        self.object_pose = {
-            "position": [0.72304,
-                         1.65579,
-                         0.028701581060886383
-                        ],
-            "orientation_wxyz": [0.7008676528930664,
-                                 0.698422908782959,
-                                -0.09660114347934723,
-                                -0.10797297209501266
-                                ]  # Identity quaternion [w, x, y, z]
-        }
+        self.object_pose = self.all_object_poses[1]
 
         self.transformed_grasp_pose = None
 
@@ -128,7 +119,7 @@ class GraspVisualizer(Node):
         # Transform and publish with current pose
         self.pcd_msg = self.create_transformed_pc_msg(self.original_pcd, 
                                                      self.object_pose['position'],
-                                                     self.object_pose['orientation_wxyz'])
+                                                     self.object_pose['orientation_quat'])
 
         ################################
         ##### Isaac Sim parameters 
@@ -139,68 +130,100 @@ class GraspVisualizer(Node):
         self.scene = None
         self.object = None  # Changed to list of objects
         self.object_name = "009_gelatin_box.usd"  # Fixed to one object
-        self.settlement_threshold = 0.001  # Position change threshold in meters
-        self.settlement_time = 1.5  # Time object must be still to be considered settled
-        self.drop_height = 1.5  # Height above ground to drop objects from (meters)
-        # Area dimensions for distributing objects
-        self.area_size = 5  # Scale area based on object count
-        # Add tracking for previous positions
-        self.previous_positions = {}
-        self.position_history = {}
-        self.position_timestamps = {}
-        self.save_buffer = []  # Buffer to collect poses before saving
-        self.save_buffer_size = 5000  # Save every 5000 poses (adjust as needed)
+        self.grasp_offset = [0, 0, -0.035] 
+        self.box_dims = np.array([0.143, 0.0915, 0.051])
+
+
 
         # Store the last used pose for comparison
         self.last_transform_pose = self.object_pose.copy()
+
+    def get_pregrasp(self,grasp_pos, grasp_quat, offset=0.15):
+        # grasp_quat: [w, x, y, z]
+        # scipy uses [x, y, z, w]!
+        grasp_quat_xyzw = [grasp_quat[1], grasp_quat[2], grasp_quat[3], grasp_quat[0]]
+        rot = R.from_quat(grasp_quat_xyzw)
+        # Get approach direction (z-axis of gripper in world frame)
+        approach_dir = rot.apply([0, 0, 1])  # [0, 0, 1] is z-axis
+        # Compute pregrasp position (move BACK along approach vector)
+        pregrasp_pos = np.array(grasp_pos) - offset * approach_dir
+        return pregrasp_pos, grasp_quat  # Same orientation
 
     def setup(self):
         self.world: World = World(stage_units_in_meters=1.0, physics_dt=1.0/60.0)
         self.scene = self.world.scene
         self.scene.add_default_ground_plane()
         self.world.reset()
+        self.object_pose["position"][0] = 0.2
+        self.object_pose["position"][1] = -0.3
         self.create_object(self.object_pose["position"], 
-                           self.object_pose["orientation_wxyz"])
+                           self.object_pose["orientation_quat"])
         
         # grasp pose draw frame
-        self.current_grasp_pose = [self.grasp_poses["1"]["position"], self.grasp_poses["1"]["orientation_wxyz"]]
-        self.transformed_grasp_pose = transform_relative_pose(self.current_grasp_pose, self.object_pose["position"], self.object_pose["orientation_wxyz"])
-        self.transformed_grasp_pose = local_transform(self.transformed_grasp_pose, [0,0,0.062])
-        print(f"The transformed grasp pose is: {self.transformed_grasp_pose}")
+        self.local_grasp_pose = [self.grasp_poses["1"]["position"], 
+                                   self.grasp_poses["1"]["orientation_wxyz"]]
+        
+
+        self.world_grasp_pose = transform_relative_pose(self.local_grasp_pose, 
+                                                        self.object_pose["position"], 
+                                                        self.object_pose["orientation_quat"])
+        
+        
+        self.transformed_grasp_pose = local_transform(self.world_grasp_pose, self.grasp_offset)
         draw_frame(self.transformed_grasp_pose[0], self.transformed_grasp_pose[1])
 
-        
+        pregrasp_pos, pregrasp_quat = self.get_pregrasp(self.transformed_grasp_pose[0], self.transformed_grasp_pose[1], offset=0.15)
+        print(f"The pregrasp pose is: {pregrasp_pos}, {pregrasp_quat}")
+
+        self.target.set_world_pose(pregrasp_pos, pregrasp_quat)
 
 
 
     def create_object(self, pos, quat):
         """Create one YCB object as rigid bodies with physics enabled"""
 
-        # Create the specified one object
-        prim_path = f"/World/Ycb_object"
-        name = f"ycb_object"
+        # # Create the specified one object
+        # prim_path = f"/World/Ycb_object"
+        # name = f"ycb_object"
         
-        unique_prim_path = find_unique_string_name(
-            initial_name=prim_path, is_unique_fn=lambda x: not is_prim_path_valid(x)
-        )
-        unique_name = find_unique_string_name(
-            initial_name=name, is_unique_fn=lambda x: not self.scene.object_exists(x)
-        )
+        # unique_prim_path = find_unique_string_name(
+        #     initial_name=prim_path, is_unique_fn=lambda x: not is_prim_path_valid(x)
+        # )
+        # unique_name = find_unique_string_name(
+        #     initial_name=name, is_unique_fn=lambda x: not self.scene.object_exists(x)
+        # )
         
-        usd_path = ROOT_PATH + self.object_name
+        # usd_path = ROOT_PATH + self.object_name
         
-        # Add reference to stage and get the prim
-        object_prim = add_reference_to_stage(usd_path=usd_path, prim_path=unique_prim_path)
+        # # Add reference to stage and get the prim
+        # object_prim = add_reference_to_stage(usd_path=usd_path, prim_path=unique_prim_path)
        
-         # Use a wrapper to wrap the object in a XFormPrim.
-        object = XFormPrim(
-            prim_path=unique_prim_path,
-            name=unique_name,
-            position=pos,
+        #  # Use a wrapper to wrap the object in a XFormPrim.
+        # object = XFormPrim(
+        #     prim_path=unique_prim_path,
+        #     name=unique_name,
+        #     position=pos,
+        #     orientation=quat,
+        # )
+
+        from omni.isaac.core.objects import DynamicCuboid   
+        object = DynamicCuboid(
+            prim_path="/World/Ycb_object",
+            name="Ycb_object",
+            position=np.array(pos),
             orientation=quat,
+            scale=self.box_dims.tolist(),  # [x, y, z]
+            color=np.random.rand(3)  # Give each a random color if you want
         )
 
         self.scene.add(object)
+        from omni.isaac.core.utils.numpy.rotations import euler_angles_to_quats
+        # Add the target frame to the stage (for IK control)
+        add_reference_to_stage(get_assets_root_path() + "/Isaac/Props/UIElements/frame_prim.usd", "/World/target")
+        self.target = XFormPrim("/World/target", scale=[0.04, 0.04, 0.04])
+        self.target.set_default_state(np.array([0.3, 0, 0.5]), euler_angles_to_quats([0, np.pi, 0]))
+        self.scene.add(self.target)
+
             
 
 
@@ -208,12 +231,12 @@ class GraspVisualizer(Node):
     def timer_callback(self):
         # Check if the object pose has changed
         if (self.object_pose['position'] != self.last_transform_pose['position'] or 
-            self.object_pose['orientation_wxyz'] != self.last_transform_pose['orientation_wxyz']):
+            self.object_pose['orientation_quat'] != self.last_transform_pose['orientation_quat']):
             
             # Update the point cloud with the new pose
             self.pcd_msg = self.create_transformed_pc_msg(self.original_pcd,
                                                          self.object_pose['position'],
-                                                         self.object_pose['orientation_wxyz'])
+                                                         self.object_pose['orientation_quat'])
             self.last_transform_pose = self.object_pose.copy()
         
         # Publish the current point cloud
@@ -225,7 +248,7 @@ class GraspVisualizer(Node):
 
         # Convert the object's pose to a homogeneous transformation matrix
         T_obj = self.pose_to_matrix(self.object_pose['position'],
-                                      self.object_pose['orientation_wxyz'])
+                                      self.object_pose['orientation_quat'])
 
         # Only visualize the current_grasp_pose
         if hasattr(self, 'current_grasp_pose'):
