@@ -37,7 +37,8 @@ class RRTTask(BaseTask):
         self._ycb = None
         self._ycb_prim_path = None
         self._frame = None
-        self.box_dims = np.array([0.143, 0.0915, 0.051])
+        # self.box_dims = np.array([0.031, 0.096, 0.190])
+        self.box_dims = np.array([0.0915, 0.051,  0.143])
         self._ycb_initial_position = initial_position
         self._ycb_initial_orientation = initial_orientation
         self._ycb_target_position = target_position

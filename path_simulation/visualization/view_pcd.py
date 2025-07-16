@@ -2,7 +2,7 @@ import open3d as o3d
 import numpy as np
 
 # Load the PCD (original remains unchanged)
-pcd_original = o3d.io.read_point_cloud("/home/chris/Chris/placement_ws/src/placement_quality/docker_files/perfect_cube.pcd")
+pcd_original = o3d.io.read_point_cloud("/home/chris/Chris/placement_ws/src/box_cube_0.031_0.096_0.190.pcd")
 print("Loaded", pcd_original)
 
 # Create a copy for visualization (original stays unchanged)
@@ -25,9 +25,9 @@ colors[:, 2] = 1.0 - z_normalized  # Blue decreases with height
 pcd_visual.colors = o3d.utility.Vector3dVector(colors)
 
 # Create coordinate frame to show local axes
-# Based on your box dimensions: dx=0.143, dy=0.0915, dz=0.051
-# The box center should be at [0, 0, dz/2] = [0, 0, 0.0255]
-box_center = np.array([0.0, 0.0, 0.0255])  # Center of the box in world coordinates
+# Calculate the center of the point cloud dynamically
+points = np.asarray(pcd_original.points)
+box_center = np.mean(points, axis=0)  # Center of the point cloud
 
 # Create coordinate frame (scale based on box size for visibility)
 frame_size = 0.05  # 5cm axes for visibility

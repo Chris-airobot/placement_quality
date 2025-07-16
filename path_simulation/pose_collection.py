@@ -53,7 +53,7 @@ class PoseCollection:
                  mode="ycb"):
         
         self.mode = mode
-        self.box_dims = np.array([0.143, 0.0915, 0.051])
+        self.box_dims = np.array([0.031, 0.096, 0.190])
         # Basic variables
         self.world = None
         self.scene = None
@@ -441,6 +441,7 @@ def main(save_path, mode="ycb"):
     simulation_app.close()
     
 if __name__ == "__main__":
-    output_path = "/home/chris/Chris/placement_ws/src/object_poses_box.json"
+    tmp_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/experiments/test_different_dimensions/object_poses_box.json"
+    # output_path = "/home/chris/Chris/placement_ws/src/object_poses_box.json"
     mode = "box"
-    main(output_path, mode)
+    main(tmp_path, mode)

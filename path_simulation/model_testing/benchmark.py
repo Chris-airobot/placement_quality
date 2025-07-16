@@ -168,11 +168,9 @@ def main(checkpoint, use_physics, test_mode=False):
     env.start()
     
 
-    object_position = [0.2, -0.3, env.current_data["initial_object_pose"][0]]
-    object_orientation = env.current_data["initial_object_pose"][1:]
-    if not test_mode:   
-        helper.tf_graph_generation(object_frame_path)
-        helper.set_cameras(object_position)
+    # if not test_mode:   
+    #     helper.tf_graph_generation(object_frame_path)
+    #     helper.set_cameras(object_position)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Evaluating on device: {device}")
 
@@ -193,48 +191,23 @@ def main(checkpoint, use_physics, test_mode=False):
         rclpy.spin_once(sim_subscriber, timeout_sec=0)
 
         # Wait for initial TF data
-        if not test_mode and (sim_subscriber.latest_tf is None or sim_subscriber.latest_pcd is None):
-            continue
+        # if not test_mode and (sim_subscriber.latest_tf is None or sim_subscriber.latest_pcd is None):
+        #     continue
             
         # Calculate the static object feature once we have a valid pointcloud
         if not static_feature_computed:
             env.gripper.open()
             print("Computing static point-cloud embedding from live pointcloud...")
-            if not test_mode:
-                # Step 1: Transform from camera frame to robot base frame
-                transformed_pcd_robot = helper.transform_pointcloud_to_frame(sim_subscriber.latest_pcd, 
-                                                                            sim_subscriber.buffer, 
-                                                                            "panda_link0")
-            
-                # Step 2: Process the pointcloud (filtering/downsampling)
-                processed_points = helper.process_pointcloud(transformed_pcd_robot, height_offset=PEDESTAL_SIZE[2])
-                
-                # Step 3: Transform from robot base frame to object frame
-                # Create a PointCloud2 message for the processed points
-                processed_ros_msg = helper.numpy_to_pointcloud2(processed_points, "panda_link0")
-                
-                # Transform the processed pointcloud to object frame
-                object_frame_pcd_msg = helper.transform_pointcloud_to_frame(processed_ros_msg, 
-                                                                            sim_subscriber.buffer, 
-                                                                            "Ycb_object")
-                
-                # Step 4: Save the object-frame pointcloud directly
-                saved_path = helper.save_pointcloud(object_frame_pcd_msg, DIR_PATH)
-                
-                # Step 5: Send to grasper
-                grasp_poses = helper.obtain_grasps(saved_path, 12345)
-                print(f"Obtained {len(grasp_poses)} grasp poses")
-            else:
-                raw_grasps = "/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/grasp_generation/tests.json"
-                with open(raw_grasps, "r") as f:
-                    raw_grasps = json.load(f)
-                for key in sorted(raw_grasps.keys(), key=int):
-                    item = raw_grasps[key]
-                    position = item["position"]
-                    orientation = item["orientation_wxyz"]
-                    # Each grasp: [ [position], [orientation] ]
-                    grasp_poses.append([position, orientation])
-                saved_path = "/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/pointcloud.pcd"
+            raw_grasps = "/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/grasp_generation/tests.json"
+            with open(raw_grasps, "r") as f:
+                raw_grasps = json.load(f)
+            for key in sorted(raw_grasps.keys(), key=int):
+                item = raw_grasps[key]
+                position = item["position"]
+                orientation = item["orientation_wxyz"]
+                # Each grasp: [ [position], [orientation] ]
+                grasp_poses.append([position, orientation])
+            saved_path = "/home/chris/Chris/placement_ws/src/box_cube_0.031_0.096_0.190.pcd"
             
             # Convert pointcloud to tensor
             object_pcd_np = load_pointcloud(saved_path)

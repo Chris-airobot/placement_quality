@@ -95,15 +95,15 @@ class StandaloneIK:
 
 
         # File reads
-        object_poses_file = "/home/chris/Chris/placement_ws/src/object_poses_box.json"
+        object_poses_file = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/experiments/test_different_dimensions/object_poses_box.json"
         self.all_object_poses = json.load(open(object_poses_file))
         
-        self.grasp_poses_file = "/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/src/grasp_generation/box_grasps.json"
+        self.grasp_poses_file = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/experiments/test_different_dimensions/box_cube_0.031_0.096_0.190_test.json"
         self.grasp_poses = json.load(open(self.grasp_poses_file))
         start_index = 0
         self.grasp_poses = {k: v for k, v in self.grasp_poses.items() if int(k) >= start_index}
 
-        self.data_folder = base_dir + "/raw_data/"
+        self.data_folder = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/experiments/test_different_dimensions"
 
         # Offset of the grasp from the object center
         # Grasp poses are based on the gripper center, so we need to offset it to transform it to the tool_center, i.e. 
@@ -113,7 +113,7 @@ class StandaloneIK:
         self.count = 0
         self.episode_count = start_index
 
-        self.box_dims = np.array([0.143, 0.0915, 0.051])
+        self.box_dims = np.array([0.031, 0.096, 0.190])
 
     def setup_scene(self):
         """Create a new stage and set up the scene with lighting and camera"""
@@ -165,7 +165,7 @@ class StandaloneIK:
         
         # Add a box object for collision testing (similar to the data collection script)
         from omni.isaac.core.objects import VisualCuboid
-        box_dims = np.array([0.143, 0.0915, 0.051])  # Same dimensions as in data collection
+        box_dims = self.box_dims  # Same dimensions as in data collection
         target = VisualCuboid(
             prim_path="/World/Ycb_object",
             name="Ycb_object",

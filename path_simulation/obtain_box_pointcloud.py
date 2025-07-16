@@ -65,8 +65,14 @@ def main():
     world = World(stage_units_in_meters=1.0, physics_dt=1.0/60.0)
     world.scene.add_default_ground_plane()
 
-    # 2. Define box dimensions (change as needed)
-    dx, dy, dz = 0.143, 0.0915, 0.051
+    # Randomly sample box dimensions ensuring at least one graspable dimension (≤8cm)
+    while True:
+        dx = np.random.uniform(0.03, 0.20)
+        dy = np.random.uniform(0.03, 0.20)
+        dz = np.random.uniform(0.03, 0.20)
+        if min(dx, dy, dz) <= 0.08:
+            break
+
 
     # 3. Create the cube at the origin (no rotation)
     box = DynamicCuboid(
@@ -88,13 +94,14 @@ def main():
     # 6. Sample surface points in local frame
     n_points_per_side = 30  # adjust for density
     points_local = sample_box_surface(dx, dy, dz, n_points_per_side=n_points_per_side)
+    points_local_centered = points_local - points_local.mean(axis=0)
 
     # 7. Transform to world frame
     rot = R.from_quat(quat_xyzw)
-    points_world = rot.apply(points_local) + position
+    points_world = rot.apply(points_local_centered) + position
 
     # 8. Save as PCD
-    save_pcd("perfect_cube.pcd", points_local)
+    save_pcd(f"box_cube_{dx:.3f}_{dy:.3f}_{dz:.3f}.pcd", points_world)
 
     print("Cube created and PCD saved. Isaac Sim GUI will remain open for inspection.")
     print("Press Ctrl+C or close the Isaac Sim window to end the script.")

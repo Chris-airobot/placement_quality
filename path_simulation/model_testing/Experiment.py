@@ -60,6 +60,7 @@ from model_training.train import load_pointcloud
 from scipy.spatial.transform import Rotation as R
 from omni.isaac.core.utils.types import ArticulationAction
 from omni.isaac.core.utils.rotations import euler_angles_to_quat
+from utils import *
 # from omni.isaac.core import SimulationContext
 import copy
 # # Before running simulation
@@ -84,6 +85,81 @@ GRIPPER_CLOSE_POS = 0.0    # Fully closed position
 
 
 
+
+def gradual_gripper_control(env: Simulator, target_open, max_steps=100):
+    """
+    Gradually control the gripper to open or close position with force detection
+    Args:
+        env: Simulator instance
+        target_open: True to open gripper, False to close gripper
+        max_steps: Maximum number of steps to prevent infinite loops
+    Returns:
+        bool: True if gripper has reached target position or object grasped, False otherwise
+    """
+    current_positions = env.gripper.get_joint_positions()
+    
+    # Add step counter to prevent infinite loops
+    if not hasattr(env, 'gripper_step_counter'):
+        env.gripper_step_counter = 0
+    else:
+        env.gripper_step_counter += 1
+    
+    # Check for timeout
+    if env.gripper_step_counter >= max_steps:
+        print(f"⚠️ Gripper control timeout after {max_steps} steps - forcing completion")
+        env.gripper_step_counter = 0
+        env.forced_completion = True
+        return True
+    
+    if target_open:
+        # Gradually open gripper (move toward 0.04)
+        new_positions = [
+            min(current_positions[0] + GRIPPER_STEP_SIZE, GRIPPER_OPEN_POS),
+            min(current_positions[1] + GRIPPER_STEP_SIZE, GRIPPER_OPEN_POS)
+        ]
+        # Fix: Use AND instead of OR - both fingers must reach target
+        target_reached = (abs(current_positions[0] - GRIPPER_OPEN_POS) < 1e-3 and 
+                         abs(current_positions[1] - GRIPPER_OPEN_POS) < 1e-3)
+        
+        # Add progress tracking
+        if env.gripper_step_counter % 100 == 0:  # Print every 100 steps
+            print(f"Opening gripper: pos1={current_positions[0]:.4f}, pos2={current_positions[1]:.4f}, target={GRIPPER_OPEN_POS}")
+            
+    else:
+        # Check if object contact force exceeds threshold BEFORE moving
+        force_grasped = env.contact_force > env.force_threshold
+        
+        if force_grasped:
+            print(f"Force threshold exceeded ({env.contact_force:.3f}N > {env.force_threshold}N), stopping gripper closing")
+            env.gripper_step_counter = 0  # Reset counter
+            return True
+        
+        # Gradually close gripper (move toward 0.0)
+        new_positions = [
+            max(current_positions[0] - GRIPPER_STEP_SIZE, GRIPPER_CLOSE_POS),
+            max(current_positions[1] - GRIPPER_STEP_SIZE, GRIPPER_CLOSE_POS)
+        ]
+        
+        # Fix: Use AND instead of OR - both fingers must reach target
+        target_reached = (abs(current_positions[0] - GRIPPER_CLOSE_POS) < 1e-3 and 
+                         abs(current_positions[1] - GRIPPER_CLOSE_POS) < 1e-3)
+        
+        # Print force information for debugging
+        if env.contact_force > 0:
+            print(f"Contact force: {env.contact_force:.3f}N (threshold: {env.force_threshold}N)")
+        
+        # Add progress tracking
+        if env.gripper_step_counter % 100 == 0:  # Print every 100 steps
+            print(f"Closing gripper: pos1={current_positions[0]:.4f}, pos2={current_positions[1]:.4f}, target={GRIPPER_CLOSE_POS}")
+    
+    # Apply the gradual movement
+    env.gripper.apply_action(ArticulationAction(joint_positions=new_positions))
+    
+    # Reset counter when target is reached
+    if target_reached:
+        env.gripper_step_counter = 0
+    
+    return target_reached
 
 
 def model_prediction(model, data, device):
@@ -167,139 +243,7 @@ def robot_action(env: Simulator, grasp_pose, current_state, next_state):
         })
         return False
     
-def obtain_pcd(sim_subscriber: helper.TFSubscriber):
-    # Step 1: Transform from camera frame to robot base frame
-    transformed_pcd_robot = helper.transform_pointcloud_to_frame(sim_subscriber.latest_pcd, 
-                                                                sim_subscriber.buffer, 
-                                                                "panda_link0")
 
-    # Step 2: Process the pointcloud (filtering/downsampling)
-    processed_points = helper.process_pointcloud(transformed_pcd_robot, height_offset=PEDESTAL_SIZE[1])
-    
-    # Step 3: Transform from robot base frame to object frame
-    # Create a PointCloud2 message for the processed points
-    processed_ros_msg = helper.numpy_to_pointcloud2(processed_points, "panda_link0")
-    
-    # Transform the processed pointcloud to object frame
-    object_frame_pcd_msg = helper.transform_pointcloud_to_frame(processed_ros_msg, 
-                                                                sim_subscriber.buffer, 
-                                                                "Ycb_object")
-    
-    # Step 4: Save the object-frame pointcloud directly
-    saved_path = helper.save_pointcloud(object_frame_pcd_msg, DIR_PATH)
-
-    return saved_path
-
-
-def get_prepose(grasp_pos, grasp_quat, offset=0.15):
-    # grasp_quat: [w, x, y, z]
-    # scipy uses [x, y, z, w]!
-    grasp_quat_xyzw = [grasp_quat[1], grasp_quat[2], grasp_quat[3], grasp_quat[0]]
-    rot = R.from_quat(grasp_quat_xyzw)
-    # Get approach direction (z-axis of gripper in world frame)
-    approach_dir = rot.apply([0, 0, 1])  # [0, 0, 1] is z-axis
-    # Compute pregrasp position (move BACK along approach vector)
-    pregrasp_pos = np.array(grasp_pos) - offset * approach_dir
-    return pregrasp_pos, grasp_quat  # Same orientation
-    
-def gradual_gripper_control(env: Simulator, target_open, max_steps=100):
-    """
-    Gradually control the gripper to open or close position with force detection
-    Args:
-        env: Simulator instance
-        target_open: True to open gripper, False to close gripper
-        max_steps: Maximum number of steps to prevent infinite loops
-    Returns:
-        bool: True if gripper has reached target position or object grasped, False otherwise
-    """
-    current_positions = env.gripper.get_joint_positions()
-    
-    # Add step counter to prevent infinite loops
-    if not hasattr(env, 'gripper_step_counter'):
-        env.gripper_step_counter = 0
-    else:
-        env.gripper_step_counter += 1
-    
-    # Check for timeout
-    if env.gripper_step_counter >= max_steps:
-        print(f"⚠️ Gripper control timeout after {max_steps} steps - forcing completion")
-        env.gripper_step_counter = 0
-        env.forced_completion = True
-        return True
-    
-    if target_open:
-        # Gradually open gripper (move toward 0.04)
-        new_positions = [
-            min(current_positions[0] + GRIPPER_STEP_SIZE, GRIPPER_OPEN_POS),
-            min(current_positions[1] + GRIPPER_STEP_SIZE, GRIPPER_OPEN_POS)
-        ]
-        # Fix: Use AND instead of OR - both fingers must reach target
-        target_reached = (abs(current_positions[0] - GRIPPER_OPEN_POS) < 1e-3 and 
-                         abs(current_positions[1] - GRIPPER_OPEN_POS) < 1e-3)
-        
-        # Add progress tracking
-        if env.gripper_step_counter % 100 == 0:  # Print every 100 steps
-            print(f"Opening gripper: pos1={current_positions[0]:.4f}, pos2={current_positions[1]:.4f}, target={GRIPPER_OPEN_POS}")
-            
-    else:
-        # Check if object contact force exceeds threshold BEFORE moving
-        force_grasped = env.contact_force > env.force_threshold
-        
-        if force_grasped:
-            print(f"Force threshold exceeded ({env.contact_force:.3f}N > {env.force_threshold}N), stopping gripper closing")
-            env.gripper_step_counter = 0  # Reset counter
-            return True
-        
-        # Gradually close gripper (move toward 0.0)
-        new_positions = [
-            max(current_positions[0] - GRIPPER_STEP_SIZE, GRIPPER_CLOSE_POS),
-            max(current_positions[1] - GRIPPER_STEP_SIZE, GRIPPER_CLOSE_POS)
-        ]
-        
-        # Fix: Use AND instead of OR - both fingers must reach target
-        target_reached = (abs(current_positions[0] - GRIPPER_CLOSE_POS) < 1e-3 and 
-                         abs(current_positions[1] - GRIPPER_CLOSE_POS) < 1e-3)
-        
-        # Print force information for debugging
-        if env.contact_force > 0:
-            print(f"Contact force: {env.contact_force:.3f}N (threshold: {env.force_threshold}N)")
-        
-        # Add progress tracking
-        if env.gripper_step_counter % 100 == 0:  # Print every 100 steps
-            print(f"Closing gripper: pos1={current_positions[0]:.4f}, pos2={current_positions[1]:.4f}, target={GRIPPER_CLOSE_POS}")
-    
-    # Apply the gradual movement
-    env.gripper.apply_action(ArticulationAction(joint_positions=new_positions))
-    
-    # Reset counter when target is reached
-    if target_reached:
-        env.gripper_step_counter = 0
-    
-    return target_reached
-
-def pose_difference(initial_pose, final_pose):
-    # Positions
-    pos_init = np.array(initial_pose[:3])
-    pos_final = np.array(final_pose[:3])
-    pos_diff = np.linalg.norm(pos_final - pos_init)
-
-    # Orientations (quaternions, assumed [x, y, z, w] or [w, x, y, z] - check your format!)
-    quat_init = np.array(initial_pose[3:])
-    quat_final = np.array(final_pose[3:])
-    # If your quaternions are [w, x, y, z], convert to [x, y, z, w] for scipy
-    quat_init_xyzw = np.roll(quat_init, -1)
-    quat_final_xyzw = np.roll(quat_final, -1)
-    r_init = R.from_quat(quat_init_xyzw)
-    r_final = R.from_quat(quat_final_xyzw)
-    # Relative rotation
-    r_rel = r_final * r_init.inv()
-    angle_diff = r_rel.magnitude()  # in radians
-    angle_diff_deg = np.degrees(angle_diff)
-
-    return {
-        "position_error": pos_diff.tolist(),
-        "orientation_error_deg": angle_diff_deg.tolist()
-    }
 
 def write_results_to_file(results, file_path, mode='a'):
     """Append results to a JSONL file, ensuring the directory exists."""
@@ -309,7 +253,7 @@ def write_results_to_file(results, file_path, mode='a'):
             f.write(json.dumps(r) + "\n")
 
 def main(checkpoint, use_physics, test_mode=False):
-    test_mode = False
+    test_mode = True
     object_frame_path = "/World/Ycb_object"
     pcd_topic = "/cam0/depth_pcl"
 
@@ -336,7 +280,7 @@ def main(checkpoint, use_physics, test_mode=False):
     # Add a flag to check if we have computed the static object feature
     static_feature_computed = False
 
-    results_file = os.path.join(DIR_PATH, "experiment_results.jsonl")
+    results_file = os.path.join(DIR_PATH, "experiment_results_origin_box.jsonl")
     write_interval = 1
     last_written = 0
 
@@ -362,6 +306,7 @@ def main(checkpoint, use_physics, test_mode=False):
             print("Computing static point-cloud embedding from live pointcloud...")
             
             # saved_path = obtain_pcd(sim_subscriber)
+            # saved_path = "/home/chris/Chris/placement_ws/src/box_cube_0.031_0.096_0.190.pcd"
             saved_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/experiments/run_20250701_010620/pointcloud.pcd"
 
             # Convert pointcloud to tensor
@@ -502,6 +447,7 @@ def main(checkpoint, use_physics, test_mode=False):
                         "index": env.data_index,
                         "grasp": True,
                         "collision_counter": env.collision_counter,
+                        "prediction_score": pred_collision_val,
                         "reason": pose_diff,
                         "forced_completion": env.forced_completion
                     })
@@ -523,6 +469,7 @@ def main(checkpoint, use_physics, test_mode=False):
                     "index": env.data_index,
                     "grasp": True,
                     "collision_counter": env.collision_counter,
+                    "prediction_score": pred_collision_val,
                     "reason": "IK",
                     "forced_completion": env.forced_completion
                 })
@@ -563,6 +510,7 @@ def main(checkpoint, use_physics, test_mode=False):
                             "index": env.data_index,
                             "grasp": False,
                             "collision_counter": env.collision_counter,
+                            "prediction_score": pred_collision_val,
                             "reason": "gripper",
                             "forced_completion": env.forced_completion
                         })
@@ -570,11 +518,11 @@ def main(checkpoint, use_physics, test_mode=False):
                         env.data_index += 1
                         env.current_data = env.test_data[env.data_index]
                         object_next_orientation = env.current_data["initial_object_pose"][1:]
-                        while object_next_orientation == object_orientation:
+                        # while object_next_orientation == object_orientation:
 
-                            env.data_index += 1
-                            env.current_data = env.test_data[env.data_index]
-                            object_next_orientation = env.current_data["initial_object_pose"][1:]
+                        #     env.data_index += 1
+                        #     env.current_data = env.test_data[env.data_index]
+                        #     object_next_orientation = env.current_data["initial_object_pose"][1:]
 
                         env.current_data = env.test_data[env.data_index]
                         env.state = "SETUP"

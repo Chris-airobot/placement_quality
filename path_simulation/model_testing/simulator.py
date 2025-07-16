@@ -63,11 +63,11 @@ class Simulator:
         self.forced_completion = False
 
         # Test data
-        with open("/home/chris/Chris/placement_ws/src/data/box_simulation/v2/combined_data/data_with_difficulty.json", "r") as f:
+        with open("/home/chris/Chris/placement_ws/src/placement_quality/path_simulation/model_testing/origin_box_experiment_test.json", "r") as f:
             self.test_data: list[dict] = json.load(f)
 
         self.current_data = None
-        self.data_index = 681
+        self.data_index = 0
         self.results = []
 
 
@@ -91,8 +91,7 @@ class Simulator:
         print(f"RRT Controller created")
 
         self.current_data = self.test_data[self.data_index]
-        print(f"Current data: {self.current_data}")
-        quit()
+
         self.data_index += 1
 
         self.setup_contact_sensors()  # New method using random_collection.py style
