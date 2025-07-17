@@ -9,7 +9,7 @@ from scipy.spatial.transform import Rotation as R
 
 
 
-def get_grasp_points_top_left_right(box_pose, box_dims, world_z_axis):
+def get_grasp_points_top_left_right(box_pose, box_dims, up_axis):
     dx, dy, dz = box_dims
     # Define box local axes
     local_axes = np.eye(3)  # x, y, z
@@ -19,10 +19,20 @@ def get_grasp_points_top_left_right(box_pose, box_dims, world_z_axis):
     world_axes = r.apply(local_axes)
 
     # Find which local axis is most aligned with world z
-    axis_scores = np.abs(world_axes @ np.array(world_z_axis))
-    up_axis = np.argmax(axis_scores)
-    up_sign = np.sign(world_axes[up_axis,2])
-
+    # axis_scores = np.abs(world_axes @ np.array(world_z_axis))
+    # up_axis = np.argmax(axis_scores)
+    
+    # Calculate the sign based on the z-component of the up_axis in world coordinates
+    # world_axes[up_axis, 2] gives the z-component of the local up_axis in world frame
+    up_sign = np.sign(world_axes[up_axis, 2])
+    
+    # Handle the case where the z-component is exactly 0 (identity orientation)
+    # In this case, we need to determine the sign based on the intended orientation
+    if up_sign == 0:
+        # For identity orientation, if up_axis is 0 (x-axis), we want positive x to be "up"
+        # So we set up_sign to 1 to make the top face point in the positive x direction
+        up_sign = 1
+    
     # Map index to axis name for reference
     axis_names = ['x', 'y', 'z']
     up_axis_name = axis_names[up_axis]
@@ -97,9 +107,9 @@ def get_grasp_pose(box_pose, box_dims):
         poses: (33, 7) array of [x, y, z, qx, qy, qz, qw]
         metadata: list of (point_type, angle) for each pose
     """
-    world_z_axis = [0, 0, 1]
+    up_axis = 0
     # 1. Positions (assumed to be correct)
-    pts = get_grasp_points_top_left_right(box_pose, box_dims, world_z_axis)
+    pts = get_grasp_points_top_left_right(box_pose, box_dims, up_axis)
     point_types = [
         'top_center', 'top_left', 'top_right',
         'left_center', 'left_top', 'left_bottom',
@@ -123,11 +133,11 @@ def get_grasp_pose(box_pose, box_dims):
         idxs = face_groups[face]
         # You should define the *surface normal* for each face
         if face == 'top':
-            normal_local = np.array([0, 0, 1])
-        elif face == 'left':
             normal_local = np.array([1, 0, 0])
+        elif face == 'left':
+            normal_local = np.array([0, 1, 0])
         elif face == 'right':
-            normal_local = np.array([-1, 0, 0])
+            normal_local = np.array([0, -1, 0])
         # Convert normal to world frame
         q = np.array(box_pose[3:])
         box_rot = R.from_quat(q)  # [x, y, z, w]
@@ -151,7 +161,8 @@ def get_grasp_pose(box_pose, box_dims):
         #     r_base = r_base * R.from_euler('z', 90, degrees=True)   # <--- THE MISSING LINE!
         # if face == "right":
         #     r_base = r_base * R.from_euler('z', 90, degrees=True)   # <--- THE MISSING LINE!
-        r_base = r_base * R.from_euler('z', 90, degrees=True)   # <--- THE MISSING LINE!
+        # r_base = r_base * R.from_euler('z', 90, degrees=True)   # <--- for [0.0915, 0.051,  0.143]
+        # r_base = r_base * R.from_euler('x', 90, degrees=True)   # <--- for [0.143, 0.0915,  0.051]
         # Assign to all three points on that face
         for idx in idxs:
             r_base_list[idx] = r_base
@@ -247,8 +258,8 @@ def get_flipped_object_pose(initial_pose, flip_angle_deg, axis='z'):
 if __name__ == "__main__":
     import json
     box_pose = [0, 0, 0, 0, 0, 0, 1]
-    # box_dims = [0.031, 0.096, 0.190]
-    box_dims = [0.0915, 0.051,  0.143]
+    # box_dims = [0.0915, 0.051,  0.143]
+    box_dims = [0.143, 0.0915,  0.051]
     grasps, _ = get_grasp_pose(box_pose, box_dims)
     output = {}
     for i, pose in enumerate(grasps):
@@ -265,14 +276,14 @@ if __name__ == "__main__":
     from placement_quality.ycb_simulation.utils.helper import draw_frame, transform_relative_pose, local_transform
 
     test_data = []
-    object_initial_pose = [0.2, -0.3, 0.1715, 0, 0, 0, -1]
+    object_initial_pose = [0.2, -0.3, 0.1715, 0.5, 0.5, -0.5, 0.5]
     flip_angles = [180]
     for flip_angle in flip_angles:
         final_pose = get_flipped_object_pose(object_initial_pose, flip_angle, axis='y')
         for i in range(0,27):
             x, y, z, qx, qy, qz, qw = grasps[i]
             grasp_pose = [x, y, z, qw, qx, qy, qz]
-            grasp_offset = [0, 0, -0.1043]
+            grasp_offset = [0, 0, -0.1023]
             grasp_pose_local = [grasp_pose[:3], grasp_pose[3:]]
             world_grasp_pose = transform_relative_pose(grasp_pose_local, object_initial_pose[:3], object_initial_pose[3:])
             transformed_grasp_pose = local_transform(world_grasp_pose, grasp_offset)
@@ -285,5 +296,5 @@ if __name__ == "__main__":
                 "grasp_pose": np.concatenate([transformed_grasp_pose[0], transformed_grasp_pose[1]]).tolist()
             }
             test_data.append(current_data)
-    with open("/home/chris/Chris/placement_ws/src/placement_quality/path_simulation/model_testing/origin_box_experiment_test.json", "w") as f:
+    with open("/home/chris/Chris/placement_ws/src/placement_quality/path_simulation/model_testing/actual_box_experiment_test.json", "w") as f:
         json.dump(test_data, f, indent=4)

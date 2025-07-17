@@ -183,8 +183,8 @@ class GraspVisualizer(Node):
         self.setup_kinematics()
         
         # grasp pose draw frame
-        self.local_grasp_pose = [self.grasp_poses["1"]["position"], 
-                                   self.grasp_poses["1"]["orientation_wxyz"]]
+        self.local_grasp_pose = [self.grasp_poses["15"]["position"], 
+                                   self.grasp_poses["15"]["orientation_wxyz"]]
         print(f"The local grasp pose is: {self.local_grasp_pose}")
         self.world_grasp_pose = transform_relative_pose(self.local_grasp_pose, 
                                                         self.object_pose["position"], 
@@ -192,7 +192,7 @@ class GraspVisualizer(Node):
         
 
 
-        self.transformed_grasp_pose = local_transform(self.world_grasp_pose, [0,0,-0.1043])
+        self.transformed_grasp_pose = local_transform(self.world_grasp_pose, [0,0,-0.1033])
         draw_frame(self.transformed_grasp_pose[0], self.transformed_grasp_pose[1])
 
         pregrasp_pos, pregrasp_quat = self.get_pregrasp(self.transformed_grasp_pose[0], self.transformed_grasp_pose[1], offset=0.15)

@@ -370,6 +370,8 @@ def main(checkpoint, use_physics, test_mode=False):
             # This one is object's placement preview
             final_object_position = np.array([0.2, -0.3, env.current_data["final_object_pose"][0]])
             final_object_orientation = env.current_data["final_object_pose"][1:]
+            print(f"initial object orientation: {object_orientation}")
+            print(f"final object orientation: {final_object_orientation}")
 
             env.task.set_params(
                 object_position=object_position,

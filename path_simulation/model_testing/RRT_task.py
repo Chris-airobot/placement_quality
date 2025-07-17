@@ -264,6 +264,7 @@ class RRTTask(BaseTask):
     ) -> None:
         """Set the object parameters."""
         if object_position is not None or object_orientation is not None:
+            print(f"object_orientation in set up: {object_orientation}")
             self._ycb.set_world_pose(position=object_position, orientation=object_orientation)
         if preview_box_position is not None or preview_box_orientation is not None:
             self.preview_box.set_world_pose(position=preview_box_position, orientation=preview_box_orientation)

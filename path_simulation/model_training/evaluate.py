@@ -82,21 +82,24 @@ def evaluate_checkpoint(checkpoint, test_loader, device, static_obj_feat):
 
 def main(dir_path):
     test_data_json = os.path.join(dir_path, 'combined_data', 'test.json')
-
+    test_data_json = "/home/chris/Chris/placement_ws/src/placement_quality/path_simulation/model_testing/actual_box_experiment_test.json"
+    import json
+    with open(test_data_json, 'r') as f:
+        test_data = json.load(f)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Evaluating on device: {device}")
     
     # load test set
-    test_ds = KinematicFeasibilityDataset(test_data_json)
-    test_loader = DataLoader(
-        test_ds,
-        batch_size=256,
-        shuffle=False,
-        num_workers=8,
-        pin_memory=True
-    )
-    print(f"Loaded test set: {len(test_ds)} samples → {len(test_loader)} batches\n")
+    # test_ds = KinematicFeasibilityDataset(test_data_json)
+    # test_loader = DataLoader(
+    #     test_ds,
+    #     batch_size=256,
+    #     shuffle=False,
+    #     num_workers=8,
+    #     pin_memory=True
+    # )
+    # print(f"Loaded test set: {len(test_ds)} samples → {len(test_loader)} batches\n")
 
     # ─── find all .pth under models/*/*.pth ────────────────────────────────
     # ckpts = []
@@ -110,7 +113,7 @@ def main(dir_path):
 
     # ——— 5) Static point‐cloud embedding ———————————————————————
     print("Computing static point-cloud embedding …")
-    pcd_path      = '/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/perfect_cube.pcd'
+    pcd_path      = '/home/chris/Chris/placement_ws/src/data/box_simulation/v2/experiments/run_20250701_010620/pointcloud.pcd'
     object_pcd_np = load_pointcloud(pcd_path)
     object_pcd = torch.tensor(object_pcd_np, dtype=torch.float32).to(device)
     print(f"Loaded point cloud with {object_pcd.shape[0]} points...")
@@ -120,16 +123,70 @@ def main(dir_path):
         pn = PointNetEncoder(global_feat_dim=256).to(device)
         static_obj_feat = pn(object_pcd.unsqueeze(0)).detach()   # [1,256]
     print("Done.\n")
+    checkpoint_data = torch.load(ckpt, map_location=device)
+    # if you saved via Lightning it may be under 'state_dict'
+    raw_state_dict = checkpoint_data.get("state_dict", checkpoint_data)
+
+    # 2) Strip any unwanted prefix (e.g. "_orig_mod.")
+    prefix_to_strip = "_orig_mod."
+    cleaned_state_dict = {}
+    for key, tensor in raw_state_dict.items():
+        if key.startswith(prefix_to_strip):
+            new_key = key[len(prefix_to_strip):]
+        else:
+            new_key = key
+        cleaned_state_dict[new_key] = tensor
+    model = GraspObjectFeasibilityNet(use_static_obj=True).to(device)
+    model.register_buffer('static_obj_feat', static_obj_feat)  # now model.static_obj_feat is available
+    model.load_state_dict(cleaned_state_dict)
+    model.eval()
+
+    counter = 0
+    for data in test_data:
+        const_xy = torch.tensor([0.2, -0.3], dtype=torch.float32)
+    
+        # Preprocess the initial and final poses as done in the dataset
+        initial_pose = torch.cat([const_xy, torch.tensor(data["initial_object_pose"], dtype=torch.float32)])
+        final_pose = torch.cat([const_xy, torch.tensor(data["final_object_pose"], dtype=torch.float32)])
+        
+        # Now use the preprocessed tensors with batch dimension
+        # print(f"input 1: {torch.tensor(data['grasp_pose'], dtype=torch.float32).unsqueeze(0).to(device)}")
+        # print(f"input 2: {initial_pose.unsqueeze(0).to(device)}")
+        # print(f"input 3: {final_pose.unsqueeze(0).to(device)}")
+        raw_success, raw_collision = model(None, 
+                                        torch.tensor(data["grasp_pose"], dtype=torch.float32).unsqueeze(0).to(device), 
+                                        initial_pose.unsqueeze(0).to(device), 
+                                        final_pose.unsqueeze(0).to(device))
+        # initial_object_pose = [0.2, -0.3] + data["initial_object_pose"]
+        
+        # final_object_pose = [0.2, -0.3] + data["final_object_pose"]
+        # grasp_pose = data["grasp_pose"]
+        # init = torch.tensor(initial_object_pose, dtype=torch.float32).to(device)
+        # final = torch.tensor(final_object_pose, dtype=torch.float32).to(device)
+        # grasp = torch.tensor(grasp_pose, dtype=torch.float32).to(device)
+        # raw_success, raw_collision = model(None, grasp, init, final)
+            
+        # Apply sigmoid to convert logits to probabilities
+        pred_success = torch.sigmoid(raw_success)
+        pred_collision = torch.sigmoid(raw_collision)
+        
+        # Extract scalar values from tensors
+        pred_success_val = pred_success.item()
+        pred_collision_val = pred_collision.item()
+            
+        counter += 1
+        print(f"For {counter}: pred_success: {pred_success_val}, pred_collision: {1-pred_collision_val}")
 
 
 
 
-    print("→ Evaluating", os.path.basename(ckpt))
-    rec = evaluate_checkpoint(ckpt, test_loader, device, static_obj_feat)
+
+    # print("→ Evaluating", os.path.basename(ckpt))
+    # rec = evaluate_checkpoint(ckpt, test_loader, device, static_obj_feat)
 
     # print results
     print("\nModel results:")
-    print(rec)
+    # print(rec)
 
 
 

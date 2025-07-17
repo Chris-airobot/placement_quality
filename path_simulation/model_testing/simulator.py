@@ -63,7 +63,7 @@ class Simulator:
         self.forced_completion = False
 
         # Test data
-        with open("/home/chris/Chris/placement_ws/src/placement_quality/path_simulation/model_testing/origin_box_experiment_test.json", "r") as f:
+        with open("/home/chris/Chris/placement_ws/src/placement_quality/path_simulation/model_testing/actual_box_experiment_test.json", "r") as f:
             self.test_data: list[dict] = json.load(f)
 
         self.current_data = None
