@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as R
 from sklearn.decomposition import PCA
+from sklearn.metrics import precision_recall_curve, roc_curve, auc, confusion_matrix, classification_report
 from tqdm import tqdm
 
 def ensure_dir(d):
@@ -180,11 +181,6 @@ def write_report(output_dir):
     for k,v in ang.items():
         report.append(f"  {k}: {v}\n")
     report.append("\n")
-    with open(os.path.join(output_dir, "surface_counts.json")) as f:
-        sc = json.load(f)
-    report.append("Surface Transitions:\n")
-    for k,v in sc.items():
-        report.append(f"  {k}: {v}\n")
     report.append("\nRandom Samples:\n")
     with open(os.path.join(output_dir, "random_samples.txt")) as f:
         report.extend(f.readlines())
@@ -306,6 +302,177 @@ def analyze_difficulty_simple(data, output_dir):
     print(f"    → Reference stats saved for future use")
     print(f"    → Difficulty range: {difficulties.min():.3f} to {difficulties.max():.3f}")
 
+def analyze_model_collision_prediction(data, output_dir):
+    """
+    Analyze model's collision prediction performance by finding optimal threshold
+    and comparing model scores with actual collision data.
+    """
+    print("[7/7] Analyzing model collision prediction performance...")
+    
+    # Extract model scores and actual collision labels
+    model_scores = []
+    actual_collisions = []
+    valid_indices = []
+    
+    for i, sample in enumerate(data):
+        if "model_no_collision_prob" in sample and "collision_counter" in sample:
+            model_scores.append(sample["model_no_collision_prob"])
+            # Convert collision_counter to binary: > 0 means collision
+            actual_collisions.append(1 if sample["collision_counter"] > 0 else 0)
+            valid_indices.append(i)
+    
+    if len(model_scores) == 0:
+        print("    → No valid samples found with model_no_collision_prob and collision_counter!")
+        return
+    
+    model_scores = np.array(model_scores)
+    actual_collisions = np.array(actual_collisions)
+    
+    print(f"    → Found {len(model_scores)} valid samples")
+    print(f"    → Model score range: {model_scores.min():.4f} to {model_scores.max():.4f}")
+    print(f"    → Actual collisions: {np.sum(actual_collisions)} out of {len(actual_collisions)} ({np.mean(actual_collisions)*100:.1f}%)")
+    
+    # Calculate ROC curve and find optimal threshold
+    fpr, tpr, roc_thresholds = roc_curve(actual_collisions, model_scores)
+    roc_auc = auc(fpr, tpr)
+    
+    # Calculate precision-recall curve
+    precision, recall, pr_thresholds = precision_recall_curve(actual_collisions, model_scores)
+    pr_auc = auc(recall, precision)
+    
+    # Find optimal threshold using different methods
+    # Method 1: Youden's J statistic (maximizes TPR - FPR)
+    j_scores = tpr - fpr
+    optimal_idx = np.argmax(j_scores)
+    optimal_threshold_youden = roc_thresholds[optimal_idx]
+    
+    # Method 2: Closest to (0,1) on ROC curve
+    distances = np.sqrt((1-tpr)**2 + fpr**2)
+    optimal_idx_closest = np.argmin(distances)
+    optimal_threshold_closest = roc_thresholds[optimal_idx_closest]
+    
+    # Method 3: F1-score maximization
+    f1_scores = []
+    for threshold in np.arange(0.1, 1.0, 0.01):
+        predicted = (model_scores >= threshold).astype(int)
+        # Convert to collision prediction (invert the logic since model predicts no_collision_prob)
+        predicted_collisions = 1 - predicted
+        if np.sum(predicted_collisions) > 0 and np.sum(actual_collisions) > 0:
+            precision = np.sum((predicted_collisions == 1) & (actual_collisions == 1)) / np.sum(predicted_collisions == 1)
+            recall = np.sum((predicted_collisions == 1) & (actual_collisions == 1)) / np.sum(actual_collisions == 1)
+            if precision + recall > 0:
+                f1 = 2 * (precision * recall) / (precision + recall)
+                f1_scores.append((threshold, f1))
+    
+    if f1_scores:
+        optimal_threshold_f1 = max(f1_scores, key=lambda x: x[1])[0]
+    else:
+        optimal_threshold_f1 = 0.5
+    
+    # Test different fixed thresholds
+    test_thresholds = [0.5, 0.6, 0.7, 0.8, 0.9]
+    threshold_results = {}
+    
+    for threshold in test_thresholds:
+        predicted = (model_scores >= threshold).astype(int)
+        predicted_collisions = 1 - predicted  # Convert to collision prediction
+        
+        # Calculate metrics
+        tn = np.sum((predicted_collisions == 0) & (actual_collisions == 0))
+        fp = np.sum((predicted_collisions == 1) & (actual_collisions == 0))
+        fn = np.sum((predicted_collisions == 0) & (actual_collisions == 1))
+        tp = np.sum((predicted_collisions == 1) & (actual_collisions == 1))
+        
+        accuracy = (tp + tn) / (tp + tn + fp + fn) if (tp + tn + fp + fn) > 0 else 0
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+        
+        threshold_results[threshold] = {
+            'accuracy': accuracy,
+            'precision': precision,
+            'recall': recall,
+            'f1': f1,
+            'tp': int(tp), 'tn': int(tn), 'fp': int(fp), 'fn': int(fn)
+        }
+    
+    # Save results
+    results = {
+        'roc_auc': float(roc_auc),
+        'pr_auc': float(pr_auc),
+        'optimal_thresholds': {
+            'youden': float(optimal_threshold_youden),
+            'closest_to_01': float(optimal_threshold_closest),
+            'f1_maximization': float(optimal_threshold_f1)
+        },
+        'fixed_threshold_results': threshold_results,
+        'data_summary': {
+            'total_samples': len(model_scores),
+            'actual_collisions': int(np.sum(actual_collisions)),
+            'collision_rate': float(np.mean(actual_collisions)),
+            'model_score_range': [float(model_scores.min()), float(model_scores.max())]
+        }
+    }
+    
+    with open(os.path.join(output_dir, "collision_prediction_analysis.json"), "w") as f:
+        json.dump(results, f, indent=2)
+    
+    # Create visualizations (only bottom two plots)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    
+    # 1. Model Score Distribution
+    axes[0].hist(model_scores[actual_collisions == 0], bins=50, alpha=0.7, 
+                label='No Collision', color='green')
+    axes[0].hist(model_scores[actual_collisions == 1], bins=50, alpha=0.7, 
+                label='Collision', color='red')
+    axes[0].set_xlabel('Model Score (No Collision Probability)')
+    axes[0].set_ylabel('Count')
+    axes[0].set_title('Model Score Distribution')
+    axes[0].legend()
+    axes[0].grid(True)
+    
+    # 2. Performance vs Threshold
+    thresholds = list(threshold_results.keys())
+    accuracies = [threshold_results[t]['accuracy'] for t in thresholds]
+    f1_scores = [threshold_results[t]['f1'] for t in thresholds]
+    
+    ax2 = axes[1].twinx()
+    line1 = axes[1].plot(thresholds, accuracies, 'b-', label='Accuracy', linewidth=2)
+    line2 = ax2.plot(thresholds, f1_scores, 'r-', label='F1-Score', linewidth=2)
+    
+    axes[1].set_xlabel('Threshold')
+    axes[1].set_ylabel('Accuracy', color='b')
+    ax2.set_ylabel('F1-Score', color='r')
+    axes[1].set_title('Performance vs Threshold')
+    axes[1].grid(True)
+    
+    # Combine legends
+    lines = line1 + line2
+    labels = [l.get_label() for l in lines]
+    axes[1].legend(lines, labels, loc='upper right')
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "collision_prediction_analysis.png"), dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # Print summary
+    print(f"    → Fixed threshold results:")
+    for threshold, metrics in threshold_results.items():
+        print(f"      - Threshold {threshold}: Accuracy={metrics['accuracy']:.3f}, F1={metrics['f1']:.3f}")
+    
+    # Save detailed confusion matrices for each threshold
+    confusion_matrices = {}
+    for threshold in test_thresholds:
+        predicted = (model_scores >= threshold).astype(int)
+        predicted_collisions = 1 - predicted
+        cm = confusion_matrix(actual_collisions, predicted_collisions)
+        confusion_matrices[f'threshold_{threshold}'] = cm.tolist()
+    
+    with open(os.path.join(output_dir, "confusion_matrices.json"), "w") as f:
+        json.dump(confusion_matrices, f, indent=2)
+    
+    print(f"    → Saved collision_prediction_analysis.json, confusion_matrices.json, and collision_prediction_analysis.png")
+
 def data_analysis(data_path, output_dir):
     ensure_dir(output_dir)
     print(f"Loading data from {data_path}...")
@@ -320,18 +487,31 @@ def data_analysis(data_path, output_dir):
     # analyze_surface_transitions(data, output_dir)
     visualize_random_samples(data, output_dir)
     write_report(output_dir)
-    analyze_difficulty_simple(data, output_dir)
+    # analyze_difficulty_simple(data, output_dir)
+    # analyze_model_collision_prediction(data, output_dir)
 
 if __name__ == "__main__":
-    folder = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2"
-    data_path = os.path.join(folder, "combined_data/labeled_test_data_full_fixed.json")
-    output_path = os.path.join(folder, "analysis")
+    folder = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4"
+    data_path = os.path.join(folder, "data_collection/combined_data/all_data.json")
+    output_path = os.path.join(folder, "analysis/val")
+    data_analysis(data_path, output_path)
 
-    # Load the data first
-    print(f"Loading data from {data_path}...")
-    with open(data_path) as f:
-        data = json.load(f)
-    print(f"Loaded {len(data)} samples.")
+    
 
-    # data_analysis(data_path, output_path)
-    analyze_difficulty_simple(data, output_path)
+    # # Load the data first
+    # print(f"Loading data from {data_path}...")
+    # with open(data_path) as f:
+    #     data = json.load(f)
+    # print(f"Loaded {len(data)} samples.")
+
+    # experiment_results_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/combined_data/combined_experiment_data.json"
+    # with open(experiment_results_path) as f:
+    #     experiment_results = json.load(f)
+    # print(f"Loaded {len(experiment_results)} experiment results.")
+    # output_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/analysis"
+    # analyze_model_collision_prediction(experiment_results, output_path)
+
+    
+
+    # Save the combined data
+    

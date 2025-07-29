@@ -1,12 +1,3 @@
-# Copyright (c) 2022-2023, NVIDIA CORPORATION. All rights reserved.
-#
-# NVIDIA CORPORATION and its licensors retain all intellectual property
-# and proprietary rights in and to this software, related documentation
-# and any modifications thereto. Any use, reproduction, disclosure or
-# distribution of this software and related documentation without an express
-# license agreement from NVIDIA CORPORATION is strictly prohibited.
-#
-
 import os
 from typing import Optional
 
@@ -24,66 +15,46 @@ from omni.isaac.motion_generation.lula import RRT
 from omni.isaac.motion_generation.lula.trajectory_generator import LulaCSpaceTrajectoryGenerator
 from omni.isaac.motion_generation.path_planner_visualizer import PathPlannerVisualizer
 from omni.isaac.motion_generation.path_planning_interface import PathPlanner
-from omni.isaac.core.utils.stage import add_reference_to_stage
-from omni.isaac.core.objects import VisualCuboid
-from omni.isaac.core.prims import XFormPrim
-from omni.isaac.core.utils.numpy.rotations import euler_angles_to_quats, quats_to_rot_matrices
-class FrankaRrtExample(BaseController):
-    def __init__(self,
+
+
+class RRTController(BaseController):
+    def __init__(
+            self,
             name: str,
             robot_articulation: Articulation,
+            ground_plane: omni.isaac.core.objects,
+            pedestal_planner_box: omni.isaac.core.objects,
             physics_dt: float = 1 / 60.0,
             rrt_interpolation_max_dist: float = 0.01,
         ):
         BaseController.__init__(self, name)
 
-        path_to_robot_usd = "/home/chris/Chris/ros2_ws/src/xarm_ros2/xarm_description/urdf/xarm7_with_gripper/xarm7_with_gripper.usd"
-        robot_prim_path = "/UF_ROBOT"
-        robot_description_path = "/home/chris/Chris/placement_ws/src/placement_quality/xarm_simulation/robot_test/rmpflow/robot_descriptor.yaml"
-        urdf_path = "/home/chris/Chris/ros2_ws/src/xarm_ros2/xarm_description/urdf/xarm7_with_gripper.urdf"
-        end_effector_frame_name = "link_tcp"
-        config_path = "/home/chris/Chris/placement_ws/src/placement_quality/xarm_simulation/robot_test/rmpflow/rrt_planner_config.yaml"
-
-        #Initialize an RRT object
-        self._rrt = RRT(
-            robot_description_path = robot_description_path,
-            urdf_path = urdf_path,
-            rrt_config_path = config_path,
-            end_effector_frame_name = end_effector_frame_name
-        )
-
-
-        self._rrt.set_max_iterations(5000)
-
-
-
-
-        add_reference_to_stage(path_to_robot_usd, robot_prim_path)
-        self._articulation = Articulation(robot_prim_path)
-
-        self._target = XFormPrim("/World/target", scale=[.04,.04,.04])
-        self._target.set_default_state(np.array([.45,.5,.7]),euler_angles_to_quats([3*np.pi/4, 0, np.pi]))
-
-        
-        
+        self.ground_plane = ground_plane
+        self.pedestal_planner_box = pedestal_planner_box
+        # Load default RRT config files stored in the omni.isaac.motion_generation extension
+        rrt_config = interface_config_loader.load_supported_path_planner_config("Franka", "RRT")
+        rrt_config["end_effector_frame_name"] = "panda_hand"
+        rrt = RRT(**rrt_config)
 
         # Create a trajectory generator to convert RRT cspace waypoints to trajectories
         self._cspace_trajectory_generator = LulaCSpaceTrajectoryGenerator(
-            robot_description_path=robot_description_path,
-            urdf_path=urdf_path
+            rrt_config["robot_description_path"], rrt_config["urdf_path"]
         )
 
         # It is important that the Robot Description File includes optional Jerk and Acceleration limits so that the generated trajectory
         # can be followed closely by the simulated robot Articulation
-        for i in range(len(self._rrt.get_active_joints())):
+        for i in range(len(rrt.get_active_joints())):
             assert self._cspace_trajectory_generator._lula_kinematics.has_c_space_acceleration_limit(i)
             assert self._cspace_trajectory_generator._lula_kinematics.has_c_space_jerk_limit(i)
         
+        
         # Create a visualizer to visualize the path planner
-        self._path_planner_visualizer = PathPlannerVisualizer(self._articulation, self._rrt)
+        self._path_planner_visualizer = PathPlannerVisualizer(robot_articulation, rrt)
         self._path_planner: RRT = self._path_planner_visualizer.get_path_planner()
+        # self._path_planner.add_obstacle(self.ground_plane, static=True)
+        # self._path_planner.add_obstacle(self.pedestal_planner_box, static=True)
 
-        self._robot = self._path_planner_visualizer.get_robot_articulation() 
+        self._robot: Franka = self._path_planner_visualizer.get_robot_articulation() 
 
         self._last_solution = None
         self._action_sequence = None
@@ -93,16 +64,7 @@ class FrankaRrtExample(BaseController):
         self.ik_check = None
 
 
-
-  
-
     def _convert_rrt_plan_to_trajectory(self, rrt_plan):
-        # This example uses the LulaCSpaceTrajectoryGenerator to convert RRT waypoints to a cspace trajectory.
-        # In general this is not theoretically guaranteed to work since the trajectory generator uses spline-based
-        # interpolation and RRT only guarantees that the cspace position of the robot can be linearly interpolated between
-        # waypoints.  For this example, we verified experimentally that a dense interpolation of cspace waypoints with a maximum
-        # l2 norm of .01 between waypoints leads to a good enough approximation of the RRT path by the trajectory generator.
-
         interpolated_path = self._path_planner_visualizer.interpolate_path(rrt_plan, self._rrt_interpolation_max_dist)
         trajectory = self._cspace_trajectory_generator.compute_c_space_trajectory(interpolated_path)
         art_trajectory = ArticulationTrajectory(self._robot, trajectory, self._physics_dt)
@@ -166,6 +128,8 @@ class FrankaRrtExample(BaseController):
     def reset(self) -> None:
         # PathPlannerController will make one plan per reset
         self._path_planner.reset()
+        # self.add_obstacle(self.ground_plane, static=True)
+        # self.add_obstacle(self.pedestal_planner_box, static=True)
         self._action_sequence = None
         self._last_solution = None
 
@@ -178,4 +142,3 @@ class FrankaRrtExample(BaseController):
             return True
         else:
             return False
-

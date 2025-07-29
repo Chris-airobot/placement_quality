@@ -18,7 +18,7 @@ do
     roslaunch grasp_generation grasp_single.launch
     
     echo "Script finished. Resting for 20 seconds..."
-    sleep 20  # 20 seconds
+    sleep 5  # 20 seconds
     
     # Loop repeats
 done

@@ -12,8 +12,8 @@ import sys
 
 # Add the model training directory to the path to import the model
 sys.path.append('/home/chris/Chris/placement_ws/src/placement_quality/path_simulation/model_training')
-from model import GraspObjectFeasibilityNet, PointNetEncoder
-from train import farthest_point_sample, index_points
+from placement_quality.path_simulation.model_training.model import GraspObjectFeasibilityNet, PointNetEncoder
+from placement_quality.path_simulation.model_training.train import farthest_point_sample, index_points
 
 def load_test_data(file_path: str) -> List[Dict[str, Any]]:
     """Load the test data from JSON file."""

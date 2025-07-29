@@ -1,6 +1,7 @@
 docker_files/ros_ws/devel/
 docker_files/ros_ws/build/
 docker_files/gpd/
+docker_files/ros_ws/src/grasp_generation/pcd_folder/
 my_python.sh
 # Ignore Python compiled files
 __pycache__/

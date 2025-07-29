@@ -1039,6 +1039,10 @@ def transform_relative_pose(grasp_pose, relative_translation, relative_rotation=
     from pyquaternion import Quaternion
     """
     Transforms a grasp pose using a relative transformation.
+    input: grasp_pose: [position, orientation]
+    input: relative_translation: [x, y, z]
+    input: relative_rotation: [w, x, y, z]
+    output: [position, orientation]
     """
     # Helper: Convert a pose (position, quaternion) to a 4x4 homogeneous transformation matrix.
     def pose_to_matrix(position, orientation):

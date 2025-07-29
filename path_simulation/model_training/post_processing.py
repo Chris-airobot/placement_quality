@@ -281,17 +281,24 @@ def extract_data_from_json(data_path, output_path, samples_per_category: int = 2
 
 if __name__ == "__main__":
     # Step 1: Load raw data into the processed individual files
-    raw_data_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/filtered_data"
-    processed_data_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/processed_data"
-    # load_data_from_json(raw_data_path, processed_data_path)
+    # raw_data_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/filtered_data"
+    # processed_data_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/processed_data"
+    # # load_data_from_json(raw_data_path, processed_data_path)
     
-    # Step 2: Combine all the processed files into one
-    combined_data_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/combined_data"
-    # all_data(processed_data_path, combined_data_path)
+    # # Step 2: Combine all the processed files into one
+    # combined_data_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/combined_data"
+    # # all_data(processed_data_path, combined_data_path)
 
-    # Step 3: Split the combined data into train, val, test
-    split_all_data(combined_data_path)
+    # # Step 3: Split the combined data into train, val, test
+    # split_all_data(combined_data_path)
 
     # data_path = "/media/chris/OS2/Users/24330/Desktop/placement_quality/unseen/all_data.json"
     # output_path = "/media/chris/OS2/Users/24330/Desktop/placement_quality/unseen"
     # extract_data_from_json(data_path, output_path)    
+
+    test_data_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v3/data_collection/combined_data/test.json"
+    # Load the full dataset
+    with open(test_data_path, "r") as f:
+        full_data = json.load(f)
+
+    print(full_data[0])

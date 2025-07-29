@@ -1,0 +1,374 @@
+import os
+import sys
+# Add the parent directory to the Python path
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
+from isaacsim import SimulationApp
+
+# Display options for the simulation viewport
+DISP_FPS        = 1<<0
+DISP_AXIS       = 1<<1
+DISP_RESOLUTION = 1<<3
+DISP_SKELEKETON = 1<<9
+DISP_MESH       = 1<<10
+DISP_PROGRESS   = 1<<11
+DISP_DEV_MEM    = 1<<13
+DISP_HOST_MEM   = 1<<14
+
+# Simulation configuration
+CONFIG = {
+    "width": 1920,
+    "height": 1080,
+    "headless": True,
+    "renderer": "RayTracedLighting",
+    # "display_options": DISP_FPS|DISP_RESOLUTION|DISP_MESH|DISP_DEV_MEM|DISP_HOST_MEM,
+}
+
+# Initialize the simulation application
+simulation_app = SimulationApp(CONFIG)
+
+import datetime 
+import numpy as np
+import json
+import carb
+from copy import deepcopy
+import omni
+from omni.isaac.core import World
+from omni.isaac.core.utils import extensions
+from omni.isaac.core.utils.stage import add_reference_to_stage, create_new_stage
+from omni.isaac.core.utils.nucleus import get_assets_root_path
+from omni.isaac.core.prims import XFormPrim
+from omni.isaac.core.articulations import Articulation
+from omni.isaac.core.prims import XFormPrim
+from omni.isaac.motion_generation import ArticulationKinematicsSolver, LulaKinematicsSolver
+from omni.isaac.motion_generation import interface_config_loader
+from pxr import Sdf, UsdLux, Gf, UsdGeom
+from collision_check import GroundCollisionDetector
+from utils import sample_object_poses, sample_dims
+from placement_quality.cube_simulation import helper
+from collections import defaultdict
+import socket
+import json
+import struct
+import time
+
+def obtain_grasps(dims, port):
+    HOST = '127.0.0.1'  # or container IP / hostname
+    PORT = port
+    # Set up a TCP client socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.connect((HOST, PORT))
+
+        # Send the pointcloud data in JSON
+        data = json.dumps({ "dimensions": dims }).encode("utf-8")
+        send_len = struct.pack(">I", len(data))
+        s.sendall(send_len + data)
+
+        # Receive the response (list of grasps)
+        response_len = struct.unpack('>I', s.recv(4))[0]
+        response_bytes = s.recv(response_len)  # adjust as needed
+        response_str = response_bytes.decode('utf-8')
+        # print(f"received data:{response_str}")
+        response_data = json.loads(response_str)
+
+    raw_grasps = response_data
+
+    grasps = []
+    for key in sorted(raw_grasps.keys(), key=int):
+        item = raw_grasps[key]
+        position = item["position"]
+        orientation = item["orientation_wxyz"]
+        # Each grasp: [ [position], [orientation] ]
+        grasps.append([position, orientation])
+
+    return grasps
+
+
+
+class DataCollection:
+    def __init__(self):
+        # Core variables for the kinematic solver
+        self._kinematics_solver = None
+        self._articulation_kinematics_solver = None
+        self._articulation = None
+        self.object = None
+        self._pedestal = None
+        self.world = None
+        self.collision_detector = None
+        self.base_path = "/World/panda"
+        self.robot_parts_to_check = []
+        self.collision_detected = False
+        self.dimension_set = sample_dims()
+        self.box_dims = self.dimension_set.pop(0)
+
+        self.pedestal_height = 0.10  # meters
+
+        # Offset of the grasp from the object center
+        # Grasp poses are based on the gripper center, so we need to offset it to transform it to the tool_center, i.e. 
+        # the middle of the gripper fingers
+        self.grasp_offset = [0, 0, -0.065] 
+        self.episode_count = 0
+        self.grasp_count = 0
+        self.object_count = 0
+        self.grasps = None
+        self.object_poses = None
+        self.data_dict = defaultdict(list)
+        self.data_folder = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/data_collection/raw_data/"
+
+
+
+    def setup_scene(self):
+        """Create a new stage and set up the scene with lighting and camera"""
+        create_new_stage()
+        self._add_light_to_stage()
+        
+        # Create a world instance
+        self.world: World = World()
+        
+        # Load robot and target
+        self._articulation, self.object = self.load_assets()
+        
+        # Add assets to the world scene
+        self.world.scene.add(self._articulation)
+        self.world.scene.add(self.object)
+        
+        # Set up the ground collision detector
+        self.setup_collision_detection()
+        
+        # Set up the physics scene
+        self.world.reset()
+
+        # Set up the kinematics solver
+        self.setup_kinematics()
+
+
+
+    def _add_light_to_stage(self):
+        """Add a spherical light to the stage"""
+        sphereLight = UsdLux.SphereLight.Define(omni.usd.get_context().get_stage(), Sdf.Path("/World/SphereLight"))
+        sphereLight.CreateRadiusAttr(2)
+        sphereLight.CreateIntensityAttr(100000)
+        XFormPrim(str(sphereLight.GetPath())).set_world_pose([6.5, 0, 12])
+        
+
+    def load_assets(self):
+        """Load the Franka robot and target frame"""
+        # Add the Franka robot to the stage
+        robot_prim_path = "/World/panda"
+        path_to_robot_usd = get_assets_root_path() + "/Isaac/Robots/Franka/franka.usd"
+        add_reference_to_stage(path_to_robot_usd, robot_prim_path)
+        articulation = Articulation(robot_prim_path)
+        
+        # Add a box object for collision testing (similar to the data collection script)
+        from omni.isaac.core.objects import VisualCuboid
+        object = VisualCuboid(
+            prim_path="/World/Ycb_object",
+            name="Ycb_object",
+            position=np.array([0.2, -0.3, 0.125]),  # Adjusted z to sit properly on pedestal (0.05 + 0.10 + 0.051/2)
+            scale=self.box_dims,  # [x, y, z]
+            color=np.array([0.8, 0.8, 0.8])  # Light gray color
+        )
+        return articulation, object
+    
+
+    def setup_kinematics(self):
+        """Set up the kinematics solver for the Franka robot"""
+        # Load kinematics configuration for the Franka robot
+        kinematics_config = interface_config_loader.load_supported_lula_kinematics_solver_config("Franka")
+        self._kinematics_solver = LulaKinematicsSolver(**kinematics_config)        
+        # Configure the articulation kinematics solver with the end effector
+        end_effector_name = "panda_hand"
+        self._articulation_kinematics_solver = ArticulationKinematicsSolver(
+            self._articulation, 
+            self._kinematics_solver, 
+            end_effector_name
+        )
+
+    def setup_collision_detection(self):
+        """Set up the ground collision detector"""
+        stage = omni.usd.get_context().get_stage()
+        self.collision_detector = GroundCollisionDetector(stage, non_colliding_part="/World/panda/panda_link0")
+        
+        # Create a virtual ground plane at z=0 (ground level)
+        self.collision_detector.create_virtual_ground(
+            size_x=20.0, 
+            size_y=20.0, 
+            position=Gf.Vec3f(0, 0, 0)  # Ground level
+        )
+
+        self.collision_detector.create_virtual_pedestal(
+            position=Gf.Vec3f(0.2, -0.3, 0.05)
+        )
+        
+        # Define robot parts to check for collisions (explicitly excluding the base link0)
+        self.robot_parts_to_check = [
+            f"{self.base_path}/panda_link1",
+            f"{self.base_path}/panda_link2",
+            f"{self.base_path}/panda_link3",
+            f"{self.base_path}/panda_link4",
+            f"{self.base_path}/panda_link5",
+            f"{self.base_path}/panda_link6",
+            f"{self.base_path}/panda_link7",
+            f"{self.base_path}/panda_hand",
+            f"{self.base_path}/panda_leftfinger",
+            f"{self.base_path}/panda_rightfinger"
+        ]
+        # Note: panda_link0 is deliberately excluded since it's expected to touch the ground
+
+
+    def check_for_collisions(self):
+        """Check if any robot parts are colliding with ground, pedestal, or box."""
+        ground_hit = any(
+            self.collision_detector.is_colliding_with_ground(part_path)
+            for part_path in self.robot_parts_to_check
+        )
+        pedestal_hit = any(
+            self.collision_detector.is_colliding_with_pedestal(part_path)
+            for part_path in self.robot_parts_to_check
+        )
+        box_hit = any(
+            self.collision_detector.is_colliding_with_box(part_path)
+            for part_path in self.robot_parts_to_check
+        )
+        self.collision_detected = ground_hit or pedestal_hit or box_hit
+        return self.collision_detected
+    
+    
+    def set_cuboid_scale(self, new_scale):
+        prim = self.object.prim
+        xform = UsdGeom.Xformable(prim)
+        # Look for existing scale op
+        found = False
+        for op in xform.GetOrderedXformOps():
+            if op.GetOpType() == UsdGeom.XformOp.TypeScale:
+                op.Set(Gf.Vec3d(*new_scale))  # Use Vec3d for double3 precision
+                found = True
+                break
+        if not found:
+            # If none exists, create one (rare for VisualCuboid)
+            xform.AddScaleOp().Set(Gf.Vec3d(*new_scale))
+
+    def save_data(self):
+        """Save the data to a file"""
+        # Create the directory if it doesn't exist
+        os.makedirs(os.path.dirname(self.data_folder), exist_ok=True)
+        
+        # Create the file path
+        file_path = self.data_folder + f"object_{self.box_dims[0]}_{self.box_dims[1]}_{self.box_dims[2]}.json"
+        
+        # Save the data to the file
+        with open(file_path, "w") as f:
+            json.dump(self.data_dict, f)
+
+        self.data_dict = defaultdict(list)
+
+    
+    def reset(self):
+        """Reset the simulation"""
+        if self.world:
+            self.world.reset()
+
+    def run(self):
+        """Main loop to run the simulation"""
+        # Set up the scene
+        self.setup_scene()
+
+        current_object_finished = True
+
+        
+        # Main simulation loop
+        while simulation_app.is_running():
+            if current_object_finished:
+                if len(self.dimension_set) == 0:
+                    break
+                self.box_dims = self.dimension_set.pop(0)
+                self.set_cuboid_scale(self.box_dims)
+                self.object_poses = sample_object_poses(36, self.box_dims)
+                self.grasps = obtain_grasps(self.box_dims, 12345)
+                if len(self.grasps) < 10:
+                    time.sleep(3)
+                print(f"Starting new {self.episode_count} th object: {self.box_dims}/{len(self.dimension_set)}")
+                current_object_finished = False
+                
+            else:
+                for grasp in self.grasps:
+                    for object_pose in self.object_poses:
+                        self.current_object_pose = object_pose.copy()  
+                        self.current_object_pose[2] += self.pedestal_height
+                        self.object.set_world_pose(self.current_object_pose[:3], 
+                                                   self.current_object_pose[3:])
+                        print(f"The current {self.episode_count}th object, {self.grasp_count}/{len(self.grasps)} grasps, {self.object_count}/{len(self.object_poses)} object poses")
+                        
+                        self.world.step(render=True)
+                        
+                        # Local grasp pose in gripper frame   
+
+                        # World grasp pose in gripper frame
+                        grasp_pose_world = helper.transform_relative_pose(grasp, 
+                                                                          self.current_object_pose[:3], 
+                                                                          self.current_object_pose[3:])
+                        # World grasp pose in tool center frame
+                        grasp_pose_center = helper.local_transform(grasp_pose_world, self.grasp_offset)
+                        
+                        # draw_frame(grasp_pose_center[0], grasp_pose_center[1])
+                        # Track any movements of the robot base
+                        robot_base_translation, robot_base_orientation = self._articulation.get_world_pose()
+                        self._kinematics_solver.set_robot_base_pose(robot_base_translation, robot_base_orientation)
+                        
+                        # Compute inverse kinematics to find joint positions
+                        action, success = self._articulation_kinematics_solver.compute_inverse_kinematics(
+                            np.array(grasp_pose_center[0]), 
+                            np.array(grasp_pose_center[1])
+                        )
+                        
+                        # Apply the joint positions if IK was successful
+                        if success:
+                            self._articulation.apply_action(action)
+                        else:
+                            carb.log_warn("IK did not converge to a solution. No action is being taken")
+                        
+                        # Check for collisions with the ground
+                        collision = self.check_for_collisions()
+                        # Get detailed collision information
+                        ground_hit = any(
+                            self.collision_detector.is_colliding_with_ground(part_path)
+                            for part_path in self.robot_parts_to_check
+                        )
+                        pedestal_hit = any(
+                            self.collision_detector.is_colliding_with_pedestal(part_path)
+                            for part_path in self.robot_parts_to_check
+                        )
+                        box_hit = any(
+                            self.collision_detector.is_colliding_with_box(part_path)
+                            for part_path in self.robot_parts_to_check
+                        )
+                        grasp_pose = grasp_pose_center[0] + grasp_pose_center[1]
+                        self.data_dict[f"grasp_{self.grasp_count}"].append([grasp_pose, 
+                                                                            self.current_object_pose, 
+                                                                            success, collision, 
+                                                                            ground_hit, 
+                                                                            pedestal_hit, 
+                                                                            box_hit]) 
+                        self.object_count += 1
+                        
+                        
+                    self.grasp_count += 1
+                    self.object_count = 0
+
+                self.save_data()
+                self.episode_count += 1
+                self.grasp_count = 0
+                current_object_finished = True
+        
+        print("Simulation ended.")
+
+
+if __name__ == "__main__":
+    # Create and run the standalone IK example
+    env = DataCollection()
+    env.run()
+    
+    # Close the simulation application
+    simulation_app.close()
