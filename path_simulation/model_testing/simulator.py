@@ -8,21 +8,20 @@ if parent_dir not in sys.path:
 import json
 import numpy as np
 import omni
-from omni.isaac.core import World
-from omni.isaac.core.utils import extensions, prims
-from omni.isaac.core.scenes import Scene
-from omni.isaac.franka import Franka
-from omni.isaac.manipulators.grippers.parallel_gripper import ParallelGripper
-from omni.isaac.core.utils.types import ArticulationAction
-from omni.isaac.core.utils.rotations import euler_angles_to_quat, quat_to_euler_angles
-from omni.isaac.motion_generation import ArticulationKinematicsSolver, LulaKinematicsSolver
-from omni.isaac.motion_generation import interface_config_loader
+from isaacsim.core.api import World
+from isaacsim.core.utils import extensions, prims
+from isaacsim.robot.manipulators.examples.franka import Franka
+from isaacsim.robot.manipulators.grippers import ParallelGripper
+from isaacsim.core.utils.types import ArticulationAction
+from isaacsim.core.utils.rotations import euler_angles_to_quat, quat_to_euler_angles
+from isaacsim.robot_motion.motion_generation import ArticulationKinematicsSolver, LulaKinematicsSolver
+from isaacsim.robot_motion.motion_generation import interface_config_loader
 from scipy.spatial.transform import Rotation as R
 from collision_check import GroundCollisionDetector
 from pxr import Gf
 from pxr import Sdf, UsdLux, Tf
-from omni.isaac.core.prims import XFormPrim
-from omni.isaac.sensor import ContactSensor
+from isaacsim.core.prims import XFormPrim
+from isaacsim.sensors.physics import ContactSensor
 from RRT_controller import RRTController
 from RRT_task import RRTTask
 from functools import partial
@@ -34,12 +33,9 @@ PEDESTAL_SIZE = np.array([0.09, 0.11, 0.1])   # X, Y, Z in meters
 class Simulator:
     def __init__(self, use_physics=False):
         # Basic variables
-        self.world = None
         self.object = None
         self.controller = None
         self.articulation_controller = None
-        self.robot = None
-        self.gripper = None
         self.task = None
         self.stage = omni.usd.get_context().get_stage()
         self.use_physics = use_physics

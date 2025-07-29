@@ -3,17 +3,17 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import omni
-from omni.isaac.core.objects import FixedCuboid, VisualCuboid, DynamicCuboid, FixedCylinder
-from omni.isaac.core.prims.xform_prim import XFormPrim
-from omni.isaac.core.scenes.scene import Scene
-from omni.isaac.core.tasks import BaseTask
-from omni.isaac.core.utils.prims import is_prim_path_valid
-from omni.isaac.core.utils.rotations import euler_angles_to_quat
-from omni.isaac.core.utils.stage import get_stage_units, add_reference_to_stage
-from omni.isaac.core.utils.string import find_unique_string_name
-from omni.isaac.franka import Franka
-from omni.isaac.nucleus import get_assets_root_path
-from omni.isaac.core.objects import VisualCylinder
+from isaacsim.core.api.objects import FixedCuboid, VisualCuboid, DynamicCuboid, FixedCylinder
+from isaacsim.core.prims import XFormPrim
+from isaacsim.core.api.scenes.scene import Scene
+from isaacsim.core.api.tasks import BaseTask
+from isaacsim.core.utils.prims import is_prim_path_valid
+from isaacsim.core.utils.rotations import euler_angles_to_quat
+from isaacsim.core.utils.stage import get_stage_units, add_reference_to_stage
+from isaacsim.core.utils.string import find_unique_string_name
+from isaacsim.robot.manipulators.examples.franka import Franka
+from isaacsim.core.utils.nucleus import get_assets_root_path
+from isaacsim.core.api.objects import VisualCylinder
 
 from pxr import UsdPhysics, Usd, UsdGeom, Gf
 

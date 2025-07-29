@@ -3,18 +3,17 @@ from typing import Optional
 
 import carb
 import numpy as np
-import omni.isaac.core.objects
-import omni.isaac.motion_generation.interface_config_loader as interface_config_loader
-from omni.isaac.franka import Franka
-from omni.isaac.core.articulations import Articulation
-from omni.isaac.core.controllers.base_controller import BaseController
-from omni.isaac.core.utils.types import ArticulationAction
-from omni.isaac.core.utils.stage import get_stage_units
-from omni.isaac.motion_generation import ArticulationTrajectory
-from omni.isaac.motion_generation.lula import RRT
-from omni.isaac.motion_generation.lula.trajectory_generator import LulaCSpaceTrajectoryGenerator
-from omni.isaac.motion_generation.path_planner_visualizer import PathPlannerVisualizer
-from omni.isaac.motion_generation.path_planning_interface import PathPlanner
+import isaacsim.core.api.objects
+import isaacsim.robot_motion.motion_generation.interface_config_loader as interface_config_loader
+from isaacsim.robot.manipulators.examples.franka import Franka
+from isaacsim.core.prims  import Articulation
+from isaacsim.core.api.controllers.base_controller import BaseController
+from isaacsim.core.utils.types import ArticulationAction
+from isaacsim.robot_motion.motion_generation import ArticulationTrajectory
+from isaacsim.robot_motion.motion_generation.lula import RRT
+from isaacsim.robot_motion.motion_generation.lula.trajectory_generator import LulaCSpaceTrajectoryGenerator
+from isaacsim.robot_motion.motion_generation.path_planner_visualizer import PathPlannerVisualizer
+from isaacsim.robot_motion.motion_generation.path_planning_interface import PathPlanner
 
 
 class RRTController(BaseController):
@@ -131,7 +130,7 @@ class RRTController(BaseController):
     def remove_obstacle(self, obstacle: omni.isaac.core.objects) -> None:
         self._path_planner.remove_obstacle(obstacle)
 
-    def reset(self) -> None:
+    def reset(self):
         # PathPlannerController will make one plan per reset
         self._path_planner.reset()
         # self.add_obstacle(self.ground_plane, static=True)

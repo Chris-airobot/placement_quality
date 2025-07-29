@@ -1,32 +1,43 @@
 {
     "python.autoComplete.extraPaths": [
-        "/home/chris/ws_moveit/install/moveit_task_constructor_core/local/lib/python3.10/dist-packages",
-        "/home/chris/ws_moveit/install/moveit_task_constructor_msgs/local/lib/python3.10/dist-packages",
-        "/home/chris/ws_moveit/install/moveit_py/local/lib/python3.10/dist-packages",
-        "/home/chris/ws_moveit/install/moveit_msgs/local/lib/python3.10/dist-packages",
-        "/home/chris/ws_moveit/install/moveit_configs_utils/lib/python3.10/site-packages",
-        "/home/chris/fun_ws/install/my-test-package/lib/python3.10/site-packages",
-        "/home/chris/fun_ws/install/mobile_robot/lib/python3.10/site-packages",
-        "/home/chris/IsaacSim-ros_workspaces/humble_ws/install/isaac_ros_navigation_goal/lib/python3.10/site-packages",
-        "/home/chris/IsaacSim-ros_workspaces/humble_ws/install/isaac_ros2_messages/lib/python3.10/site-packages",
-        "/home/chris/IsaacSim-ros_workspaces/humble_ws/install/grasp_placement/lib/python3.10/site-packages",
-        "/home/chris/IsaacSim-ros_workspaces/humble_ws/install/custom_message/lib/python3.10/site-packages",
+        "/home/riot/ws_moveit/install/moveit_task_constructor_core/local/lib/python3.10/dist-packages",
+        "/home/riot/ws_moveit/install/moveit_task_constructor_msgs/local/lib/python3.10/dist-packages",
+        "/home/riot/ws_moveit/install/moveit_py/local/lib/python3.10/dist-packages",
+        "/home/riot/ws_moveit/install/moveit_msgs/local/lib/python3.10/dist-packages",
+        "/home/riot/ws_moveit/install/moveit_configs_utils/lib/python3.10/site-packages",
         "/opt/ros/humble/lib/python3.10/site-packages",
-        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+        "/opt/ros/humble/local/lib/python3.10/dist-packages",
     ],
     "python.analysis.extraPaths": [
-        "/home/chris/ws_moveit/install/moveit_task_constructor_core/local/lib/python3.10/dist-packages",
-        "/home/chris/ws_moveit/install/moveit_task_constructor_msgs/local/lib/python3.10/dist-packages",
-        "/home/chris/ws_moveit/install/moveit_py/local/lib/python3.10/dist-packages",
-        "/home/chris/ws_moveit/install/moveit_msgs/local/lib/python3.10/dist-packages",
-        "/home/chris/ws_moveit/install/moveit_configs_utils/lib/python3.10/site-packages",
-        "/home/chris/fun_ws/install/my-test-package/lib/python3.10/site-packages",
-        "/home/chris/fun_ws/install/mobile_robot/lib/python3.10/site-packages",
-        "/home/chris/IsaacSim-ros_workspaces/humble_ws/install/isaac_ros_navigation_goal/lib/python3.10/site-packages",
-        "/home/chris/IsaacSim-ros_workspaces/humble_ws/install/isaac_ros2_messages/lib/python3.10/site-packages",
-        "/home/chris/IsaacSim-ros_workspaces/humble_ws/install/grasp_placement/lib/python3.10/site-packages",
-        "/home/chris/IsaacSim-ros_workspaces/humble_ws/install/custom_message/lib/python3.10/site-packages",
+        "/home/riot/isaacsim/exts/isaacsim.core.api/isaacsim/core/api",
+        "/home/riot/isaacsim/exts/isaacsim.core.utils",
+        "/home/riot/isaacsim/exts",
+        "/home/riot/isaacsim",  // in case any top-level stuff is there
+        "/home/riot/isaacsim/kit/kernel/py"
+    ],
+    "cursorpyright.analysis.extraPaths": [
         "/opt/ros/humble/lib/python3.10/site-packages",
-        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+        "/opt/ros/humble/local/lib/python3.10/dist-packages",
+        "/home/riot/isaacsim",
+        "/home/riot/isaacsim/exts",
+        "/home/riot/isaacsim/exts/isaacsim.simulation_app",
+        "/home/riot/isaacsim/exts/isaacsim.core.api",
+        "/home/riot/isaacsim/exts/isaacsim.core.utils",
+        "/home/riot/isaacsim/exts/isaacsim.core.prims",
+        "/home/riot/isaacsim/exts/isaacsim.robot.manipulators",
+        "/home/riot/isaacsim/exts/isaacsim.robot.manipulators.examples",
+        "/home/riot/isaacsim/exts/isaacsim.robot_motion.motion_generation",
+        "/home/riot/isaacsim/exts/isaacsim.sensors.physics",
+        "/home/riot/isaacsim/kit/kernel/py/carb",
+        "/home/riot/isaacsim/extscache/omni.usd.schema.audio-0.0.0+d02c707b.lx64.r.cp310/pxr",
+        "/home/riot/isaacsim/extscache/omni.usd.schema.omniscripting-1.0.0+d02c707b.lx64.r.cp310/pxr",
+        "/home/riot/isaacsim/extscache/omni.usd.schema.semantics-0.0.0+d02c707b.lx64.r.cp310/pxr",
+        "/home/riot/isaacsim/extsPhysics/omni.usd.schema.forcefield/pxr",
+        "/home/riot/isaacsim/extsPhysics/omni.usd.schema.physx/pxr",
+        "/home/riot/isaacsim/extscache/omni.usd.schema.omnigraph-1.0.0+d02c707b.lx64.r.cp310/pxr",
+        "/home/riot/isaacsim/extscache/omni.usd.libs-1.0.1+d02c707b.lx64.r.cp310/pxr",
+        "/home/riot/isaacsim/extscache/omni.usd.schema.anim-0.0.0+d02c707b.lx64.r.cp310/pxr"
+
+
     ]
 }

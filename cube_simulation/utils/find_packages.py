@@ -15,17 +15,18 @@ CONFIG = {"renderer": "RayTracedLighting", "headless": True}
 # Example ROS2 bridge sample demonstrating the manual loading of stages and manual publishing of images
 simulation_app = SimulationApp(CONFIG)
 
-import omni.graph.core as og
-import omni.replicator.core as rep
-import omni.syntheticdata as sd
+from isaacsim.core.api import World
+from isaacsim.core.api.objects import DynamicCuboid
+from isaacsim.core.utils.stage import add_reference_to_stage
 import sys
 import carb
-import warp
+from pxr import Gf
+from pxr import Sdf, UsdLux, Tf
 
 modules = [
-    "carb",
-    "omni.isaac.core.utils",
-    "omni.isaac.core_nodes",
+    "pxr",
+    "isaacsim.core.api",
+    "isaacsim.core.utils",
     "warp"
 ]
 

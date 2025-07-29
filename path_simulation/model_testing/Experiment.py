@@ -1,26 +1,33 @@
-import os, sys 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)
+# pyright: ignore
+import copy
+import datetime
+import json
+import os
+import sys
 
-# Add the parent directory to path 
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if parent_dir not in sys.path:
-    sys.path.insert(0, parent_dir)
 
-# Create an alias for model_training.pointnet2 as pointnet2
-# This needs to happen before any imports that use pointnet2
-import model_training.pointnet2
-sys.modules['pointnet2'] = model_training.pointnet2
+# current_dir = os.path.dirname(os.path.abspath(__file__))
+# if current_dir not in sys.path:
+#     sys.path.insert(0, current_dir)
 
-# Create an alias for model_training.dataset as dataset
-import model_training.dataset
-sys.modules['dataset'] = model_training.dataset
+# # Add the parent directory to path 
+# parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# if parent_dir not in sys.path:
+#     sys.path.insert(0, parent_dir)
 
-import model_training.model
-sys.modules['model'] = model_training.model
+# # Create an alias for model_training.pointnet2 as pointnet2
+# # This needs to happen before any imports that use pointnet2
 
-from isaacsim import SimulationApp
+# sys.modules['pointnet2'] = model_training.pointnet2
+
+# # Create an alias for model_training.dataset as dataset
+
+# sys.modules['dataset'] = model_training.dataset
+
+
+# sys.modules['model'] = model_training.model
+
+
 
 DISP_FPS        = 1<<0
 DISP_AXIS       = 1<<1
@@ -39,37 +46,35 @@ CONFIG = {
     "display_options": DISP_FPS|DISP_RESOLUTION|DISP_MESH|DISP_DEV_MEM|DISP_HOST_MEM,
 }
 
+
+from isaacsim import SimulationApp
 simulation_app = SimulationApp(CONFIG)
 
-import os
-import datetime 
-from omni.isaac.core.utils import extensions
-from simulator import Simulator
+
+from isaacsim.core.utils.rotations import euler_angles_to_quat
+from isaacsim.core.utils.types import ArticulationAction
 import numpy as np
-import rclpy
-import torch
 import open3d as o3d
-import json
-from placement_quality.cube_simulation import helper
-from rclpy.executors import SingleThreadedExecutor
-import time
-from model_training.dataset import KinematicFeasibilityDataset
-from model_training.pointnet2 import *
-from model_training.model import GraspObjectFeasibilityNet, PointNetEncoder
-from model_training.train import load_pointcloud
 from scipy.spatial.transform import Rotation as R
-from omni.isaac.core.utils.types import ArticulationAction
-from omni.isaac.core.utils.rotations import euler_angles_to_quat
-from utils import *
-# from omni.isaac.core import SimulationContext
-import copy
+import torch
+
+from cube_simulation import helper
+import model_training.dataset
+from model_training.dataset import KinematicFeasibilityDataset
+import model_training.model
+from model_training.model import GraspObjectFeasibilityNet, PointNetEncoder
+import model_training.pointnet2
+from model_training.pointnet2 import *
+from model_training.train import load_pointcloud
+import rclpy
+from simulator import Simulator
+from utils import * 
+
+
 # # Before running simulation
 # sim = SimulationContext(physics_dt=1.0/240.0)  # 240 Hz
 PEDESTAL_SIZE = np.array([0.09, 0.11, 0.1])   # X, Y, Z in meters
 
-# Enable ROS2 bridge extension
-extensions.enable_extension("omni.isaac.ros2_bridge")
-simulation_app.update()
 
 base_dir = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2"
 time_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -255,15 +260,15 @@ def write_results_to_file(results, file_path, mode='a'):
 def main(checkpoint, use_physics, test_mode=False):
     test_mode = True
     object_frame_path = "/World/Ycb_object"
-    pcd_topic = "/cam0/depth_pcl"
+    # pcd_topic = "/cam0/depth_pcl"
 
-    # Initialize ROS2 node
-    rclpy.init()
-    sim_subscriber = helper.TFSubscriber(pcd_topic)
+    # # Initialize ROS2 node
+    # rclpy.init()
+    # sim_subscriber = helper.TFSubscriber(pcd_topic)
 
-    # Create an executor# Create an executor
-    executor = SingleThreadedExecutor()
-    executor.add_node(sim_subscriber)
+    # # Create an executor# Create an executor
+    # executor = SingleThreadedExecutor()
+    # executor.add_node(sim_subscriber)
 
     env = Simulator(use_physics=use_physics)
     env.start()
