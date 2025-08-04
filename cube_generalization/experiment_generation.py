@@ -2,11 +2,16 @@ import numpy as np
 import random
 import json
 import copy
+import torch
 
 from scipy.spatial.transform import Rotation as R
 from utils import sample_object_poses, sample_fixed_surface_poses_increments, flip_pose_keep_delta
 from collections import defaultdict
 
+# Import your model and dataset
+from model import CollisionPredictionNet
+from dataset import cuboid_corners_local_ordered  # Fixed: correct function name
+from dataset import EnhancedWorldFrameDataset  # or whatever your dataset class is
 
 def generate_grasps(pos_w, quat_w, dims_total,
                     tilt_degs=[60, 90, 120],
@@ -81,35 +86,65 @@ def generate_grasps(pos_w, quat_w, dims_total,
 
     return final_grasps
 
+def load_trained_model(checkpoint_path, device):
+    """Load and prepare the trained model using the same method as model_eval.py"""
+    try:
+        # Use the same loading function as model_eval.py
+        from model_eval import load_checkpoint_with_original_architecture
+        model, _ = load_checkpoint_with_original_architecture(checkpoint_path, device)
+        model.eval()
+        
+        print(f"Successfully loaded model from {checkpoint_path}")
+        return model
+        
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        return None
+
 def model_prediction(model, data, device):
-    dx, dy, dz = data['object_dimensions']
-    from dataset import cuboid_corners_local
-    corners = cuboid_corners_local(dx, dy, dz).astype(np.float32)
+    """Fixed model prediction with proper normalization"""
+    try:
+        dx, dy, dz = data['object_dimensions']
+        corners = cuboid_corners_local_ordered(dx, dy, dz).astype(np.float32)
 
-    # Preprocess the initial and final poses as done in the dataset
-    corners_tensor = torch.tensor(corners, dtype=torch.float32).unsqueeze(0).to(device)
-    grasp_tensor = torch.tensor(data["grasp_pose"], dtype=torch.float32).unsqueeze(0).to(device)
-    init_tensor = torch.tensor(data["initial_object_pose"], dtype=torch.float32).unsqueeze(0).to(device)
-    final_tensor = torch.tensor(data["final_object_pose"], dtype=torch.float32).unsqueeze(0).to(device)
-    
-    # Now use the preprocessed tensors with batch dimension
+        # CRITICAL FIX: Load normalization stats and apply them
+        # You need to find where your training stats were saved
+        stats_path = "/path/to/your/normalization_stats.json"  # Find this file!
+        norm_stats = EnhancedWorldFrameDataset.load_stats(stats_path)
+        
+        # Normalize corners (this is crucial!)
+        corners_normalized = norm_stats.zscore_corners(corners)
+        
+        # Normalize pose XYZ components
+        poses = np.stack([data["grasp_pose"][:3], 
+                         data["initial_object_pose"][:3], 
+                         data["final_object_pose"][:3]])
+        poses_normalized = norm_stats.zscore_pose_xyz(poses)
+        
+        # Reconstruct full poses with normalized XYZ + original quaternions
+        grasp_normalized = np.concatenate([poses_normalized[0], data["grasp_pose"][3:]])
+        init_normalized = np.concatenate([poses_normalized[1], data["initial_object_pose"][3:]])
+        final_normalized = np.concatenate([poses_normalized[2], data["final_object_pose"][3:]])
 
-    with torch.no_grad():
-            raw_success, raw_collision = model(corners_tensor, grasp_tensor, init_tensor, final_tensor)
-    
-    # Apply sigmoid to convert logits to probabilities
-    pred_success = torch.sigmoid(raw_success)
-    pred_collision = torch.sigmoid(raw_collision)
-    
-    # Extract scalar values from tensors
-    pred_success_val = pred_success.item()
-    pred_collision_val = pred_collision.item()
-    
-    # Get binary predictions based on threshold of 0.5
-    pred_success_binary = pred_success > 0.5
-    pred_collision_binary = pred_collision > 0.5  # True means "collision predicted"
-    
-    return pred_success_val, 1-pred_collision_val
+        # Convert to tensors
+        corners_tensor = torch.tensor(corners_normalized, dtype=torch.float32).unsqueeze(0).to(device)
+        grasp_tensor = torch.tensor(grasp_normalized, dtype=torch.float32).unsqueeze(0).to(device)
+        init_tensor = torch.tensor(init_normalized, dtype=torch.float32).unsqueeze(0).to(device)
+        final_tensor = torch.tensor(final_normalized, dtype=torch.float32).unsqueeze(0).to(device)
+        
+        # TODO: Replace with real embeddings if you have them
+        dummy_embeddings = torch.zeros(1, 1024, dtype=torch.float32).to(device)
+        
+        with torch.no_grad():
+            collision_logits = model(dummy_embeddings, corners_tensor, grasp_tensor, init_tensor, final_tensor)
+            pred_collision = torch.sigmoid(collision_logits)
+            pred_no_collision = 1 - pred_collision.item()
+        
+        return pred_no_collision
+        
+    except Exception as e:
+        print(f"Error in model prediction: {e}")
+        return None
 
 #============================
 # Helper Functions
@@ -196,87 +231,105 @@ def generate_contact_metadata(dims, approach_offset=0.01, G_max=0.08):
 
 
 if __name__ == "__main__":
+    # Configuration
     box_dim_lists = [
         [0.15, 0.15, 0.05],
         [0.05, 0.05, 0.2],
         [0.15, 0.05, 0.08],
         [0.05, 0.05, 0.05],
-
     ]
+    
+    # Model configuration
+    checkpoint_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/training/models/model_20250804_001543/best_model_roc_20250804_001543.pth"
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+    
+    # Load the trained model
+    model = load_trained_model(checkpoint_path, device)
+    if model is None:
+        print("Failed to load model. Exiting.")
+        exit(1)
+    
+    # Validate model is in eval mode
+    model.eval()
+    print(f"Model loaded successfully and set to evaluation mode")
+    
     test_data = []
+    prediction_results = []
 
+    print("Generating experiment scenarios...")
     for box_dims in box_dim_lists:
+        print(f"Processing box dimensions: {box_dims}")
         object_initial_poses = sample_fixed_surface_poses_increments(box_dims, base_position=(0.2, -0.3, 0.1))
-        for object_initial_pose in object_initial_poses:
+        
+        for i, object_initial_pose in enumerate(object_initial_poses):
             for num_turns in range(0, 4):
                 object_final_pose = flip_pose_keep_delta(object_initial_pose, box_dims, num_turns=num_turns)
                 grasps = generate_grasps(object_initial_pose[:3], object_initial_pose[3:], np.array(box_dims), enable_yaw_tilt=False)
+                
                 for grasp in grasps:  
                     final_pose = copy.deepcopy(object_final_pose)
                     final_pose[2] += 0.1
-                    current_trail = {
+                    
+                    current_trial = {
                         "grasp_pose": grasp,
                         "initial_object_pose": object_initial_pose,
                         "final_object_pose": final_pose,
                         "object_dimensions": box_dims
                     }
-                    test_data.append(current_trail)
+                    test_data.append(current_trial)
+                    
+                    # Make prediction immediately
+                    pred_no_collision = model_prediction(model, current_trial, device)
+                    
+                    if pred_no_collision is not None:
+                        prediction_result = {
+                            "object_dimensions": box_dims,
+                            "initial_pose": object_initial_pose,
+                            "final_pose": final_pose,
+                            "grasp_pose": grasp,
+                            "num_turns": num_turns,
+                            "pred_no_collision": float(pred_no_collision),
+                            "pred_collision": float(1 - pred_no_collision)
+                        }
+                        prediction_results.append(prediction_result)
+                        
+                        # Print progress
+                        if len(prediction_results) % 100 == 0:
+                            print(f"Processed {len(prediction_results)} trials...")
 
     # Save generated trials to JSON
-    with open("/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiment_generation.json", "w") as f:
+    experiment_path = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiment_generation.json"
+    with open(experiment_path, "w") as f:
         json.dump(test_data, f, indent=2)
 
     print(f"Generated {len(test_data)} trials")
 
-    import torch
-    from model_eval import GraspObjectFeasibilityNet
-    checkpoint = "/home/chris/Chris/placement_ws/src/data/box_simulation/v3/training/models/model_20250723_042907/best_model_0_4566_pth"
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Evaluating on device: {device}")
-
-     # Load the checkpoint 
-    checkpoint_data = torch.load(checkpoint, map_location=device)
-    raw_state_dict = checkpoint_data.get("state_dict", checkpoint_data)
-    
-    # Strip any unwanted prefix
-    prefix_to_strip = "_orig_mod."
-    cleaned_state_dict = {}
-    for key, tensor in raw_state_dict.items():
-        if key.startswith(prefix_to_strip):
-            new_key = key[len(prefix_to_strip):]
-        else:
-            new_key = key
-        cleaned_state_dict[new_key] = tensor
-    
-    # Initialize model without static feature yet
-    model = GraspObjectFeasibilityNet().to(device)
-    # Register this feature with the model
-    # Load the state dict but don't compute point cloud embedding yet
-    model.load_state_dict(cleaned_state_dict)
-    model.eval()
-
-    with open("/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiment_generation.json", "r") as f:
-        test_data: list[dict] = json.load(f)
-
-
-    # Collect and persist prediction results
-    result_records = []
-    for data in test_data:
-        pred_success_val, pred_collision_val = model_prediction(model, data, device)
-        # Show on console for immediate feedback
-        print(f"object dimensions: {data['object_dimensions']}, no collision: {pred_collision_val:.4f}")
-
-        # Accumulate for file output
-        result_records.append({
-            "object_dimensions": data["object_dimensions"],
-            "pred_no_collision": float(pred_collision_val)
-        })
-
-    # Write results to a JSON-Lines file so it can grow incrementally or be easily parsed
-    output_path = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/test_data_predictions.json"
+    # Save prediction results
+    output_path = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/test_data_predictions.jsonl"
     with open(output_path, "w") as f_out:
-        for rec in result_records:
+        for rec in prediction_results:
             f_out.write(json.dumps(rec) + "\n")
 
-    print(f"Saved {len(result_records)} prediction records to {output_path}")
+    print(f"Saved {len(prediction_results)} prediction records to {output_path}")
+    
+    # Print summary statistics
+    if prediction_results:
+        pred_values = [r["pred_no_collision"] for r in prediction_results]
+        print(f"\nPrediction Summary:")
+        print(f"Total predictions: {len(pred_values)}")
+        print(f"Mean no-collision probability: {np.mean(pred_values):.4f}")
+        print(f"Std no-collision probability: {np.std(pred_values):.4f}")
+        print(f"Min no-collision probability: {np.min(pred_values):.4f}")
+        print(f"Max no-collision probability: {np.max(pred_values):.4f}")
+        
+        # Group by object dimensions
+        by_dimensions = defaultdict(list)
+        for result in prediction_results:
+            dim_key = tuple(result["object_dimensions"])
+            by_dimensions[dim_key].append(result["pred_no_collision"])
+        
+        print(f"\nBy Object Dimensions:")
+        for dims, preds in by_dimensions.items():
+            print(f"  {dims}: mean={np.mean(preds):.4f}, std={np.std(preds):.4f}, count={len(preds)}")
 

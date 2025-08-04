@@ -5,6 +5,9 @@ import numpy as np
 from tqdm import tqdm
 import re
 import random
+import math
+from scipy.spatial.transform import Rotation as R
+
 # Load data from JSON files
 def completing_pairs(data_folder):
     # Create the output directory if it doesn't exist
@@ -259,11 +262,111 @@ def extract_data_from_json(data_path, output_path):
     print(f"Breakdown: {len(non_collision)} non-collision, {len(collision_balanced)} collision samples")
 
 
+# ──────────────────────────────────────────────────────────────────────────
+def build_rich_pairs(data_folder, seed: int = 42):
+    """
+    Convert every raw JSON in <data_folder>/raw_data/ into a processed_*.json
+    with rich but bounded initial–placement pairs.
+
+    Directory layout created/expected:
+        data_folder/raw_data/......   (your original files)
+        data_folder/processed_data/.. (new files go here)
+    """
+    rng = random.Random(seed)
+
+    raw_dir  = os.path.join(data_folder, "raw_data")
+    proc_dir = os.path.join(data_folder, "processed_data")
+    os.makedirs(proc_dir, exist_ok=True)
+
+    # ------------------ helpers ------------------------------------------------
+    ADJ = {1:{2,4,5,6}, 2:{1,3,5,6}, 3:{2,4,5,6},
+           4:{1,3,5,6}, 5:{1,2,3,4}, 6:{1,2,3,4}}
+
+    def face_id(qw,qx,qy,qz):
+        """Which cuboid face is +Z after applying quaternion (w,x,y,z)."""
+        rot = R.from_quat([qx,qy,qz,qw])
+        up  = np.array([0,0,1])
+        faces = {
+            1: [0,0, 1], 2:[ 1,0,0], 3:[0,0,-1],
+            4:[-1,0,0], 5:[0,-1,0], 6:[0, 1,0]}
+        return max(faces, key=lambda k: np.dot(rot.apply(faces[k]), up))
+
+    def bucket(meta_i, meta_j):
+        """Return SAME, SMALL, MEDIUM, ADJACENT, OPPOSITE."""
+        fi, fj = meta_i['face'], meta_j['face']
+        if fi == fj:
+            dq = R.from_quat(meta_j['quat']) * R.from_quat(meta_i['quat']).inv()
+            ang = dq.magnitude() * 180 / math.pi
+            if ang <   1:  return 'SAME'
+            if ang <= 30:  return 'SMALL'
+            if ang <= 90:  return 'MEDIUM'
+            return 'MEDIUM'                # >90°, same face
+        return 'ADJACENT' if fj in ADJ[fi] else 'OPPOSITE'
+
+    want = {'SAME':1, 'SMALL':2, 'MEDIUM':2, 'ADJACENT':2, 'OPPOSITE':3}
+
+    # ------------------ iterate raw files -------------------------------------
+    raw_files = sorted(glob.glob(os.path.join(raw_dir, "*.json")))
+    print(f"Found {len(raw_files)} raw files")
+    for raw_path in tqdm(raw_files, desc="processing"):
+        with open(raw_path, "r") as f:
+            raw = json.load(f)
+
+        out = {k: [] for k in ("grasp_poses","initial_object_poses",
+                               "final_object_poses","success_labels",
+                               "collision_labels")}
+
+        # ------- per grasp group ---------------------------------------------
+        for grasp_key, cases in raw.items():
+            # pre‑compute per‑orientation metadata (quat + face ID)
+            meta = []
+            for c in cases:
+                qw,qx,qy,qz = c[1][3:7]
+                meta.append({'quat':[qx,qy,qz,qw],
+                             'face':face_id(qw,qx,qy,qz)})
+
+            # indices of rows that are fully clean -> candidate initials
+            clean_idx = [i for i,c in enumerate(cases)
+                         if not c[3] and not c[4] and not c[5] and not c[6]]
+
+            # for every clean initial state build <=10 placements
+            for i in clean_idx:
+                buckets = {b: [] for b in want}
+                for j in range(len(cases)):
+                    buckets[bucket(meta[i], meta[j])].append(j)
+
+                chosen = []
+                for b,k in want.items():
+                    lst = buckets[b]
+                    if not lst: continue
+                    take = lst if len(lst)<=k else rng.sample(lst, k)
+                    chosen.extend(take)
+
+                pick = cases[i]
+                for j in chosen:
+                    place = cases[j]
+                    out['grasp_poses'].append(pick[0])
+                    out['initial_object_poses'].append(pick[1])
+                    out['final_object_poses'].append(place[1])
+                    out['success_labels'].append(float(place[2]))  # unchanged
+                    out['collision_labels'].append(float(place[3]))
+
+        # -------- save -------------------------------------------------------
+        fname = f"processed_{os.path.basename(raw_path)}"
+        with open(os.path.join(proc_dir, fname), "w") as f:
+            json.dump(out, f)
+        print(f"  {fname}: {len(out['grasp_poses'])} pairs")
+    
+
+
+
 if __name__ == "__main__":
-    data_folder = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/data_collection/"
+    data_folder = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/data_collection"
     # completing_pairs(data_folder)
-    combine_processed_data(data_folder)
-    # split_all_data(data_folder)
+    # combine_processed_data(data_folder)
+    split_all_data(data_folder)
     # data_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v3/data_collection/combined_data/test.json"
     # folder_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v3/data_collection/combined_data"
     # extract_data_from_json(data_path, folder_path)
+
+    # build_rich_pairs(data_folder)

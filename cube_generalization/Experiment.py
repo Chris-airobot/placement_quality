@@ -152,34 +152,137 @@ def gradual_gripper_control(env: Simulator, target_open, max_steps=100):
 
 
 def model_prediction(model, data, device):
-    dx, dy, dz = data['object_dimensions']
-    from dataset import cuboid_corners_local
-    corners = cuboid_corners_local(dx, dy, dz).astype(np.float32)
+    """Updated model prediction with proper normalization and embeddings"""
+    try:
+        dx, dy, dz = data['object_dimensions']
+        from dataset import cuboid_corners_local_ordered, _zscore_normalize
+        corners = cuboid_corners_local_ordered(dx, dy, dz).astype(np.float32)
 
-    # Preprocess the initial and final poses as done in the dataset
-    corners_tensor = torch.tensor(corners, dtype=torch.float32).unsqueeze(0).to(device)
-    grasp_tensor = torch.tensor(data["grasp_pose"], dtype=torch.float32).unsqueeze(0).to(device)
-    init_tensor = torch.tensor(data["initial_object_pose"], dtype=torch.float32).unsqueeze(0).to(device)
-    final_tensor = torch.tensor(data["final_object_pose"], dtype=torch.float32).unsqueeze(0).to(device)
-    
-    # Now use the preprocessed tensors with batch dimension
+        # Load real embeddings for this experiment
+        embeddings_file = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiment_embeddings.npy"
+        experiment_file = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiment_generation.json"
+        
+        # Find the index of this data in the experiment file
+        with open(experiment_file, 'r') as f:
+            experiments = json.load(f)
+        
+        # Find matching experiment index
+        experiment_idx = None
+        for i, exp in enumerate(experiments):
+            if (exp['object_dimensions'] == data['object_dimensions'] and 
+                exp['initial_object_pose'] == data['initial_object_pose'] and
+                exp['grasp_pose'] == data['grasp_pose'] and
+                exp['final_object_pose'] == data['final_object_pose']):
+                experiment_idx = i
+                break
+        
+        if experiment_idx is None:
+            print("⚠️ Could not find matching experiment, using dummy embedding")
+            real_embedding = np.zeros(1024, dtype=np.float32)
+        else:
+            # Load the real embedding
+            embeddings = np.load(embeddings_file)
+            real_embedding = embeddings[experiment_idx]
 
-    with torch.no_grad():
-            raw_success, raw_collision = model(corners_tensor, grasp_tensor, init_tensor, final_tensor)
-    
-    # Apply sigmoid to convert logits to probabilities
-    pred_success = torch.sigmoid(raw_success)
-    pred_collision = torch.sigmoid(raw_collision)
-    
-    # Extract scalar values from tensors
-    pred_success_val = pred_success.item()
-    pred_collision_val = pred_collision.item()
-    
-    # Get binary predictions based on threshold of 0.5
-    pred_success_binary = pred_success > 0.5
-    pred_collision_binary = pred_collision > 0.5  # True means "collision predicted"
-    
-    return pred_success_val, 1-pred_collision_val
+        # CRITICAL: Apply normalization to match training data distribution
+        # Load normalization stats from training dataset
+        train_data_json = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/data_collection/combined_data/train.json"
+        train_embeddings_file = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/embeddings/train_embeddings.npy"
+        
+        try:
+            from dataset import WorldFrameDataset
+            train_dataset = WorldFrameDataset(train_data_json, train_embeddings_file, 
+                                            normalization_stats=None, is_training=True)
+            normalization_stats = train_dataset.normalization_stats
+            
+            # Normalize corners
+            corners_flat = corners.reshape(1, -1)  # [1, 24]
+            corners_norm, _, _ = _zscore_normalize(
+                corners_flat,
+                normalization_stats['corners_mean'],
+                normalization_stats['corners_std']
+            )
+            corners = corners_norm.reshape(1, 8, 3).numpy()
+            
+            # Extract and normalize pose components
+            grasp_pose = np.array(data["grasp_pose"])
+            init_pose = np.array(data["initial_object_pose"])
+            final_pose = np.array(data["final_object_pose"])
+            
+            # Split position and orientation
+            grasp_pos = grasp_pose[:3]
+            grasp_ori = grasp_pose[3:]
+            init_pos = init_pose[:3]
+            init_ori = init_pose[3:]
+            final_pos = final_pose[:3]
+            final_ori = final_pose[3:]
+            
+            # Normalize positions using unified stats
+            pos_mean = normalization_stats['pos_mean']
+            pos_std = normalization_stats['pos_std']
+            
+            # Convert to numpy arrays if they're tensors
+            if isinstance(pos_mean, torch.Tensor):
+                pos_mean = pos_mean.cpu().numpy()
+            if isinstance(pos_std, torch.Tensor):
+                pos_std = pos_std.cpu().numpy()
+            
+            grasp_pos_norm = (grasp_pos - pos_mean) / pos_std
+            init_pos_norm = (init_pos - pos_mean) / pos_std
+            final_pos_norm = (final_pos - pos_mean) / pos_std
+            
+            # Normalize orientations
+            grasp_ori_norm, _, _ = _zscore_normalize(
+                grasp_ori.reshape(1, -1),
+                normalization_stats['grasp_ori_mean'],
+                normalization_stats['grasp_ori_std']
+            )
+            init_ori_norm, _, _ = _zscore_normalize(
+                init_ori.reshape(1, -1),
+                normalization_stats['init_ori_mean'],
+                normalization_stats['init_ori_std']
+            )
+            final_ori_norm, _, _ = _zscore_normalize(
+                final_ori.reshape(1, -1),
+                normalization_stats['final_ori_mean'],
+                normalization_stats['final_ori_std']
+            )
+            
+            # Reconstruct normalized poses
+            grasp_normalized = np.concatenate([grasp_pos_norm.flatten(), grasp_ori_norm.flatten()])
+            init_normalized = np.concatenate([init_pos_norm.flatten(), init_ori_norm.flatten()])
+            final_normalized = np.concatenate([final_pos_norm.flatten(), final_ori_norm.flatten()])
+            
+        except Exception as e:
+            print(f"⚠️ Could not apply normalization: {e}, using raw features")
+            grasp_normalized = np.array(data["grasp_pose"])
+            init_normalized = np.array(data["initial_object_pose"])
+            final_normalized = np.array(data["final_object_pose"])
+
+        # Convert to tensors
+        corners_tensor = torch.tensor(corners, dtype=torch.float32).unsqueeze(0).to(device)
+        embedding_tensor = torch.tensor(real_embedding, dtype=torch.float32).unsqueeze(0).to(device)
+        grasp_tensor = torch.tensor(grasp_normalized, dtype=torch.float32).unsqueeze(0).to(device)
+        init_tensor = torch.tensor(init_normalized, dtype=torch.float32).unsqueeze(0).to(device)
+        final_tensor = torch.tensor(final_normalized, dtype=torch.float32).unsqueeze(0).to(device)
+        
+        # Now use the preprocessed tensors with batch dimension
+        with torch.no_grad():
+            # Use the correct model interface
+            collision_logits = model(embedding_tensor, corners_tensor, grasp_tensor, init_tensor, final_tensor)
+        
+        # Apply sigmoid to convert logits to probabilities
+        pred_collision = torch.sigmoid(collision_logits)
+        
+        # Extract scalar values from tensors
+        pred_collision_val = pred_collision.item()
+        
+        # Return probability of NO collision for consistency with original interface
+        return 1 - pred_collision_val  # Probability of no collision
+        
+    except Exception as e:
+        print(f"Error in model prediction: {e}")
+        return 0.5  # Return neutral prediction on error
 
 
 
@@ -269,29 +372,16 @@ def main(checkpoint, use_physics):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Evaluating on device: {device}")
 
-     # Load the checkpoint 
-    checkpoint_data = torch.load(checkpoint, map_location=device)
-    raw_state_dict = checkpoint_data.get("state_dict", checkpoint_data)
-    
-    # Strip any unwanted prefix
-    prefix_to_strip = "_orig_mod."
-    cleaned_state_dict = {}
-    for key, tensor in raw_state_dict.items():
-        if key.startswith(prefix_to_strip):
-            new_key = key[len(prefix_to_strip):]
-        else:
-            new_key = key
-        cleaned_state_dict[new_key] = tensor
-    
-    # Initialize model without static feature yet
-    model = GraspObjectFeasibilityNet().to(device)
-    # Register this feature with the model
-    # Load the state dict but don't compute point cloud embedding yet
-    model.load_state_dict(cleaned_state_dict)
-    model.eval()
+    # Load the checkpoint using the latest architecture
+    try:
+        from model_eval import load_checkpoint_with_original_architecture
+        model, checkpoint_data = load_checkpoint_with_original_architecture(checkpoint, device)
+        model.eval()
+        print("✅ Loaded model with latest architecture")
+    except Exception as e:
+        print(f"❌ Error loading model: {e}")
+        return
 
-    
-    static_feature_computed = True
     print("Model loaded from checkpoint.\n")
 
     
@@ -362,10 +452,11 @@ def main(checkpoint, use_physics):
                 object_scale=np.array(env.current_data["object_dimensions"]),
             )
 
-            pred_success_val, pred_collision_val = model_prediction(model, env.current_data, device)
-            score = pred_success_val * pred_collision_val
+            pred_collision_val = model_prediction(model, env.current_data, device)
+            # Since we only have collision prediction, use it as the score
+            score = pred_collision_val
             # Print prediction results
-            print(f"Prediction: score: {score:.4f}, success: {pred_success_val:.4f}, no collision: {pred_collision_val:.4f}")
+            print(f"Prediction: no collision probability: {pred_collision_val:.4f}")
             env.state = "PREGRASP"
             env.contact_force = 0.0
 
@@ -564,6 +655,6 @@ def main(checkpoint, use_physics):
         write_results_to_file(env.results[last_written:], results_file, mode='a')
 
 if __name__ == "__main__":
-    model_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v3/training/models/model_20250723_042907/best_model_0_4566_pth"
+    model_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/training/models/model_20250804_001543/best_model_roc_20250804_001543.pth"
     use_physics = True
     main(model_path, use_physics)

@@ -492,8 +492,8 @@ def data_analysis(data_path, output_dir):
 
 if __name__ == "__main__":
     folder = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4"
-    data_path = os.path.join(folder, "data_collection/combined_data/all_data.json")
-    output_path = os.path.join(folder, "analysis/val")
+    data_path = os.path.join(folder, "data_collection/combined_data/train.json")
+    output_path = os.path.join(folder, "analysis/train_data")
     data_analysis(data_path, output_path)
 
     

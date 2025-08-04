@@ -1,43 +1,21 @@
 import torch
-from torch.utils.data import DataLoader
-from dataset import PlacementDataset
-from model import GraspObjectFeasibilityNet
 import torch.nn as nn
 import torch.optim as optim
-import os
-import sys
-import numpy as np
-import open3d as o3d
-from tqdm import tqdm
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.amp import autocast, GradScaler
+import numpy as np
 import matplotlib.pyplot as plt
-import time
+from datetime import datetime
+from tqdm import tqdm
+import os
+import json
+import sys
 
-from torch.utils.data import Sampler
-torch.backends.cudnn.benchmark = True
+# Import sklearn for advanced metrics
+from sklearn.metrics import roc_auc_score, average_precision_score, classification_report
 
-# Enable TF32 tensor‐core acceleration on supported hardware:
-torch.set_float32_matmul_precision('high')
-
-class NumpyWeightedSampler(Sampler):
-    def __init__(self, weights, num_samples=None, seed=None):
-        self.weights = np.array(weights, dtype=np.float64)
-        self.probs = self.weights / self.weights.sum()
-        self.num_samples = num_samples or len(self.probs)
-        self.rs = np.random.RandomState(seed)
-
-    def __iter__(self):
-        idx = self.rs.choice(
-            len(self.probs),
-            size=self.num_samples,
-            replace=True,
-            p=self.probs
-        )
-        return iter(idx.tolist())
-
-    def __len__(self):
-        return self.num_samples
-    
+from dataset import WorldFrameDataset
+from model import create_combined_model
 
 class Tee:
     """Duplicate stdout/stderr to console and a log file."""
@@ -56,309 +34,423 @@ class Tee:
     def isatty(self):
         return False
 
+def save_enhanced_plots(history, log_dir):
+    """Enhanced plotting with ROC-AUC and PR-AUC curves"""
+    
+    # Create subplots for all metrics
+    fig, axes = plt.subplots(3, 2, figsize=(15, 18))
+    fig.suptitle('Enhanced Training Metrics', fontsize=16)
+    
+    # Loss curves
+    axes[0, 0].plot(history['train_collision_loss'], label='Train', color='blue', alpha=0.7)
+    axes[0, 0].plot(history['val_collision_loss'], label='Val', color='orange', alpha=0.7)
+    axes[0, 0].set_title('Collision Prediction Loss')
+    axes[0, 0].set_xlabel('Epoch')
+    axes[0, 0].set_ylabel('BCE Loss')
+    axes[0, 0].legend()
+    axes[0, 0].grid(True, alpha=0.3)
+    
+    # Accuracy curves
+    axes[0, 1].plot(history['train_collision_accuracy'], label='Train', color='blue', alpha=0.7)
+    axes[0, 1].plot(history['val_collision_accuracy'], label='Val', color='orange', alpha=0.7)
+    axes[0, 1].set_title('Collision Accuracy')
+    axes[0, 1].set_xlabel('Epoch')
+    axes[0, 1].set_ylabel('Accuracy')
+    axes[0, 1].legend()
+    axes[0, 1].grid(True, alpha=0.3)
+    
+    # ✨ ROC-AUC curves (NEW)
+    axes[1, 0].plot(history['train_collision_roc_auc'], label='Train', color='blue', alpha=0.7)
+    axes[1, 0].plot(history['val_collision_roc_auc'], label='Val', color='orange', alpha=0.7)
+    axes[1, 0].set_title('ROC-AUC Score')
+    axes[1, 0].set_xlabel('Epoch')
+    axes[1, 0].set_ylabel('ROC-AUC')
+    axes[1, 0].legend()
+    axes[1, 0].grid(True, alpha=0.3)
+    
+    # ✨ PR-AUC curves (NEW)
+    axes[1, 1].plot(history['train_collision_pr_auc'], label='Train', color='blue', alpha=0.7)
+    axes[1, 1].plot(history['val_collision_pr_auc'], label='Val', color='orange', alpha=0.7)
+    axes[1, 1].set_title('Precision-Recall AUC')
+    axes[1, 1].set_xlabel('Epoch')
+    axes[1, 1].set_ylabel('PR-AUC')
+    axes[1, 1].legend()
+    axes[1, 1].grid(True, alpha=0.3)
+    
+    # Precision curves
+    axes[2, 0].plot(history['train_collision_precision'], label='Train', color='blue', alpha=0.7)
+    axes[2, 0].plot(history['val_collision_precision'], label='Val', color='orange', alpha=0.7)
+    axes[2, 0].set_title('Collision Precision')
+    axes[2, 0].set_xlabel('Epoch')
+    axes[2, 0].set_ylabel('Precision')
+    axes[2, 0].legend()
+    axes[2, 0].grid(True, alpha=0.3)
+    
+    # F1 curves
+    axes[2, 1].plot(history['train_collision_f1'], label='Train', color='blue', alpha=0.7)
+    axes[2, 1].plot(history['val_collision_f1'], label='Val', color='orange', alpha=0.7)
+    axes[2, 1].set_title('Collision F1 Score')
+    axes[2, 1].set_xlabel('Epoch')
+    axes[2, 1].set_ylabel('F1 Score')
+    axes[2, 1].legend()
+    axes[2, 1].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(log_dir, 'enhanced_training_metrics.png'), dpi=300, bbox_inches='tight')
+    plt.close()
 
-def save_plots(history, log_dir):
-    epochs = list(range(1, len(history['train_success_loss']) + 1))
-    plt.figure()
-    plt.plot(epochs, history['train_success_loss'], label='Train Success Loss')
-    plt.plot(epochs, history['val_success_loss'],   label='Val Success Loss')
-    plt.plot(epochs, history['train_collision_loss'], label='Train Collision Loss')
-    plt.plot(epochs, history['val_collision_loss'],   label='Val Collision Loss')
-    plt.xlabel('Epoch'); plt.ylabel('Loss'); plt.legend(); plt.tight_layout()
-    plt.savefig(os.path.join(log_dir, 'loss_curves.png'))
-    plt.close()
-    plt.figure()
-    plt.plot(epochs, history['train_success_accuracy'], label='Train Success Acc')
-    plt.plot(epochs, history['val_success_accuracy'],   label='Val Success Acc')
-    plt.plot(epochs, history['train_success_precision'], label='Train Success Prec')
-    plt.plot(epochs, history['val_success_precision'],   label='Val Success Prec')
-    plt.plot(epochs, history['train_success_recall'],    label='Train Success Recall')
-    plt.plot(epochs, history['val_success_recall'],      label='Val Success Recall')
-    plt.plot(epochs, history['train_success_f1'],        label='Train Success F1')
-    plt.plot(epochs, history['val_success_f1'],          label='Val Success F1')
-    plt.xlabel('Epoch'); plt.ylabel('Metric'); plt.legend(); plt.tight_layout()
-    plt.savefig(os.path.join(log_dir, 'success_metrics.png'))
-    plt.close()
-    plt.figure()
-    plt.plot(epochs, history['train_collision_accuracy'], label='Train Collision Acc')
-    plt.plot(epochs, history['val_collision_accuracy'],   label='Val Collision Acc')
-    plt.plot(epochs, history['train_collision_precision'], label='Train Collision Prec')
-    plt.plot(epochs, history['val_collision_precision'],   label='Val Collision Prec')
-    plt.plot(epochs, history['train_collision_recall'],    label='Train Collision Recall')
-    plt.plot(epochs, history['val_collision_recall'],      label='Val Collision Recall')
-    plt.plot(epochs, history['train_collision_f1'],        label='Train Collision F1')
-    plt.plot(epochs, history['val_collision_f1'],          label='Val Collision F1')
-    plt.xlabel('Epoch'); plt.ylabel('Metric'); plt.legend(); plt.tight_layout()
-    plt.savefig(os.path.join(log_dir, 'collision_metrics.png'))
-    plt.close()
+def compute_advanced_metrics(y_true, y_pred_probs, threshold=0.5):
+    """Compute advanced classification metrics"""
+    y_pred = (y_pred_probs > threshold).astype(int)
+    
+    # Basic metrics
+    tp = ((y_pred == 1) & (y_true == 1)).sum()
+    fp = ((y_pred == 1) & (y_true == 0)).sum()
+    fn = ((y_pred == 0) & (y_true == 1)).sum()
+    tn = ((y_pred == 0) & (y_true == 0)).sum()
+    
+    accuracy = (tp + tn) / (tp + fp + fn + tn + 1e-8)
+    precision = tp / (tp + fp + 1e-8)
+    recall = tp / (tp + fn + 1e-8)
+    f1 = 2 * precision * recall / (precision + recall + 1e-8)
+    
+    # Advanced metrics
+    try:
+        roc_auc = roc_auc_score(y_true, y_pred_probs)
+    except:
+        roc_auc = 0.5  # Default if all same class
+    
+    try:
+        pr_auc = average_precision_score(y_true, y_pred_probs)
+    except:
+        pr_auc = y_true.mean()  # Default to class balance
+    
+    return {
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'roc_auc': roc_auc,
+        'pr_auc': pr_auc
+    }
 
 def main(dir_path):
-    # ——— 1) Logging setup —————————————————————————————————————
-    orig_stdout = sys.stdout
-    orig_stderr = sys.stderr
-    train_dir = os.path.join(dir_path, 'training')
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    log_dir = os.path.join(train_dir, 'logs', f'training_{timestamp}')
-    model_dir = os.path.join(train_dir, 'models', f'model_{timestamp}')
+    # Setup
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"=== Enhanced Training started on {device} ===")
+    
+    # Logging
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_dir = os.path.join(dir_path, "training", "logs", f"training_{timestamp}")
+    model_dir = os.path.join(dir_path, "training", "models", f"model_{timestamp}")
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
+    
+    # ✨ ADD THESE 4 LINES FOR LOGGING ✨
+    orig_stdout = sys.stdout
+    orig_stderr = sys.stderr
     log_file = open(os.path.join(log_dir, 'training.log'), 'a')
-
     sys.stdout = Tee(orig_stdout, log_file)
-    sys.stderr = Tee(orig_stderr, log_file)
-
-    # ——— 2) Device & data splits —————————————————————————————
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"=== Training started on {device} ===")
-    train_data_json = os.path.join(dir_path, 'data_collection/combined_data/train.json')
-    val_data_json = os.path.join(dir_path, 'data_collection/combined_data/val.json')
-    print(f"Loading train dataset from {train_data_json}...")
-    train_dataset = PlacementDataset(train_data_json)
-
-    print(f"Loading val dataset from {val_data_json}...")
-    val_dataset = PlacementDataset(val_data_json)
-    N_train = len(train_dataset); print(f"  → {N_train} train samples")
-    N_val = len(val_dataset); print(f"  → {N_val}   val samples\n")
-
-    # ——— 3) Weighted sampler (train only) ————————————————————————
-    print("Preparing sampler weights...")
-    weights_path = os.path.join(dir_path, 'sample_weights.npy')
-    if os.path.exists(weights_path):
-        sample_weights = np.load(weights_path)
-        print(f"Loaded sample_weights from {weights_path}")
-    else:
-        labels_s = np.array([int(train_dataset[i][4][0].item()) for i in range(N_train)])
-        labels_c = np.array([int(train_dataset[i][4][1].item()) for i in range(N_train)])
-        counts_s = np.bincount(labels_s, minlength=2)
-        counts_c = np.bincount(labels_c, minlength=2)
-        w_s = {c: N_train/(2*counts_s[c]) for c in (0,1)}
-        w_c = {c: N_train/(2*counts_c[c]) for c in (0,1)}
-        sample_weights = np.array([w_s[labels_s[i]] + w_c[labels_c[i]] for i in range(N_train)], dtype=np.float32)
-        np.save(weights_path, sample_weights)
-        print(f"Saved sample_weights to {weights_path}")
-
-    sampler = NumpyWeightedSampler(sample_weights, num_samples=N_train, seed=42)
-    print("Done preparing sampler weights...")
-    epochs = 300
-
-    NUM_WORKERS = 24      # try 8 or 12 or 16, but monitor system load
-    BATCH_SIZE = 512    # if you get CUDA OOM, reduce to 64 or 96
-    PREFETCH_FACTOR = 4  # you can leave as is
-    PIN_MEMORY = False
-    PERSISTENT_WORKERS = False
-    # ——— 4) DataLoaders —————————————————————————————————————
-    train_loader = DataLoader(
-        train_dataset, batch_size=BATCH_SIZE, sampler=sampler,
-        num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY,
-        persistent_workers=PERSISTENT_WORKERS, prefetch_factor=PREFETCH_FACTOR
+    
+    # ✨ ENHANCED HYPERPARAMETERS ✨
+    BATCH_SIZE = 512
+    EPOCHS = 150
+    INITIAL_LR = 1e-4  # 🚨 INCREASED from 5e-5 
+    WEIGHT_DECAY = 1e-4
+    
+    # Load datasets with feature normalization
+    train_path = os.path.join(dir_path, "data_collection/combined_data/train.json")
+    val_path = os.path.join(dir_path, "data_collection/combined_data/val.json")
+    train_embeddings_file = os.path.join(dir_path, "embeddings/train_embeddings.npy")
+    val_embeddings_file = os.path.join(dir_path, "embeddings/val_embeddings.npy")
+    
+    print("Loading datasets with feature normalization...")
+    
+    # Load training dataset (computes normalization stats)
+    train_dataset = WorldFrameDataset(train_path, train_embeddings_file, 
+                                    normalization_stats=None, is_training=True)
+    
+    # Load validation dataset (uses training stats)
+    val_dataset = WorldFrameDataset(val_path, val_embeddings_file, 
+                                  normalization_stats=train_dataset.normalization_stats, 
+                                  is_training=False)
+    
+    print(f"  → {len(train_dataset)} train samples")
+    print(f"  → {len(val_dataset)} val samples")
+    
+    # ✨ ENHANCED MODEL ✨
+    model = create_combined_model().to(device)  # Uses EnhancedCollisionPredictionNet
+    scaler = GradScaler()
+    
+    # ✨ CLASS IMBALANCE ANALYSIS (moved here for WeightedRandomSampler) ✨
+    collision_counts = torch.tensor([
+        (train_dataset.label[:,1]==0).sum(),  # negatives
+        (train_dataset.label[:,1]==1).sum()   # positives
+    ], dtype=torch.float32)
+    if collision_counts[1] == 0:
+        raise ValueError("No positive samples found in training data")
+    pos_weight = collision_counts[0] / collision_counts[1]
+    
+    print(f"Class distribution - Negative: {collision_counts[0]:.0f}, Positive: {collision_counts[1]:.0f}")
+    print(f"Using pos_weight: {pos_weight:.3f}")
+    
+    # DataLoaders with optional WeightedRandomSampler
+    print("Setting up DataLoaders...")
+    
+    # ✨ WEIGHTED RANDOM SAMPLER FOR CLASS BALANCE ✨
+    # Create weights for sampling (inverse of class frequency)
+    collision_labels = train_dataset.label[:, 1].cpu()  # Get collision labels
+    
+    # Calculate sample weights (higher weight for minority class)
+    sample_weights = torch.zeros_like(collision_labels)
+    sample_weights[collision_labels == 0] = 1.0 / collision_counts[0]  # Negative class
+    sample_weights[collision_labels == 1] = 1.0 / collision_counts[1]  # Positive class
+    
+    # Create weighted sampler for first 10 epochs
+    weighted_sampler = WeightedRandomSampler(
+        sample_weights, 
+        len(sample_weights), 
+        replacement=True
     )
-    val_loader = DataLoader(
-        val_dataset, batch_size=BATCH_SIZE, shuffle=False,
-        num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY,
-        persistent_workers=PERSISTENT_WORKERS, prefetch_factor=PREFETCH_FACTOR
+    
+    # Create both loaders (with and without sampler)
+    train_loader_weighted = DataLoader(
+        train_dataset, 
+        batch_size=BATCH_SIZE, 
+        sampler=weighted_sampler,  # ✨ Use weighted sampler
+        num_workers=4, 
+        pin_memory=True
     )
-
-    # ——— 6) Model, optimizer, scaler, scheduler —————————————————————
-    model = GraspObjectFeasibilityNet().to(device)
-    model = torch.compile(model)
-    scaler = GradScaler(init_scale=2**16, growth_interval=2000, device=device)
-    criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
-    from torch.optim.lr_scheduler import OneCycleLR
-    scheduler = OneCycleLR(
-        optimizer,
-        max_lr=1e-3,
-        total_steps=epochs * len(train_loader),
-        pct_start=0.3,
-        anneal_strategy='cos',
-        div_factor=25,
-        final_div_factor=10000
+    
+    train_loader_normal = DataLoader(
+        train_dataset, 
+        batch_size=BATCH_SIZE, 
+        shuffle=True,  # Normal random sampling
+        num_workers=4, 
+        pin_memory=True
     )
-
-    # ——— 7) History buckets & training loop —————————————————————
+    
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
+    
+    print(f"✅ Created weighted sampler for balanced training")
+    print(f"   Negative class weight: {(1.0 / collision_counts[0]).item():.2e}")
+    print(f"   Positive class weight: {(1.0 / collision_counts[1]).item():.2e}")
+    
+    # ✨ LOSS FUNCTION WITH CLASS IMBALANCE HANDLING ✨
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(device))
+    
+    # ✨ ENHANCED OPTIMIZER & SCHEDULER ✨
+    optimizer = optim.Adam(model.parameters(), lr=INITIAL_LR, weight_decay=WEIGHT_DECAY)
+    
+    # Warm-up scheduler + ReduceLROnPlateau
+    warmup_scheduler = optim.lr_scheduler.LinearLR(optimizer, start_factor=0.1, total_iters=2)
+    main_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, 
+                                                         patience=10, verbose=True, min_lr=1e-6)
+    
+    # ✨ ENHANCED HISTORY TRACKING ✨
     history = {k: [] for k in [
-        'train_success_loss','train_collision_loss',
-        'train_success_accuracy','train_collision_accuracy',
-        'train_success_precision','train_collision_precision',
-        'train_success_recall','train_collision_recall',
-        'train_success_f1','train_collision_f1',
-        'val_success_loss','val_collision_loss',
-        'val_success_accuracy','val_collision_accuracy',
-        'val_success_precision','val_collision_precision',
-        'val_success_recall','val_collision_recall',
-        'val_success_f1','val_collision_f1'
+        'train_collision_loss', 'train_collision_accuracy', 'train_collision_precision',
+        'train_collision_recall', 'train_collision_f1', 'train_collision_roc_auc', 'train_collision_pr_auc',
+        'val_collision_loss', 'val_collision_accuracy', 'val_collision_precision',
+        'val_collision_recall', 'val_collision_f1', 'val_collision_roc_auc', 'val_collision_pr_auc'
     ]}
-
+    
     best_val_loss = float("inf")
+    best_val_roc_auc = 0.0  # Track best ROC-AUC too
     patience = 30
-    no_improve = 0
-
-    print("Start training...")
-
-    for epoch in range(1, epochs+1):
-        # ---------------- Training ----------------
-        model.train()
-        sums = { 'loss_s':0., 'loss_c':0., 'n':0 }
-        conf = { 'tp_s':0,'fp_s':0,'fn_s':0,'tn_s':0,
-                 'tp_c':0,'fp_c':0,'fn_c':0,'tn_c':0 }
+    patience_counter = 0
+    
+    print(f"Starting training for {EPOCHS} epochs...")
+    print(f"Initial learning rate: {INITIAL_LR}")
+    
+    for epoch in range(EPOCHS):
+        # ✨ SWITCH BETWEEN WEIGHTED AND NORMAL SAMPLING ✨
+        use_weighted_sampler = epoch < 10  # First 10 epochs use weighted sampling
+        current_train_loader = train_loader_weighted if use_weighted_sampler else train_loader_normal
         
-        train_bar = tqdm(train_loader, desc=f"Epoch {epoch}/{epochs} [Train]", 
-                         file=orig_stderr, leave=False)
-        for corners, grasp, init, final, label in train_bar:
-            corners, grasp, init, final, label = [
-                t.to(device, non_blocking=True) for t in (corners, grasp, init, final, label)
-            ]
-            sl = label[:, 0].unsqueeze(1)
-            cl = label[:, 1].unsqueeze(1)
-
+        sampler_type = "Weighted" if use_weighted_sampler else "Normal"
+        print(f"\nEpoch {epoch+1}/{EPOCHS} - Using {sampler_type} Sampling")
+        
+        model.train()
+        train_loss, train_correct, train_total = 0.0, 0, 0
+        train_predictions, train_labels = [], []
+        
+        for corners, embeddings, grasp, init, final, label in tqdm(current_train_loader, desc=f"Epoch {epoch+1} [Train]", file=orig_stderr):
+            # ✨ CHANGE: Handle float16 embeddings properly
+            corners, grasp, init, final, label = [t.to(device) for t in (corners, grasp, init, final, label)]
+            
+            # Convert embeddings to float32 AFTER moving to GPU (more efficient)
+            embeddings = embeddings.to(device).float() if embeddings.dtype == torch.float16 else embeddings.to(device)
+            
+            collision_label = label[:, 1:2]
+            
             optimizer.zero_grad()
             with autocast(device_type='cuda'):
-                log_s, log_c = model(corners, grasp, init, final)
-                loss_s = criterion(log_s, sl)
-                loss_c = criterion(log_c, cl)
-                alpha = 0.5
-                beta = 0.5
-                loss = alpha * loss_s + beta * loss_c
+                collision_logits = model(embeddings, corners, grasp, init, final)
+                loss = criterion(collision_logits, collision_label)
+            
             scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)  
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
-            scheduler.step()
-
-            bs = sl.size(0)
-            sums['loss_s'] += loss_s.item() * bs
-            sums['loss_c'] += loss_c.item() * bs
-            sums['n']      += bs
-
-            pred_s = (torch.sigmoid(log_s) > 0.5).long()
-            pred_c = (torch.sigmoid(log_c) > 0.5).long()
-            conf['tp_s'] += ((pred_s==1)&(sl==1)).sum().item()
-            conf['fp_s'] += ((pred_s==1)&(sl==0)).sum().item()
-            conf['fn_s'] += ((pred_s==0)&(sl==1)).sum().item()
-            conf['tn_s'] += ((pred_s==0)&(sl==0)).sum().item()
-            conf['tp_c'] += ((pred_c==1)&(cl==1)).sum().item()
-            conf['fp_c'] += ((pred_c==1)&(cl==0)).sum().item()
-            conf['fn_c'] += ((pred_c==0)&(cl==1)).sum().item()
-            conf['tn_c'] += ((pred_c==0)&(cl==0)).sum().item()
-
-        n = sums['n']
-        train_loss_s = sums['loss_s']/n
-        train_loss_c = sums['loss_c']/n
-        train_acc_s  = (conf['tp_s']+conf['tn_s'])/n
-        train_acc_c  = (conf['tp_c']+conf['tn_c'])/n
-        train_prec_s = conf['tp_s']/(conf['tp_s']+conf['fp_s']+1e-8)
-        train_prec_c = conf['tp_c']/(conf['tp_c']+conf['fp_c']+1e-8)
-        train_rec_s  = conf['tp_s']/(conf['tp_s']+conf['fn_s']+1e-8)
-        train_rec_c  = conf['tp_c']/(conf['tp_c']+conf['fn_c']+1e-8)
-        train_f1_s   = 2*train_prec_s*train_rec_s/(train_prec_s+train_rec_s+1e-8)
-        train_f1_c   = 2*train_prec_c*train_rec_c/(train_prec_c+train_rec_c+1e-8)
-
-        history['train_success_loss'].append(train_loss_s)
-        history['train_collision_loss'].append(train_loss_c)
-        history['train_success_accuracy'].append(train_acc_s)
-        history['train_collision_accuracy'].append(train_acc_c)
-        history['train_success_precision'].append(train_prec_s)
-        history['train_collision_precision'].append(train_prec_c)
-        history['train_success_recall'].append(train_rec_s)
-        history['train_collision_recall'].append(train_rec_c)
-        history['train_success_f1'].append(train_f1_s)
-        history['train_collision_f1'].append(train_f1_c)
-
-        # ---------------- Validation ----------------
+            
+            # Accumulate metrics
+            batch_size = collision_label.size(0)
+            train_loss += loss.item() * batch_size
+            train_total += batch_size
+            
+            # Store predictions for advanced metrics
+            probs = torch.sigmoid(collision_logits).detach().cpu().numpy().flatten()
+            labels = collision_label.detach().cpu().numpy().flatten()
+            train_predictions.extend(probs)
+            train_labels.extend(labels)
+        
+        # Apply warmup for first 2 epochs
+        if epoch < 2:
+            warmup_scheduler.step()
+        
+        # Compute training metrics
+        train_loss /= train_total
+        train_metrics = compute_advanced_metrics(np.array(train_labels), np.array(train_predictions))
+        
+        # Validation phase
         model.eval()
-        sums = {'loss_s':0., 'loss_c':0., 'n':0}
-        conf = {'tp_s':0,'fp_s':0,'fn_s':0,'tn_s':0,
-                'tp_c':0,'fp_c':0,'fn_c':0,'tn_c':0}
-
-        val_bar = tqdm(val_loader, desc=f"Epoch {epoch}/{epochs} [Val]  ", 
-                       file=orig_stderr, leave=False)
+        val_loss, val_total = 0.0, 0
+        val_predictions, val_labels = [], []
         
         with torch.no_grad():
-            for corners, grasp, init, final, label in val_bar:
-                corners, grasp, init, final, label = [
-                    t.to(device, non_blocking=True) for t in (corners, grasp, init, final, label)
-                ]
-                sl = label[:, 0].unsqueeze(1)
-                cl = label[:, 1].unsqueeze(1)
-
-                log_s, log_c = model(corners, grasp, init, final)
-                loss_s = criterion(log_s, sl)
-                loss_c = criterion(log_c, cl)
-
-                bs = sl.size(0)
-                sums['loss_s'] += loss_s.item() * bs
-                sums['loss_c'] += loss_c.item() * bs
-                sums['n']      += bs
-
-                pred_s = (torch.sigmoid(log_s) > 0.5).long()
-                pred_c = (torch.sigmoid(log_c) > 0.5).long()
-                conf['tp_s'] += ((pred_s==1)&(sl==1)).sum().item()
-                conf['fp_s'] += ((pred_s==1)&(sl==0)).sum().item()
-                conf['fn_s'] += ((pred_s==0)&(sl==1)).sum().item()
-                conf['tn_s'] += ((pred_s==0)&(sl==0)).sum().item()
-                conf['tp_c'] += ((pred_c==1)&(cl==1)).sum().item()
-                conf['fp_c'] += ((pred_c==1)&(cl==0)).sum().item()
-                conf['fn_c'] += ((pred_c==0)&(cl==1)).sum().item()
-                conf['tn_c'] += ((pred_c==0)&(cl==0)).sum().item()
-
-        n = sums['n']
-        val_loss_s = sums['loss_s']/n
-        val_loss_c = sums['loss_c']/n
-        val_acc_s  = (conf['tp_s']+conf['tn_s'])/n
-        val_acc_c  = (conf['tp_c']+conf['tn_c'])/n
-        val_prec_s = conf['tp_s']/(conf['tp_s']+conf['fp_s']+1e-8)
-        val_prec_c = conf['tp_c']/(conf['tp_c']+conf['fp_c']+1e-8)
-        val_rec_s  = conf['tp_s']/(conf['tp_s']+conf['fn_s']+1e-8)
-        val_rec_c  = conf['tp_c']/(conf['tp_c']+conf['fn_c']+1e-8)
-        val_f1_s   = 2*val_prec_s*val_rec_s/(val_prec_s+val_rec_s+1e-8)
-        val_f1_c   = 2*val_prec_c*val_rec_c/(val_prec_c+val_rec_c+1e-8)
-
-        history['val_success_loss'].append(val_loss_s)
-        history['val_collision_loss'].append(val_loss_c)
-        history['val_success_accuracy'].append(val_acc_s)
-        history['val_collision_accuracy'].append(val_acc_c)
-        history['val_success_precision'].append(val_prec_s)
-        history['val_collision_precision'].append(val_prec_c)
-        history['val_success_recall'].append(val_rec_s)
-        history['val_collision_recall'].append(val_rec_c)
-        history['val_success_f1'].append(val_f1_s)
-        history['val_collision_f1'].append(val_f1_c)
-
-        val_total_loss = val_loss_s + val_loss_c
-        print(f"\nEpoch {epoch}: Val Total Loss={val_total_loss:.4f}\n")
-        current_lr = optimizer.param_groups[0]['lr']
-        print(f"Learning rate now: {current_lr:.6e}\n")
-
-        csv_path = os.path.join(log_dir, 'epoch_metrics.csv')
-        write_header = not os.path.exists(csv_path)
-        with open(csv_path, 'a') as csvf:
-            if write_header:
-                csvf.write(','.join(history.keys()) + '\n')
-            row = ','.join(f"{history[k][-1]:.4f}" for k in history) + '\n'
-            csvf.write(row)
-
-        if val_total_loss < best_val_loss:
-            best_val_loss = val_total_loss
-            no_improve = 0
-            ckpt = os.path.join(model_dir, f"best_model_{best_val_loss:.4f}.pth".replace('.', '_'))
-            torch.save(model.state_dict(), ckpt)
-            print(f"→ Saved new best model: {os.path.basename(ckpt)}\n")
-        else:
-            no_improve += 1
+            for corners, embeddings, grasp, init, final, label in tqdm(val_loader, desc=f"Epoch {epoch+1} [Val]", file=orig_stderr):
+                corners, grasp, init, final, label = [t.to(device) for t in (corners, grasp, init, final, label)]
+                embeddings = embeddings.to(device).float() if embeddings.dtype == torch.float16 else embeddings.to(device)
+                
+                collision_label = label[:, 1:2]
+                
+                with autocast(device_type='cuda'):
+                    collision_logits = model(embeddings, corners, grasp, init, final)
+                    loss = criterion(collision_logits, collision_label)
+                    
+                    batch_size = collision_label.size(0)
+                    val_loss += loss.item() * batch_size
+                    val_total += batch_size
+                    
+                    # Store predictions for advanced metrics
+                    probs = torch.sigmoid(collision_logits).cpu().numpy().flatten()
+                    labels = collision_label.cpu().numpy().flatten()
+                    val_predictions.extend(probs)
+                    val_labels.extend(labels)
         
-        if no_improve >= patience:
-            print(f"Early stopping at epoch {epoch}")
-            break
-
-    print("Training completed!")
+        # Compute validation metrics
+        val_loss /= val_total
+        val_metrics = compute_advanced_metrics(np.array(val_labels), np.array(val_predictions))
+        
+        # Apply main scheduler after warmup
+        if epoch >= 2:
+            main_scheduler.step(val_loss)
+        
+        # Store metrics in history
+        history['train_collision_loss'].append(train_loss)
+        history['train_collision_accuracy'].append(train_metrics['accuracy'])
+        history['train_collision_precision'].append(train_metrics['precision'])
+        history['train_collision_recall'].append(train_metrics['recall'])
+        history['train_collision_f1'].append(train_metrics['f1'])
+        history['train_collision_roc_auc'].append(train_metrics['roc_auc'])
+        history['train_collision_pr_auc'].append(train_metrics['pr_auc'])
+        
+        history['val_collision_loss'].append(val_loss)
+        history['val_collision_accuracy'].append(val_metrics['accuracy'])
+        history['val_collision_precision'].append(val_metrics['precision'])
+        history['val_collision_recall'].append(val_metrics['recall'])
+        history['val_collision_f1'].append(val_metrics['f1'])
+        history['val_collision_roc_auc'].append(val_metrics['roc_auc'])
+        history['val_collision_pr_auc'].append(val_metrics['pr_auc'])
+        
+        # ✨ ENHANCED LOGGING WITH SAMPLING STRATEGY ✨
+        current_lr = optimizer.param_groups[0]['lr']
+        sampling_status = "🎯 Weighted" if use_weighted_sampler else "📊 Normal"
+        
+        print(f"Epoch {epoch+1}/{EPOCHS} | {sampling_status} | LR: {current_lr:.2e}")
+        print(f"  Train - Loss: {train_loss:.4f}, Acc: {train_metrics['accuracy']:.4f}, ROC-AUC: {train_metrics['roc_auc']:.4f}, PR-AUC: {train_metrics['pr_auc']:.4f}")
+        print(f"  Val   - Loss: {val_loss:.4f}, Acc: {val_metrics['accuracy']:.4f}, ROC-AUC: {val_metrics['roc_auc']:.4f}, PR-AUC: {val_metrics['pr_auc']:.4f}")
+        
+        # ✨ MONITOR TARGET METRICS (as suggested) ✨
+        target_loss_reached = val_loss < 0.25
+        target_roc_reached = val_metrics['roc_auc'] > 0.905
+        
+        if target_loss_reached:
+            print(f"  🎯 TARGET REACHED: Validation loss below 0.25 ({val_loss:.4f})")
+        if target_roc_reached:
+            print(f"  🏆 TARGET REACHED: ROC-AUC above 0.905 ({val_metrics['roc_auc']:.4f})")
+        
+        if use_weighted_sampler:
+            print(f"  📈 Weighted sampling epoch {epoch+1}/10 - monitoring class balance improvements")
+        
+        # Save best model (dual criteria: loss and ROC-AUC)
+        is_best_loss = val_loss < best_val_loss
+        is_best_roc = val_metrics['roc_auc'] > best_val_roc_auc
+        
+        if is_best_loss:
+            best_val_loss = val_loss
+            patience_counter = 0
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_loss': val_loss,
+                'val_roc_auc': val_metrics['roc_auc'],
+                'normalization_stats': train_dataset.normalization_stats
+            }, os.path.join(model_dir, f'best_model_loss_{timestamp}.pth'))
+            print(f"  💾 Saved best loss model (loss: {val_loss:.4f})")
+        
+        if is_best_roc:
+            best_val_roc_auc = val_metrics['roc_auc']
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_loss': val_loss,
+                'val_roc_auc': val_metrics['roc_auc'],
+                'normalization_stats': train_dataset.normalization_stats
+            }, os.path.join(model_dir, f'best_model_roc_{timestamp}.pth'))
+            print(f"  🎯 Saved best ROC-AUC model (ROC-AUC: {val_metrics['roc_auc']:.4f})")
+        
+        if not is_best_loss:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print(f"Early stopping triggered after {patience} epochs without improvement")
+                break
+    
+        # Save plots every 10 epochs
+        if (epoch + 1) % 10 == 0:
+            save_enhanced_plots(history, log_dir)
+        
+        print("-" * 80)
+    
+    # Final saves
+    save_enhanced_plots(history, log_dir)
+    
+    # Save final model and history
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'val_loss': val_loss,
+        'val_roc_auc': val_metrics['roc_auc'],
+        'normalization_stats': train_dataset.normalization_stats
+    }, os.path.join(model_dir, f'final_model_{timestamp}.pth'))
+    
+    with open(os.path.join(log_dir, 'training_history.json'), 'w') as f:
+        json.dump(history, f, indent=2)
+    
+    print("✅ Training completed!")
+    # ✨ Close log file and restore stdout/stderr
+    sys.stdout = orig_stdout
+    sys.stderr = orig_stderr
     log_file.close()
-
-    save_plots(history, log_dir)
-
-
+    print(f"📊 Logs saved to: {log_dir}")
+    print(f"🏆 Best validation loss: {best_val_loss:.4f}")
+    print(f"🎯 Best validation ROC-AUC: {best_val_roc_auc:.4f}")
 
 if __name__ == "__main__":
-    # Paths
-    my_dir = "/home/chris/Chris/placement_ws/src/data/box_simulation/v3/"
-    main(my_dir)
+    data_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4"
+    main(data_path)
