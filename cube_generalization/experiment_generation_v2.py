@@ -37,9 +37,9 @@ HAND_TO_TCP_Z = 0.1034
 EXTRA_INSERT = -0.0334
 
 # Initial and final orientation sampling
-INIT_SPINS_DEG: Tuple[int, ...] = (0, 90, 180)
+INIT_SPINS_DEG: Tuple[int, ...] = (0, 90)
 FINAL_SPIN_CANDIDATES_DEG: Tuple[int, ...] = (0, 90, 180, 270)
-N_FINAL_SPINS_PER_FACE: int = 2
+N_FINAL_SPINS_PER_FACE: int = 1
 FACE_LIST: Tuple[str, ...] = ("+X", "-X", "+Y", "-Y", "+Z", "-Z")
 
 
@@ -75,6 +75,7 @@ def generate_experiments(
 
     # Sample diverse object dimensions
     box_dim_lists = sample_dims(n=num_objects, min_s=dims_min, max_s=dims_max, seed=seed)
+    print(box_dim_lists)
 
     for obj_idx, dims in enumerate(box_dim_lists):
         dims_xyz = np.array(dims, dtype=float)
@@ -97,9 +98,9 @@ def generate_experiments(
                     {"tilt": True,  "yaw": False, "roll": False},
                     {"tilt": False, "yaw": True,  "roll": False},
                     {"tilt": False, "yaw": False, "roll": True },
-                    {"tilt": True,  "yaw": True,  "roll": False},
-                    {"tilt": True,  "yaw": False, "roll": True },
-                    {"tilt": False, "yaw": True,  "roll": True },
+                    # {"tilt": True,  "yaw": True,  "roll": False},
+                    # {"tilt": True,  "yaw": False, "roll": True },
+                    # {"tilt": False, "yaw": True,  "roll": True },
                     {"tilt": True,  "yaw": True,  "roll": True },
                 ]
 

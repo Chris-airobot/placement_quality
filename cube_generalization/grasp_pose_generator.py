@@ -97,48 +97,72 @@ def generate_contact_metadata(
             })
     return metadata
 
-def sample_dims(n: int, min_s=0.05, max_s=0.20, seed: int = 0) -> List[Tuple[float, float, float]]:
-    """Varied rectangular boxes: thin/long/tall/cubey + random. Returns list of (x, y, z) in metres."""
+def sample_dims(n: int, min_s: float = 0.05, max_s: float = 0.20, seed: int = 0) -> List[Tuple[float, float, float]]:
+    """
+    Generate exactly n box dimension triplets (x, y, z) in metres with simple shape bias
+    while enforcing constraints:
+      - All edges lie within [min_s, max_s]
+      - Each triplet has at least one edge exactly equal to min_s
+    """
     rng = np.random.default_rng(seed)
-    out: List[Tuple[float, float, float]] = []
 
-    def pick(a, b, c):
-        out.append((float(a), float(b), float(c)))
+    min_s = float(min_s)
+    max_s = float(max_s)
+    assert max_s >= min_s, "max_s must be >= min_s"
 
-    k = max(1, n // 8)
+    def enforce_constraints(dims: np.ndarray) -> Tuple[float, float, float]:
+        # Clip to bounds
+        dims = np.clip(dims.astype(float), min_s, max_s)
+        # Ensure at least one dimension equals min_s
+        if not np.any(np.isclose(dims, min_s)):
+            idx = int(np.argmin(dims))
+            dims[idx] = min_s
+        return float(dims[0]), float(dims[1]), float(dims[2])
 
-    # Thin
-    for _ in range(k * 2):
-        x = rng.uniform(min_s, max_s)
-        y = rng.uniform(min_s, max_s)
-        z = rng.uniform(min_s * 0.5, min_s * 0.8)
-        pick(x, y, z)
+    # Shape types to encourage some variety without breaking bounds
+    shape_types = ("thin", "long", "tall", "cubey", "random")
+    results: List[Tuple[float, float, float]] = []
 
-    # Long
-    for _ in range(k):
-        x = rng.uniform(max_s * 0.9, max_s * 1.3)
-        y = rng.uniform(min_s, max_s * 0.8)
-        z = rng.uniform(min_s, max_s * 0.8)
-        pick(x, y, z)
+    # Helper to sample a biased triplet within range
+    span = max_s - min_s
 
-    # Tall
-    for _ in range(k):
-        x = rng.uniform(min_s, max_s * 0.8)
-        y = rng.uniform(min_s, max_s * 0.8)
-        z = rng.uniform(max_s * 0.9, max_s * 1.3)
-        pick(x, y, z)
+    def sample_one(kind: str) -> Tuple[float, float, float]:
+        if kind == "thin":
+            # Two arbitrary, one near the lower end
+            a = rng.uniform(min_s, max_s)
+            b = rng.uniform(min_s, max_s)
+            c = rng.uniform(min_s, min_s + 0.3 * span)
+            dims = np.array([a, b, c], dtype=float)
+        elif kind == "long":
+            # One near upper end, others arbitrary
+            hi = rng.uniform(min_s + 0.7 * span, max_s)
+            lo1 = rng.uniform(min_s, max_s)
+            lo2 = rng.uniform(min_s, max_s)
+            # Randomize which axis is the long one
+            idx = rng.integers(0, 3)
+            vals = [lo1, lo2, rng.uniform(min_s, max_s)]
+            vals[idx] = hi
+            dims = np.array(vals, dtype=float)
+        elif kind == "tall":
+            # Similar to long: emphasize z
+            a = rng.uniform(min_s, max_s)
+            b = rng.uniform(min_s, max_s)
+            c = rng.uniform(min_s + 0.7 * span, max_s)
+            dims = np.array([a, b, c], dtype=float)
+        elif kind == "cubey":
+            s = rng.uniform(min_s, max_s)
+            dims = np.array([s * rng.uniform(0.9, 1.1),
+                             s * rng.uniform(0.9, 1.1),
+                             s * rng.uniform(0.9, 1.1)], dtype=float)
+        else:  # random
+            dims = rng.uniform(min_s, max_s, size=3).astype(float)
+        return enforce_constraints(dims)
 
-    # Cubey
-    for _ in range(k * 2):
-        s = rng.uniform(min_s * 0.8, max_s * 0.9)
-        pick(s, s * rng.uniform(0.9, 1.1), s * rng.uniform(0.9, 1.1))
+    for i in range(n):
+        kind = shape_types[int(rng.integers(0, len(shape_types)))]
+        results.append(sample_one(kind))
 
-    # Random
-    for _ in range(max(0, n - len(out))):
-        pick(*rng.uniform(min_s, max_s, size=3))
-
-    rng.shuffle(out)
-    return out[:n]
+    return results
 
 
 def build_tool_orientation_from_meta(

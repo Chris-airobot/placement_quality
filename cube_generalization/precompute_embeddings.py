@@ -13,7 +13,7 @@ sys.path.append(pointnet_path)
 sys.path.append(os.path.join(pointnet_path, 'models'))
 
 # Import after adding paths
-from models.pointnet2_cls_ssg import get_model
+from pointnet2.pointnet2_cls_ssg import get_model
 
 def precompute_embeddings(data_path, output_file):
     """Precompute world-frame embeddings and save in one efficient file"""
@@ -406,7 +406,7 @@ if __name__ == "__main__":
         validate_full_dataset()
     elif experiment:
         # Process experiment generation data
-        experiment_file = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiment_generation.json"
+        experiment_file = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiments.json"
         output_file = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiment_embeddings.npy"
         
         precompute_experiment_embeddings(experiment_file, output_file)
