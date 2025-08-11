@@ -5,84 +5,215 @@ import copy
 import torch
 
 from scipy.spatial.transform import Rotation as R
-from utils import sample_object_poses, sample_fixed_surface_poses_increments, flip_pose_keep_delta
+from utils import sample_object_poses, sample_fixed_surface_poses_increments, flip_pose_keep_delta, sample_dims
 from collections import defaultdict
 
 # Import your model and dataset
 from model import CollisionPredictionNet
 from dataset import cuboid_corners_local_ordered  # Fixed: correct function name
-from dataset import EnhancedWorldFrameDataset  # or whatever your dataset class is
+from dataset import WorldFrameDataset  # or whatever your dataset class is
+
+
+WORLD_UP = np.array([0., 0., 1.])          # gravity
+PEDESTAL_TOP_Z = 0.10          # adjust if pedestal is elevated
+MIN_CLEARANCE = 0.02         # minimal clearance above pedestal to allow grasp
+PALM_DEPTH     = 0.038     # metres –- distance from contact point to palm
+FINGER_THICK   = 0.10     # metres –- half-thickness of your finger tip
+GRIPPER_OPEN_MAX = 0.08   # metres –- your jaw limit
+MIN_PALM_CLEAR = 0.01     # metres –- clearance you insist on
+
+
+def choose_yaw_clearance(contact_p_w,          # 3-vector world coords
+                         approach_w,           # 3-vector, already normalised
+                         dims_total,           # [L,W,H] full sizes (m)
+                         rot_obj):             # world→object rotation (scipy R)
+    """
+    Pick the yaw (X-axis) giving the better palm clearance.
+    Returns (x_world, y_world) or None if neither fits & clears.
+    """
+    a = approach_w / np.linalg.norm(approach_w)        # tool Z
+
+    # Two orthogonal X candidates in the plane ⟂ a
+    xA = np.cross(WORLD_UP, a)
+    if np.linalg.norm(xA) < 1e-6:                      # approach ∥ up
+        xA = np.cross([1., 0., 0.], a)
+    xA /= np.linalg.norm(xA)
+    xB = np.cross(a, xA)
+    xB /= np.linalg.norm(xB)
+
+    half = 0.5 * np.asarray(dims_total)
+
+    def jaw_span(x_dir):
+        local = rot_obj.inv().apply(x_dir)
+        return 2.0 * np.sum(np.abs(local) * half)
+
+    best  = None
+    best_clear = -np.inf
+
+    for x in (xA, xB):
+        if jaw_span(x) > GRIPPER_OPEN_MAX:         # jaws can't open that wide
+            continue
+
+        y = np.cross(a, x);  y /= np.linalg.norm(y)
+
+        # Palm centre and its lowest edge along y
+        palm_center = contact_p_w - PALM_DEPTH * a
+        palm_bottom_z = palm_center[2] - FINGER_THICK * abs(y[2])
+
+        clearance = palm_bottom_z - PEDESTAL_TOP_Z
+        if clearance >= MIN_PALM_CLEAR and clearance > best_clear:
+            best_clear = clearance
+            best = (x, y)
+
+    return best  
 
 def generate_grasps(pos_w, quat_w, dims_total,
-                    tilt_degs=[60, 90, 120],
-                    enable_yaw_tilt=True):
-    rot_obj       = R.from_quat([quat_w[1], quat_w[2], quat_w[3], quat_w[0]])
+                    tilt_degs=[75, 90, 105],
+                    enable_yaw_tilt=True,
+                    debug_indices=None,
+                    current_base_index=0):
 
-    # 5) Generate and filter contact points
+    rot_obj = R.from_quat([quat_w[1], quat_w[2], quat_w[3], quat_w[0]])
+
+    # ---------- contact metadata ----------
     all_meta      = generate_contact_metadata(dims_total)
-
 
     local_normals = {
         '+X': np.array([ 1,0,0]), '-X': np.array([-1,0,0]),
         '+Y': np.array([ 0,1,0]), '-Y': np.array([ 0,-1,0]),
         '+Z': np.array([ 0,0,1]), '-Z': np.array([ 0,0,-1]),
     }
-    dots = {f: float(np.dot(rot_obj.apply(n), [0,0,1])) for f,n in local_normals.items()}
+    dots = {f: float(np.dot(rot_obj.apply(n), WORLD_UP)) for f,n in local_normals.items()}
     down_face = max(dots, key=lambda f: -dots[f])
+
+    # discard the face in contact with pedestal
     contact_meta = [m for m in all_meta if m['face'] != down_face]
+
+    # --------------------------------------  CL-1:  fingertip clearance
+    valid_cp = []
     for m in contact_meta:
-        m['p_world'] = rot_obj.apply(m['p_local']) + pos_w
+        p_w = rot_obj.apply(m['p_local']) + pos_w
+        if (p_w[2] - PEDESTAL_TOP_Z) >= MIN_CLEARANCE:
+            m['p_world'] = p_w
+            valid_cp.append(m)
 
-    # define your tilt angles (degrees) and convert to radians
+    # ---------- grasp variants ----------
     tilt_rads = [np.deg2rad(t) for t in tilt_degs]
-    # 6) Visualize top-down grasps only (no tilt/yaw)
     final_grasps = []
-    for cp in contact_meta:
-        # normalize the three contact‐frame directions
-        z = cp['approach'] / np.linalg.norm(cp['approach'])  # tool Z (red)
-        x = cp['axis']     / np.linalg.norm(cp['axis'])      # tool X (red)
-        y = np.cross(z, x)                                   # tool Y (green)
-        y /= np.linalg.norm(y)
+    grasp_counter = current_base_index  # Track which overall trial index we're at
+    
+    for cp in valid_cp:
+        z = cp['approach'] / np.linalg.norm(cp['approach'])  # tool Z
 
-        # build a rotation whose columns are [X, Y, Z]
-        M = np.column_stack([y, x, z])
+        xy = choose_yaw_clearance(cp['p_world'], z, dims_total, rot_obj)
+        if xy is None:
+            continue                    # no feasible yaw
+        v1_w, v2_w = xy
+        
 
-        # if it’s left‑handed, flip the X‑column so det>0
-        if np.linalg.det(M) < 0:
-            M[:,1] *= -1
-
-        R_base = R.from_matrix(M)
-
-        if enable_yaw_tilt:
-            # Full yaw sweep (with a 20 % safety margin) while keeping the
-            # tilt angles passed by the caller.  If the caller sets
-            # tilt_degs=[90] this will give yaw-only variations.
-            yaw_margin_factor = 0.4          # keep 40 % of theoretical range
-            safe_psi = cp['psi_max'] * yaw_margin_factor
-            yaw_rads = np.linspace(-safe_psi, safe_psi, 2)
+        # --- NEW: project the face’s short edge into the approach plane ----------
+        face_x_w = rot_obj.apply(cp['axis'])
+        face_x_w = face_x_w - np.dot(face_x_w, z) * z     # remove any Z component
+        norm = np.linalg.norm(face_x_w)
+        if norm < 1e-6:                                   # edge ~parallel to Z
+            face_x_w = v1_w                               # fall back, rare
         else:
-            # single orientation, no yaw & no tilt
+            face_x_w /= norm
+
+        # choose whichever candidate yaw axis gives the smaller jaw span
+        jaw_span = lambda a: 2*np.sum(np.abs(rot_obj.inv().apply(a))*0.5*dims_total)
+        span_v1 = jaw_span(v1_w)
+        span_v2 = jaw_span(v2_w)
+        
+        if span_v1 <= span_v2:
+            x_w, y_w = v1_w, v2_w
+        else:
+            x_w, y_w = v2_w, v1_w
+
+        # ——— DEBUG: if we ever pick the larger‐span axis, dump & exit ———
+        span_x = jaw_span(x_w)
+        span_y = jaw_span(y_w)
+        if span_x > span_y + 1e-6:
+            print("‼️  MISORIENTED GRASP ‼️")
+            continue
+            # import sys; sys.exit(0)
+
+        # re-orthonormalise (numerical safety)
+        x_w = x_w - np.dot(x_w, z) * z;  x_w /= np.linalg.norm(x_w)
+        y_w = np.cross(z, x_w)                   # right-handed frame
+
+        # Try both frame constructions and calculate jaw spans
+        R_option1 = R.from_matrix(np.column_stack([-y_w, x_w, z]))  # Original line 139
+        R_option2 = R.from_matrix(np.column_stack([x_w, y_w, z]))   # Original line 140
+        
+        # Calculate jaw spans for both options
+        fingers1 = R_option1.as_matrix()[:, 0]  # finger closing direction for option 1
+        fingers2 = R_option2.as_matrix()[:, 0]  # finger closing direction for option 2
+        span1 = 2*np.sum(np.abs(rot_obj.inv().apply(fingers1))*0.5*dims_total)
+        span2 = 2*np.sum(np.abs(rot_obj.inv().apply(fingers2))*0.5*dims_total)
+        
+        # Choose gripper frame based on face type and orientation
+        face_normal_world = rot_obj.apply(cp['normal'])
+        
+        # For axis-aligned faces (pure X, Y, or Z normals), use Option 1
+        # For angled faces, use Option 2
+        is_axis_aligned = (abs(face_normal_world[0]) > 0.9 or 
+                          abs(face_normal_world[1]) > 0.9 or 
+                          abs(face_normal_world[2]) > 0.9)
+        
+        if is_axis_aligned:
+            R_base = R_option1
+            chosen_option = 1
+        else:
+            R_base = R_option2
+            chosen_option = 2
+            
+        # Store debug info for later use
+        debug_info = {
+            'face': cp['face'],
+            'face_normal_world': rot_obj.apply(cp['normal']),
+            'approach_world': rot_obj.apply(cp['approach']),
+            'dims_total': dims_total,
+            'face_axis_local': cp['axis'],
+            'face_axis_world': rot_obj.apply(cp['axis']),
+            'v1_w': v1_w,
+            'v2_w': v2_w,
+            'span_v1': span_v1,
+            'span_v2': span_v2,
+            'x_w': x_w,
+            'y_w': y_w,
+            'z': z,
+            'fingers1': fingers1,
+            'fingers2': fingers2,
+            'span1': span1,
+            'span2': span2,
+            'chosen_option': chosen_option
+        }
+
+
+        # yaw sweep (still useful to sample a few)
+        if enable_yaw_tilt:
+            psi_safe  = cp['psi_max'] * 0.4
+            yaw_rads  = np.linspace(-psi_safe, psi_safe, 2)
+        else:
             yaw_rads  = [0.0]
-            # tilt_rads = [np.deg2rad(90)]   # 90 ° keeps the tool Z aligned with the contact normal
 
-        # for each tilt then yaw, compute a variant
-        for tilt_rad in tilt_rads:
-            # tilt about the binormal ⇒ prim‑local X axis
-            delta_tilt = tilt_rad - (np.pi / 2)  
-            R_tilt = R.from_rotvec(delta_tilt * np.array([1, 0, 0]))
-
+        for tilt in tilt_rads:
+            R_tilt = R.from_rotvec((tilt - np.pi/2) * np.array([1,0,0]))
             for yaw in yaw_rads:
-                # yaw about the approach ⇒ prim‑local Z axis
-                R_yaw = R.from_rotvec(yaw * np.array([0, 0, 1]))
+                R_yaw = R.from_rotvec(yaw * np.array([0,0,1]))
 
-                # apply tilt first, then yaw, then base alignment
-                R_variant = R_base * R_yaw * R_tilt
+                R_tool = R_base * R_yaw * R_tilt
+                q_raw  = (rot_obj * R_tool).as_quat()  # [x,y,z,w]
+                quat_w = [q_raw[3], q_raw[0], q_raw[1], q_raw[2]]
 
-                # world‐frame quaternion
-                q_raw = (rot_obj * R_variant).as_quat()  # [x,y,z,w]
-                quat_wxyz = [q_raw[3], q_raw[0], q_raw[1], q_raw[2]]
-
-                final_grasps.append((cp['p_world'].tolist() + quat_wxyz))
+                grasp_with_debug = {
+                    'grasp': cp['p_world'].tolist() + quat_w,
+                    'debug_info': debug_info,
+                    'trial_index': grasp_counter
+                }
+                final_grasps.append(grasp_with_debug)
+                grasp_counter += 1
 
     return final_grasps
 
@@ -110,7 +241,7 @@ def model_prediction(model, data, device):
         # CRITICAL FIX: Load normalization stats and apply them
         # You need to find where your training stats were saved
         stats_path = "/path/to/your/normalization_stats.json"  # Find this file!
-        norm_stats = EnhancedWorldFrameDataset.load_stats(stats_path)
+        norm_stats = WorldFrameDataset.load_stats(stats_path)
         
         # Normalize corners (this is crucial!)
         corners_normalized = norm_stats.zscore_corners(corners)
@@ -232,31 +363,22 @@ def generate_contact_metadata(dims, approach_offset=0.01, G_max=0.08):
 
 if __name__ == "__main__":
     # Configuration
-    box_dim_lists = [
-        [0.15, 0.15, 0.05],
-        [0.05, 0.05, 0.2],
-        [0.15, 0.05, 0.08],
-        [0.05, 0.05, 0.05],
-    ]
-    
-    # Model configuration
-    checkpoint_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/training/models/model_20250804_001543/best_model_roc_20250804_001543.pth"
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
-    
-    # Load the trained model
-    model = load_trained_model(checkpoint_path, device)
-    if model is None:
-        print("Failed to load model. Exiting.")
-        exit(1)
-    
-    # Validate model is in eval mode
-    model.eval()
-    print(f"Model loaded successfully and set to evaluation mode")
-    
+    original_box_dim_lists = sample_dims(n=4, min_s=0.05, max_s=0.2, seed=980579)
+    box_dim_lists = [original_box_dim_lists[0], 
+                     original_box_dim_lists[76],
+                     original_box_dim_lists[152],
+                     original_box_dim_lists[228],
+                     original_box_dim_lists[399],
+                     ]
+
+
     test_data = []
     prediction_results = []
-
+    
+    # DEBUG: Add a global counter and specify which indices to debug
+    global_trial_index = 0
+    debug_indices = {0, 16, 146}  # Add your problematic indices here, e.g. {42, 157, 892}
+    
     print("Generating experiment scenarios...")
     for box_dims in box_dim_lists:
         print(f"Processing box dimensions: {box_dims}")
@@ -265,71 +387,64 @@ if __name__ == "__main__":
         for i, object_initial_pose in enumerate(object_initial_poses):
             for num_turns in range(0, 4):
                 object_final_pose = flip_pose_keep_delta(object_initial_pose, box_dims, num_turns=num_turns)
-                grasps = generate_grasps(object_initial_pose[:3], object_initial_pose[3:], np.array(box_dims), enable_yaw_tilt=False)
+                grasps = generate_grasps(object_initial_pose[:3], object_initial_pose[3:], np.array(box_dims), 
+                                      enable_yaw_tilt=False, debug_indices=debug_indices, current_base_index=global_trial_index)
                 
-                for grasp in grasps:  
+                for grasp_data in grasps:  
                     final_pose = copy.deepcopy(object_final_pose)
                     final_pose[2] += 0.1
                     
                     current_trial = {
-                        "grasp_pose": grasp,
+                        "grasp_pose": grasp_data['grasp'],
                         "initial_object_pose": object_initial_pose,
                         "final_object_pose": final_pose,
-                        "object_dimensions": box_dims
+                        "object_dimensions": box_dims,
+                        "debug_info": grasp_data['debug_info']
                     }
                     test_data.append(current_trial)
+                    global_trial_index += 1
                     
-                    # Make prediction immediately
-                    pred_no_collision = model_prediction(model, current_trial, device)
-                    
-                    if pred_no_collision is not None:
-                        prediction_result = {
-                            "object_dimensions": box_dims,
-                            "initial_pose": object_initial_pose,
-                            "final_pose": final_pose,
-                            "grasp_pose": grasp,
-                            "num_turns": num_turns,
-                            "pred_no_collision": float(pred_no_collision),
-                            "pred_collision": float(1 - pred_no_collision)
-                        }
-                        prediction_results.append(prediction_result)
-                        
-                        # Print progress
-                        if len(prediction_results) % 100 == 0:
-                            print(f"Processed {len(prediction_results)} trials...")
+
+
+    # DEBUG: Print info for specified indices after all generation is complete
+    print("\n" + "="*60)
+    print("DEBUG INFO FOR SPECIFIED INDICES")
+    print("="*60)
+    
+    for i, trial in enumerate(test_data):
+        if i in debug_indices:
+            debug = trial['debug_info']
+            print(f"\n=== TRIAL INDEX {i} ===")
+            print(f"Face: {debug['face']}")
+            print(f"Face normal (world): {debug['face_normal_world']}")
+            print(f"Approach dir (world): {debug['approach_world']}")
+            print(f"Object dims: {debug['dims_total']}")
+            print(f"Face axis (local): {debug['face_axis_local']}")
+            print(f"Face axis (world): {debug['face_axis_world']}")
+            print(f"v1_w: {debug['v1_w']} (span: {debug['span_v1']:.4f})")
+            print(f"v2_w: {debug['v2_w']} (span: {debug['span_v2']:.4f})")
+            print(f"x_w (chosen): {debug['x_w']}")
+            print(f"y_w: {debug['y_w']}")
+            print(f"z (approach): {debug['z']}")
+            print(f"Option 1 finger-closing dir: {debug['fingers1']}")
+            print(f"Option 2 finger-closing dir: {debug['fingers2']}")
+            print(f"Option 1 jaw span: {debug['span1']:.4f}")
+            print(f"Option 2 jaw span: {debug['span2']:.4f}")
+            print(f"CHOSEN: Option {debug['chosen_option']}")
+            print(f"Grasp pose: {trial['grasp_pose']}")
+            print("-" * 40)
+    
+    print("="*60 + "\n")
+
+    # Remove debug info before saving to keep JSON clean
+    clean_test_data = []
+    for trial in test_data:
+        clean_trial = {k: v for k, v in trial.items() if k != 'debug_info'}
+        clean_test_data.append(clean_trial)
 
     # Save generated trials to JSON
     experiment_path = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiment_generation.json"
     with open(experiment_path, "w") as f:
-        json.dump(test_data, f, indent=2)
+        json.dump(clean_test_data, f, indent=2)
 
     print(f"Generated {len(test_data)} trials")
-
-    # Save prediction results
-    output_path = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/test_data_predictions.jsonl"
-    with open(output_path, "w") as f_out:
-        for rec in prediction_results:
-            f_out.write(json.dumps(rec) + "\n")
-
-    print(f"Saved {len(prediction_results)} prediction records to {output_path}")
-    
-    # Print summary statistics
-    if prediction_results:
-        pred_values = [r["pred_no_collision"] for r in prediction_results]
-        print(f"\nPrediction Summary:")
-        print(f"Total predictions: {len(pred_values)}")
-        print(f"Mean no-collision probability: {np.mean(pred_values):.4f}")
-        print(f"Std no-collision probability: {np.std(pred_values):.4f}")
-        print(f"Min no-collision probability: {np.min(pred_values):.4f}")
-        print(f"Max no-collision probability: {np.max(pred_values):.4f}")
-        
-        # Group by object dimensions
-        by_dimensions = defaultdict(list)
-        for result in prediction_results:
-            dim_key = tuple(result["object_dimensions"])
-            by_dimensions[dim_key].append(result["pred_no_collision"])
-        
-        print(f"\nBy Object Dimensions:")
-        for dims, preds in by_dimensions.items():
-            print(f"  {dims}: mean={np.mean(preds):.4f}, std={np.std(preds):.4f}, count={len(preds)}")
-

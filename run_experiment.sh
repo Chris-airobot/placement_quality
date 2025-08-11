@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Configuration
-EXPERIMENT_RESULTS_FILE="/home/chris/Chris/placement_ws/src/data/box_simulation/v2/experiments/experiment_results.jsonl"
-SIMULATOR_FILE="/home/chris/Chris/placement_ws/src/placement_quality/path_simulation/model_testing/simulator.py"
+EXPERIMENT_RESULTS_FILE="/home/chris/Chris/placement_ws/src/data/box_simulation/v4/experiments/experiment_results_test_data.jsonl"
+SIMULATOR_FILE="/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/simulator.py"
 ISAAC_SIM_PATH="/home/chris/.local/share/ov/pkg/isaac-sim-4.2.0/python.sh"
 SLEEP_TIME=10
 
@@ -43,7 +43,7 @@ update_data_index() {
 # Function to run the experiment
 run_experiment() {
     echo "Running experiment with Isaac Sim..."
-    $ISAAC_SIM_PATH -m path_simulation.model_testing.Experiment --/log/level=error --/log/fileLogLevel=error --/log/outputStreamLevel=error
+    $ISAAC_SIM_PATH -m placement_quality.cube_generalization.Experiment --/log/level=error --/log/fileLogLevel=error --/log/outputStreamLevel=error
     return $?
 }
 

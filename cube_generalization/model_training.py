@@ -15,7 +15,31 @@ import sys
 from sklearn.metrics import roc_auc_score, average_precision_score, classification_report
 
 from dataset import WorldFrameDataset
-from model import create_combined_model
+from model import create_combined_model  # Use the latest architecture
+
+class FocalLoss(nn.Module):
+    """Focal Loss for handling class imbalance"""
+    def __init__(self, alpha=0.25, gamma=2.0, reduction="mean"):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+        self.bce = nn.BCEWithLogitsLoss(reduction="none")  # keeps it numerically stable
+
+    def forward(self, logits, targets):
+        """
+        logits : (N, 1)  raw scores
+        targets: (N, 1)  0 or 1
+        """
+        bce_loss = self.bce(logits, targets)
+        p_t = torch.exp(-bce_loss)          # = sigmoid(logit) if y==1 else 1-sigmoid
+        focal = self.alpha * (1 - p_t) ** self.gamma * bce_loss
+        if self.reduction == "mean":
+            return focal.mean()
+        elif self.reduction == "sum":
+            return focal.sum()
+        else:
+            return focal
 
 class Tee:
     """Duplicate stdout/stderr to console and a log file."""
@@ -153,7 +177,7 @@ def main(dir_path):
     sys.stdout = Tee(orig_stdout, log_file)
     
     # ✨ ENHANCED HYPERPARAMETERS ✨
-    BATCH_SIZE = 512
+    BATCH_SIZE = 64
     EPOCHS = 150
     INITIAL_LR = 1e-4  # 🚨 INCREASED from 5e-5 
     WEIGHT_DECAY = 1e-4
@@ -236,8 +260,10 @@ def main(dir_path):
     print(f"   Negative class weight: {(1.0 / collision_counts[0]).item():.2e}")
     print(f"   Positive class weight: {(1.0 / collision_counts[1]).item():.2e}")
     
-    # ✨ LOSS FUNCTION WITH CLASS IMBALANCE HANDLING ✨
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(device))
+    # ✨ LOSS FUNCTION WITH FOCAL LOSS FOR CLASS IMBALANCE ✨
+    # Use focal loss instead of BCE for better handling of class imbalance
+    criterion = FocalLoss(alpha=0.75, gamma=2.0)
+    print(f"✅ Using Focal Loss (alpha=0.75, gamma=2.0) for better class imbalance handling")
     
     # ✨ ENHANCED OPTIMIZER & SCHEDULER ✨
     optimizer = optim.Adam(model.parameters(), lr=INITIAL_LR, weight_decay=WEIGHT_DECAY)
@@ -398,7 +424,8 @@ def main(dir_path):
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_loss': val_loss,
                 'val_roc_auc': val_metrics['roc_auc'],
-                'normalization_stats': train_dataset.normalization_stats
+                'normalization_stats': train_dataset.normalization_stats,
+                'focal_loss_config': {'alpha': 0.25, 'gamma': 2.0}  # Save focal loss config
             }, os.path.join(model_dir, f'best_model_loss_{timestamp}.pth'))
             print(f"  💾 Saved best loss model (loss: {val_loss:.4f})")
         
@@ -410,7 +437,8 @@ def main(dir_path):
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_loss': val_loss,
                 'val_roc_auc': val_metrics['roc_auc'],
-                'normalization_stats': train_dataset.normalization_stats
+                'normalization_stats': train_dataset.normalization_stats,
+                'focal_loss_config': {'alpha': 0.25, 'gamma': 2.0}  # Save focal loss config
             }, os.path.join(model_dir, f'best_model_roc_{timestamp}.pth'))
             print(f"  🎯 Saved best ROC-AUC model (ROC-AUC: {val_metrics['roc_auc']:.4f})")
         
@@ -436,7 +464,8 @@ def main(dir_path):
         'optimizer_state_dict': optimizer.state_dict(),
         'val_loss': val_loss,
         'val_roc_auc': val_metrics['roc_auc'],
-        'normalization_stats': train_dataset.normalization_stats
+        'normalization_stats': train_dataset.normalization_stats,
+        'focal_loss_config': {'alpha': 0.25, 'gamma': 2.0}  # Save focal loss config
     }, os.path.join(model_dir, f'final_model_{timestamp}.pth'))
     
     with open(os.path.join(log_dir, 'training_history.json'), 'w') as f:

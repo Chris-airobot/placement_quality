@@ -62,11 +62,12 @@ class Simulator:
         self.forced_completion = False
 
         # Test data
-        with open("/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiment_generation.json", "r") as f:
+        with open("/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiments.json", "r") as f:
             self.test_data: list[dict] = json.load(f)
 
         self.current_data = None
-        self.data_index = 1360
+        self.data_index = 3391
+        # 0, 97, 146
         self.results = []
 
 
@@ -74,7 +75,7 @@ class Simulator:
 
     def start(self):
         # Simulation Environment Setup
-        self.world: World = World(stage_units_in_meters=1.0, physics_dt=1.0/600.0)
+        self.world: World = World(stage_units_in_meters=1.0, physics_dt=1.0/1200.0)
         self.task = RRTTask("RRT_task", use_physics=self.use_physics)
         self.world.add_task(self.task)
         self.world.reset()
@@ -395,3 +396,10 @@ class Simulator:
             return False
             
         return True
+    
+    def check_ik(self, position, orientation):
+        """Check if the IK is successful"""
+        return self.controller._make_new_plan(
+            np.array(position), 
+            np.array(orientation)
+        )

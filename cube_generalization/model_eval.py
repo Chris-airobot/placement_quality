@@ -50,7 +50,7 @@ def compute_advanced_metrics(y_true, y_pred_probs, threshold=0.5):
     }
 
 
-def load_checkpoint_with_original_architecture(checkpoint_path, device):
+def load_checkpoint_with_original_architecture(checkpoint_path, device, original_architecture=True):
     """Load checkpoint using the original model architecture"""
     
     # Load checkpoint
@@ -73,7 +73,10 @@ def load_checkpoint_with_original_architecture(checkpoint_path, device):
         cleaned_state_dict[new_key] = tensor
     
     # Create model with ORIGINAL architecture (no LayerNorm)
-    model = create_original_enhanced_model().to(device)
+    if original_architecture:
+        model = create_original_enhanced_model().to(device)
+    else:
+        model = create_combined_model().to(device)
     
     # Load the state dict - should work perfectly now
     try:
@@ -85,11 +88,11 @@ def load_checkpoint_with_original_architecture(checkpoint_path, device):
         raise e
 
 
-def evaluate_checkpoint(checkpoint_path, test_loader, device):
+def evaluate_checkpoint(checkpoint_path, test_loader, device, original_architecture=True):
     """Evaluate a checkpoint with enhanced metrics"""
     
     # Load checkpoint with original architecture
-    model, checkpoint_data = load_checkpoint_with_original_architecture(checkpoint_path, device)
+    model, checkpoint_data = load_checkpoint_with_original_architecture(checkpoint_path, device, original_architecture)
     model.eval()
 
     criterion = nn.BCEWithLogitsLoss()
@@ -140,7 +143,7 @@ def main(dir_path):
     print(f"Evaluating on device: {device}")
     
     # Find latest checkpoints
-    model_dir = os.path.join(dir_path, 'training/models/model_20250804_001543')
+    model_dir = os.path.join(dir_path, 'training/models/model_20250804_175834')
     if not os.path.exists(model_dir):
         print(f"❌ Model directory not found: {model_dir}")
         return
@@ -204,7 +207,7 @@ def main(dir_path):
         print(f"{'='*60}")
         
         try:
-            results = evaluate_checkpoint(checkpoint_path, test_loader, device)
+            results = evaluate_checkpoint(checkpoint_path, test_loader, device, original_architecture=False)
             all_results[checkpoint_name] = results
             
             print(f"\n📊 Results for {checkpoint_name}:")
@@ -589,7 +592,7 @@ def generate_experiment_predictions():
 
 
 if __name__ == '__main__':
-    experiment = True
+    experiment = False
     if experiment:
         generate_experiment_predictions()
     else:

@@ -32,8 +32,8 @@ def sample_dims(n=400, min_s=0.05, max_s=0.20, seed=None):
 
     # ensure “≤ 0.079 m” rule
     for dims in out:
-        if all(d >= 0.08 for d in dims):
-            dims[random.randrange(3)] = r(min_s, 0.079)
+        if all(d >= 0.06 for d in dims):
+            dims[random.randrange(3)] = r(min_s, 0.059)
 
     random.shuffle(out)
 
@@ -79,6 +79,60 @@ def sample_object_poses(num_samples_per_surface, object_dims):
             pos.append([0.2, -0.3, z] + q)
 
     return pos
+
+
+
+import math
+from typing import Dict, Iterable
+
+WORLD_UP = np.array([0.0, 0.0, 1.0], dtype=float)
+FACE_ORDER = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
+# For each face (object-local), define (n_loc, u_loc, v_loc) with right-handed: u x v = n
+FACE_LOCAL_BASIS: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]] = {
+    "+X": (np.array([+1, 0, 0], float), np.array([0, +1, 0], float), np.array([0, 0, +1], float)),
+    "-X": (np.array([-1, 0, 0], float), np.array([0, 0, +1], float), np.array([0, +1, 0], float)),
+    "+Y": (np.array([0, +1, 0], float), np.array([0, 0, +1], float), np.array([+1, 0, 0], float)),
+    "-Y": (np.array([0, -1, 0], float), np.array([+1, 0, 0], float), np.array([0, 0, +1], float)),
+    "+Z": (np.array([0, 0, +1], float), np.array([+1, 0, 0], float), np.array([0, +1, 0], float)),
+    "-Z": (np.array([0, 0, -1], float), np.array([0, +1, 0], float), np.array([+1, 0, 0], float)),
+}
+
+
+def unit(v: np.ndarray) -> np.ndarray:
+    v = np.asarray(v, dtype=float)
+    n = np.linalg.norm(v)
+    return v if n == 0 else v / n
+
+def rotation_for_face_up(face: str, spin_rad: float = 0.0) -> np.ndarray:
+    """Return R_wo with the chosen face's outward normal mapped to +Z, and spun around +Z by spin_rad."""
+    n_loc, u_loc, v_loc = FACE_LOCAL_BASIS[face]
+
+    # World target basis: n_w = +Z; u_w = +X spun about +Z by spin; v_w = n_w x u_w
+    c, s = math.cos(spin_rad), math.sin(spin_rad)
+    n_w = WORLD_UP.copy()
+    u_w = np.array([c, s, 0.0], float)
+    v_w = unit(np.cross(n_w, u_w))
+
+    L = np.column_stack([u_loc, v_loc, n_loc])
+    W = np.column_stack([u_w,   v_w,   n_w])
+    return W @ L.T  # maps local face basis to world target basis
+
+
+def six_face_up_orientations(spin_degs: Iterable[float] = (0.0,)) -> Dict[str, List[np.ndarray]]:
+    R_map: Dict[str, List[np.ndarray]] = {f: [] for f in FACE_ORDER}
+    for f in FACE_ORDER:
+        for deg in spin_degs:
+            R_map[f].append(rotation_for_face_up(f, math.radians(float(deg))))
+    return R_map
+
+
+
+
+
+
+
+
+
 
 def surface_detection(quat):
     local_normals = {
@@ -351,6 +405,41 @@ def get_prepose(grasp_pos, grasp_quat, offset=0.15):
     pregrasp_pos = np.array(grasp_pos) - offset * approach_dir
     return pregrasp_pos, grasp_quat  # Same orientatio
 
+
+def get_reachable_prepose(grasp_pos, grasp_quat,
+                          env,                       # gives access to IK checker
+                          max_offset=0.15,
+                          min_offset=0.03,
+                          step=0.02,
+                          vertical_fallback=True):
+    """
+    Returns (pre_pos, pre_quat) for the first retreat distance that is
+    IK-reachable and collision-free.  Falls back to a vertical lift if
+    nothing along the approach works.
+
+    grasp_quat = [w, x, y, z] (same as your code)
+    """
+    # Build world-frame approach unit vector
+    rot = R.from_quat([grasp_quat[1], grasp_quat[2], grasp_quat[3], grasp_quat[0]])
+    approach_dir = rot.apply([0, 0, 1])          # tool Z
+
+    # Test a shrinking ladder of offsets: 0.15, 0.13, …, 0.03
+    offset_list = np.arange(max_offset, min_offset - 1e-6, -step)
+    for off in offset_list:
+        candidate = np.array(grasp_pos) - off * approach_dir
+        if env.check_ik(candidate, grasp_quat):
+            return candidate, grasp_quat
+
+    # Optional fallback: straight vertical lift above grasp
+    if vertical_fallback:
+        up_dir = np.array([0, 0, 1])
+        for lift in offset_list:                  # reuse same distances
+            candidate = np.array(grasp_pos) + lift * up_dir
+            if env.check_ik(candidate, grasp_quat):
+                return candidate, grasp_quat
+
+    # Nothing worked – return None so caller can handle gracefully
+    return None, None
 
 if __name__ == "__main__":
     result = sample_dims()

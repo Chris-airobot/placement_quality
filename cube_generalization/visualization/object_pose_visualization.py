@@ -1,173 +1,109 @@
+"""
+Object pose visualizer for Isaac Sim that groups FINAL poses under each INITIAL pose
+using ONLY pose utilities from grasp_generator.py, with hardcoded spacing so cubes are clearly separated.
+"""
+
 import os
 import sys
-# Add the parent directory to the Python path
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if parent_dir not in sys.path:
-    sys.path.insert(0, parent_dir)
-
+from typing import Dict, List
 
 from isaacsim import SimulationApp
-import json
-import time
-from scipy.spatial.transform import Rotation as R
-
-DISP_FPS        = 1<<0
-DISP_AXIS       = 1<<1
-DISP_RESOLUTION = 1<<3
-DISP_SKELEKETON   = 1<<9
-DISP_MESH       = 1<<10
-DISP_PROGRESS   = 1<<11
-DISP_DEV_MEM    = 1<<13
-DISP_HOST_MEM   = 1<<14
-
 CONFIG = {
     "width": 1920,
-    "height":1080,
+    "height": 1080,
     "headless": False,
     "renderer": "RayTracedLighting",
-    "display_options": DISP_FPS|DISP_RESOLUTION|DISP_MESH|DISP_DEV_MEM|DISP_HOST_MEM,
-    "physics_dt": 1.0/60.0,  # Physics timestep (60Hz)
-    "rendering_dt": 1.0/30.0,  # Rendering timestep (30Hz)
+    "display_options": 1<<0 | 1<<3 | 1<<10 | 1<<13 | 1<<14,
+    "physics_dt": 1.0/60.0,
+    "rendering_dt": 1.0/30.0,
 }
 
 simulation_app = SimulationApp(CONFIG)
 
-
 import numpy as np
-from omni.isaac.core.prims.rigid_prim import RigidPrim
-from omni.isaac.core.utils.prims import is_prim_path_valid
-from omni.isaac.core.utils.string import find_unique_string_name
-from omni.isaac.core.utils.stage import add_reference_to_stage
 from omni.isaac.core import World
-from transforms3d.euler import euler2quat
-from omni.isaac.nucleus import get_assets_root_path
-import random
-from pxr import UsdPhysics, Gf, UsdGeom
-from omni.isaac.core.prims import XFormPrim
 from omni.isaac.core.objects import VisualCuboid
-from utils import sample_fixed_surface_poses_increments, sample_cuboid_dimensions, flip_pose_keep_delta
+from placement_quality.cube_generalization.grasp_pose_generator import sample_dims, six_face_up_orientations, pose_from_R_t
 
 
+PEDESTAL_TOP_Z = 0.10
+INIT_SPINS_DEG = (0, 90, 180)
+N_FINAL_SPINS_PER_FACE = 2
+FINAL_SPIN_CANDIDATES_DEG = (0, 90, 180, 270)
+
+# Hard separation distances
+INIT_X_SPACING = 3.0     # space between each initial block in X
+FINAL_X_SPACING = 1.0    # space between finals in X within a block
+FINAL_Y_SPACING = 1.0    # space between rows of finals
 
 
+def ensure_cuboid(world: World, prim_path: str, size_xyz: np.ndarray, color_rgb=(0.8, 0.8, 0.8)) -> VisualCuboid:
+    try:
+        obj = world.scene.get_object(prim_path)
+        if obj is not None:
+            return obj
+    except Exception:
+        pass
+    obj = VisualCuboid(
+        prim_path=prim_path,
+        name=os.path.basename(prim_path),
+        position=np.zeros(3),
+        orientation=np.array([1.0, 0.0, 0.0, 0.0]),
+        scale=size_xyz,
+        color=np.array(color_rgb),
+    )
+    world.scene.add(obj)
+    return obj
 
-class PoseVisualization:
-    def __init__(self, num_poses=1000, num_simultaneous=1000):
-        # Basic variables
-        self.world = None
-        self.scene = None
-        self.objects = []  # Changed to list of objects
-        self.num_poses = num_poses
-        self.num_simultaneous = min(num_simultaneous, num_poses)  # Number of objects to drop at once
-
-        self.box_dims = sample_cuboid_dimensions()
-        
-
-    def start(self, ycb=True):
-        self.world: World = World(stage_units_in_meters=1.0, physics_dt=1.0/60.0)
-        self.scene = self.world.scene
-        self.scene.add_default_ground_plane()
-        self.world.reset()
-        self.create_objects(ycb)
-
-
-        
-    def create_objects(self, ycb=True):
-        """Create multiple YCB objects as rigid bodies with physics enabled"""
-        self.objects = []
-        
-        # Create the specified number of objects
-        for i in range(self.num_simultaneous):
-            prim_path = f"/World/Cube_{i}"
-            name = f"cube_{i}"
-            
-            obj = VisualCuboid(
-                    prim_path=prim_path,
-                    name=name,
-                    position=np.array([0, 0, 0]),
-                    scale=self.box_dims,  # [x, y, z]
-                    color=np.array([0.8, 0.8, 0.8])  # Default gray
-                )
-            
-            self.scene.add(obj)
-            self.objects.append(obj)
-            
-        return self.objects
-    
 
 def main():
-    # Create 6 objects instead of just 1
-    env = PoseVisualization(num_poses=72, num_simultaneous=12)
-    env.start(ycb=False)
-    max_steps = 100000000000000000000000000000000000000000
-    step = 0
+    rng = np.random.default_rng(77)
+    world = World(stage_units_in_meters=1.0, physics_dt=1.0/60.0)
+    world.scene.add_default_ground_plane()
+    dims_xyz = np.array(sample_dims(1, seed=77)[0], dtype=float)
 
-    # Generate base poses and their flipped variants, then combine them
-    poses = sample_fixed_surface_poses_increments(env.box_dims)
-    flip_poses = [flip_pose_keep_delta(p, env.box_dims, num_turns=3) for p in poses]
+    for init_idx, init_spin_deg in enumerate(INIT_SPINS_DEG):
+        R_init_map = six_face_up_orientations(spin_degs=(init_spin_deg,))
+        R_init = R_init_map["+Z"][0]
+        init_x = init_idx * INIT_X_SPACING
+        t_init = np.array([init_x, 0.0, PEDESTAL_TOP_Z])
+        pos_i, quat_i = pose_from_R_t(R_init, t_init)
+        cube_init = ensure_cuboid(world, f"/World/Initial_{init_idx:02d}", dims_xyz, color_rgb=(0.85, 0.85, 0.85))
+        cube_init.set_world_pose(np.array(pos_i), np.array(quat_i))
+        print(f"Initial pose {init_idx:02d} at {pos_i} {quat_i}")
 
-    all_poses = poses + flip_poses  # visualise both sets
-    total_poses = len(all_poses)
+        spins_this_block = tuple(sorted(rng.choice(FINAL_SPIN_CANDIDATES_DEG, size=N_FINAL_SPINS_PER_FACE, replace=False)))
+        R_final_map: Dict[str, List[np.ndarray]] = six_face_up_orientations(spin_degs=spins_this_block)
+        face_list = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
 
-    objects_count = len(env.objects)
-    # How many refresh steps until we have shown every pose once
-    poses_per_object = (total_poses + objects_count - 1) // objects_count
-    
-    print("\n=== Surface Label Visualization ===")
-    print("Color Legend:")
-    print("  Red = Z-up (top face pointing up)")
-    print("  Green = Z-down (bottom face pointing up)")
-    print("  Blue = X-up (side face pointing up)")
-    print("  Yellow = X-down (opposite side pointing up)")
-    print("  Magenta = Y-up (front face pointing up)")
-    print("  Cyan = Y-down (back face pointing up)")
-    print("=====================================\n")
-    
-    while simulation_app.is_running():
-        if step < max_steps:
-            # Update each object with its corresponding pose
-            for obj_idx, obj in enumerate(env.objects):
-                # Determine pair index (0-5) and whether this object shows the
-                # flipped variant (odd indices) or the original (even indices).
-                pair_idx   = obj_idx // 2
-                is_flipped = (obj_idx % 2) == 1
+        for face_idx, face in enumerate(face_list):
+            R_list = R_final_map[face]
+            row = face_idx // 3
+            col = face_idx % 3
+            base_x = init_x + (col - 1) * FINAL_X_SPACING
+            base_y = -(row + 1) * FINAL_Y_SPACING
 
-                # Select the pose accordingly
-                pose = flip_poses[pair_idx] if is_flipped else poses[pair_idx]
+            for spin_idx, R_fin in enumerate(R_list):
+                offset_x = base_x + (spin_idx - (len(R_list)-1)/2.0) * 0.3
+                t_fin = np.array([offset_x, base_y, PEDESTAL_TOP_Z])
+                pos_f, quat_f = pose_from_R_t(R_fin, t_fin)
+                face_safe = face.replace('+', 'pos').replace('-', 'neg')
+                prim_path = f"/World/Final_{init_idx:02d}_{face_safe}_{spin_idx:02d}"
+                face_color = {
+                    "+Z": (1.0, 0.6, 0.6), "-Z": (0.6, 1.0, 0.6),
+                    "+X": (0.6, 0.6, 1.0), "-X": (1.0, 1.0, 0.6),
+                    "+Y": (1.0, 0.6, 1.0), "-Y": (0.6, 1.0, 1.0),
+                }.get(face, (0.8, 0.8, 0.8))
+                cube_fin = ensure_cuboid(world, prim_path, dims_xyz, color_rgb=face_color)
+                cube_fin.set_world_pose(np.array(pos_f), np.array(quat_f))
+                print(f"Final pose {init_idx:02d}_{face_safe}_{spin_idx:02d} at {pos_f} {quat_f}")
 
-                # Base XY location for the pair (x coordinate grows by 0.5)
-                base_x = 0.5 * (pair_idx + 1)
+    try:
+        while simulation_app.is_running():
+            world.step(render=True)
+    finally:
+        simulation_app.close()
 
-                position = pose[:3]
-                position[0] = base_x
-                # Put original and flipped at different Y positions
-                position[1] = 0.4 if is_flipped else 0.2
-                orientation = pose[3:]
-                
-                
-                # Set the object's pose
-                obj.set_world_pose(
-                    position=position,
-                    orientation=orientation
-                )
-                
-    
-            
-            # Advance simulation
-            env.world.step(render=True)
-            simulation_app.update()
-            
-            # Move to next step
-            step += 1
-            
-            # Optional: add a small delay to make visualization clearer
-        else:
-            # Reset the loop to start over
-            step = 0
-            print("\n=== Restarting visualization loop ===\n")
-    
-    print("Pose visualization complete")
-    simulation_app.close()
-    
+
 if __name__ == "__main__":
     main()

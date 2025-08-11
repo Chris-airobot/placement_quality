@@ -69,8 +69,11 @@ class EnhancedCollisionPredictionNet(nn.Module):
         if self.use_pointnet:
             self.embed_norm = nn.LayerNorm(embed_dim)
             self.embed_projection = nn.Sequential(
-                nn.Linear(embed_dim, 512), nn.LayerNorm(512), nn.GELU(),
-                nn.Linear(512, 256), nn.GELU(),
+                nn.Linear(embed_dim, 512), 
+                nn.LayerNorm(512), 
+                nn.GELU(),
+                nn.Linear(512, 256), 
+                nn.GELU(),
                 nn.Dropout(0.1)
             )
         

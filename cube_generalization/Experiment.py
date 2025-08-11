@@ -44,11 +44,11 @@ import json
 from placement_quality.cube_simulation import helper
 from rclpy.executors import SingleThreadedExecutor
 import time
-from model import GraspObjectFeasibilityNet
+from model import EnhancedCollisionPredictionNet  # Fixed: use the correct model class
 from scipy.spatial.transform import Rotation as R
 from omni.isaac.core.utils.types import ArticulationAction
 from omni.isaac.core.utils.rotations import euler_angles_to_quat
-from utils import *
+from cube_generalization.utils import *
 from ycb_simulation.utils.helper import local_transform
 # from omni.isaac.core import SimulationContext
 import copy
@@ -60,7 +60,7 @@ PEDESTAL_SIZE = np.array([0.09, 0.11, 0.1])   # X, Y, Z in meters
 extensions.enable_extension("omni.isaac.ros2_bridge")
 simulation_app.update()
 
-base_dir = "/home/chris/Chris/placement_ws/src/data/box_simulation/v3"
+base_dir = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4"
 time_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 DIR_PATH = os.path.join(base_dir, f"experiments")
 # Define color codes
@@ -71,9 +71,6 @@ GRIP_HOLD_STEPS = 60
 GRIPPER_STEP_SIZE = 0.002  # Step size for gradual gripper movement
 GRIPPER_OPEN_POS = 0.04    # Fully open position
 GRIPPER_CLOSE_POS = 0.0    # Fully closed position
-
-
-
 
 def gradual_gripper_control(env: Simulator, target_open, max_steps=100):
     """
@@ -150,143 +147,119 @@ def gradual_gripper_control(env: Simulator, target_open, max_steps=100):
     
     return target_reached
 
+# Global variable to store normalization stats (loaded once)
+global_normalization_stats = None
 
-def model_prediction(model, data, device):
-    """Updated model prediction with proper normalization and embeddings"""
+def model_prediction(model, data, env: Simulator, device):
+    """Updated model prediction with proper normalization and embeddings - FAST VERSION"""
     try:
         dx, dy, dz = data['object_dimensions']
         from dataset import cuboid_corners_local_ordered, _zscore_normalize
         corners = cuboid_corners_local_ordered(dx, dy, dz).astype(np.float32)
 
         # Load real embeddings for this experiment
-        embeddings_file = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiment_embeddings.npy"
-        experiment_file = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiment_generation.json"
+        embeddings_file = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/embeddings/experiment_embeddings.npy"
         
-        # Find the index of this data in the experiment file
-        with open(experiment_file, 'r') as f:
-            experiments = json.load(f)
+        experiments = env.test_data
         
-        # Find matching experiment index
-        experiment_idx = None
+        # Find matching experiment by dimensions and poses
+        exp_index = None
         for i, exp in enumerate(experiments):
-            if (exp['object_dimensions'] == data['object_dimensions'] and 
-                exp['initial_object_pose'] == data['initial_object_pose'] and
-                exp['grasp_pose'] == data['grasp_pose'] and
-                exp['final_object_pose'] == data['final_object_pose']):
-                experiment_idx = i
+            if (np.allclose(exp['object_dimensions'], data['object_dimensions'], atol=1e-6) and
+                np.allclose(exp['initial_object_pose'], data['initial_object_pose'], atol=1e-6)):
+                exp_index = i
                 break
         
-        if experiment_idx is None:
-            print("⚠️ Could not find matching experiment, using dummy embedding")
-            real_embedding = np.zeros(1024, dtype=np.float32)
+        if exp_index is None:
+            print("⚠️ Experiment not found in embeddings, using zero embedding")
+            embedding = np.zeros(1024, dtype=np.float32)
         else:
-            # Load the real embedding
+            # Load the corresponding embedding
             embeddings = np.load(embeddings_file)
-            real_embedding = embeddings[experiment_idx]
+            if exp_index < len(embeddings):
+                embedding = embeddings[exp_index]
+            else:
+                print(f"⚠️ Embedding index {exp_index} out of range, using zero embedding")
+                embedding = np.zeros(1024, dtype=np.float32)
 
-        # CRITICAL: Apply normalization to match training data distribution
-        # Load normalization stats from training dataset
-        train_data_json = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/data_collection/combined_data/train.json"
-        train_embeddings_file = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/embeddings/train_embeddings.npy"
+        # Extract poses
+        grasp_pos = np.array(data['grasp_pose'][:3])
+        grasp_ori = np.array(data['grasp_pose'][3:])
+        init_pos = np.array(data['initial_object_pose'][:3])
+        init_ori = np.array(data['initial_object_pose'][3:])
+        final_pos = np.array(data['final_object_pose'][:3])
+        final_ori = np.array(data['final_object_pose'][3:])
+
+        # ✨ FAST NORMALIZATION USING PRELOADED STATS ✨
+        normalization_stats = global_normalization_stats  # Use global variable
         
-        try:
-            from dataset import WorldFrameDataset
-            train_dataset = WorldFrameDataset(train_data_json, train_embeddings_file, 
-                                            normalization_stats=None, is_training=True)
-            normalization_stats = train_dataset.normalization_stats
-            
-            # Normalize corners
-            corners_flat = corners.reshape(1, -1)  # [1, 24]
-            corners_norm, _, _ = _zscore_normalize(
-                corners_flat,
-                normalization_stats['corners_mean'],
-                normalization_stats['corners_std']
-            )
-            corners = corners_norm.reshape(1, 8, 3).numpy()
-            
-            # Extract and normalize pose components
-            grasp_pose = np.array(data["grasp_pose"])
-            init_pose = np.array(data["initial_object_pose"])
-            final_pose = np.array(data["final_object_pose"])
-            
-            # Split position and orientation
-            grasp_pos = grasp_pose[:3]
-            grasp_ori = grasp_pose[3:]
-            init_pos = init_pose[:3]
-            init_ori = init_pose[3:]
-            final_pos = final_pose[:3]
-            final_ori = final_pose[3:]
-            
-            # Normalize positions using unified stats
-            pos_mean = normalization_stats['pos_mean']
-            pos_std = normalization_stats['pos_std']
-            
-            # Convert to numpy arrays if they're tensors
-            if isinstance(pos_mean, torch.Tensor):
-                pos_mean = pos_mean.cpu().numpy()
-            if isinstance(pos_std, torch.Tensor):
-                pos_std = pos_std.cpu().numpy()
-            
-            grasp_pos_norm = (grasp_pos - pos_mean) / pos_std
-            init_pos_norm = (init_pos - pos_mean) / pos_std
-            final_pos_norm = (final_pos - pos_mean) / pos_std
-            
-            # Normalize orientations
-            grasp_ori_norm, _, _ = _zscore_normalize(
-                grasp_ori.reshape(1, -1),
-                normalization_stats['grasp_ori_mean'],
-                normalization_stats['grasp_ori_std']
-            )
-            init_ori_norm, _, _ = _zscore_normalize(
-                init_ori.reshape(1, -1),
-                normalization_stats['init_ori_mean'],
-                normalization_stats['init_ori_std']
-            )
-            final_ori_norm, _, _ = _zscore_normalize(
-                final_ori.reshape(1, -1),
-                normalization_stats['final_ori_mean'],
-                normalization_stats['final_ori_std']
-            )
-            
-            # Reconstruct normalized poses
-            grasp_normalized = np.concatenate([grasp_pos_norm.flatten(), grasp_ori_norm.flatten()])
-            init_normalized = np.concatenate([init_pos_norm.flatten(), init_ori_norm.flatten()])
-            final_normalized = np.concatenate([final_pos_norm.flatten(), final_ori_norm.flatten()])
-            
-        except Exception as e:
-            print(f"⚠️ Could not apply normalization: {e}, using raw features")
-            grasp_normalized = np.array(data["grasp_pose"])
-            init_normalized = np.array(data["initial_object_pose"])
-            final_normalized = np.array(data["final_object_pose"])
+        # Normalize corners
+        corners_normalized, _, _ = _zscore_normalize(
+            corners.reshape(1, -1),
+            normalization_stats['corners_mean'],
+            normalization_stats['corners_std']
+        )
+        corners_normalized = corners_normalized.reshape(8, 3)
+        
+        # Normalize positions using unified stats
+        pos_mean = normalization_stats['pos_mean']
+        pos_std = normalization_stats['pos_std']
+        
+        # Convert to numpy arrays if they're tensors
+        if isinstance(pos_mean, torch.Tensor):
+            pos_mean = pos_mean.cpu().numpy()
+        if isinstance(pos_std, torch.Tensor):
+            pos_std = pos_std.cpu().numpy()
+        
+        grasp_pos_norm = (grasp_pos - pos_mean) / pos_std
+        init_pos_norm = (init_pos - pos_mean) / pos_std
+        final_pos_norm = (final_pos - pos_mean) / pos_std
+        
+        # Normalize orientations
+        grasp_ori_norm, _, _ = _zscore_normalize(
+            grasp_ori.reshape(1, -1),
+            normalization_stats['grasp_ori_mean'],
+            normalization_stats['grasp_ori_std']
+        )
+        
+        init_ori_norm, _, _ = _zscore_normalize(
+            init_ori.reshape(1, -1),
+            normalization_stats['init_ori_mean'],
+            normalization_stats['init_ori_std']
+        )
+        
+        final_ori_norm, _, _ = _zscore_normalize(
+            final_ori.reshape(1, -1),
+            normalization_stats['final_ori_mean'],
+            normalization_stats['final_ori_std']
+        )
+        
+        # Reconstruct normalized poses
+        grasp_normalized = np.concatenate([grasp_pos_norm.flatten(), grasp_ori_norm.flatten()])
+        init_normalized = np.concatenate([init_pos_norm.flatten(), init_ori_norm.flatten()])
+        final_normalized = np.concatenate([final_pos_norm.flatten(), final_ori_norm.flatten()])
 
         # Convert to tensors
-        corners_tensor = torch.tensor(corners, dtype=torch.float32).unsqueeze(0).to(device)
-        embedding_tensor = torch.tensor(real_embedding, dtype=torch.float32).unsqueeze(0).to(device)
+        embedding_tensor = torch.tensor(embedding, dtype=torch.float32).unsqueeze(0).to(device)
+        corners_tensor = torch.tensor(corners_normalized, dtype=torch.float32).unsqueeze(0).to(device)
         grasp_tensor = torch.tensor(grasp_normalized, dtype=torch.float32).unsqueeze(0).to(device)
         init_tensor = torch.tensor(init_normalized, dtype=torch.float32).unsqueeze(0).to(device)
         final_tensor = torch.tensor(final_normalized, dtype=torch.float32).unsqueeze(0).to(device)
-        
-        # Now use the preprocessed tensors with batch dimension
+
+        # Model prediction
         with torch.no_grad():
-            # Use the correct model interface
             collision_logits = model(embedding_tensor, corners_tensor, grasp_tensor, init_tensor, final_tensor)
-        
-        # Apply sigmoid to convert logits to probabilities
-        pred_collision = torch.sigmoid(collision_logits)
-        
-        # Extract scalar values from tensors
-        pred_collision_val = pred_collision.item()
-        
-        # Return probability of NO collision for consistency with original interface
-        return 1 - pred_collision_val  # Probability of no collision
-        
+            collision_prob = torch.sigmoid(collision_logits).item()
+
+        return 1-collision_prob
+
     except Exception as e:
-        print(f"Error in model prediction: {e}")
-        return 0.5  # Return neutral prediction on error
+        print(f"❌ Error in model prediction: {e}")
+        return 0.5  # Default neutral prediction
 
 
 
-def robot_action(env: Simulator, grasp_pose, current_state, next_state):
+def robot_action(env: Simulator, grasp_pose, current_state, next_state, pred_collision_val=None):
     grasp_position, grasp_orientation = grasp_pose[0], grasp_pose[1]
     env.task._frame.set_world_pose(np.array(grasp_position), 
                                     np.array(grasp_orientation))
@@ -302,29 +275,32 @@ def robot_action(env: Simulator, grasp_pose, current_state, next_state):
         env.articulation_controller.apply_action(actions)
 
         if env.check_for_collisions():
-            env.collision_counter += 1
-            print(f"⚠️ Collision during {current_state} (strike {env.collision_counter}/3)")
+            # Only count collisions after grasping (post-grasp stages)
+            post_grasp_stages = ["PREPLACE_ONE", "PREPLACE_TWO", "PLACE", "END"]
+            if current_state in post_grasp_stages:
+                env.collision_counter += 1
+                print(f"⚠️ Collision during {current_state} (strike {env.collision_counter}/3)")
 
-            # NEW: Abort this attempt if too many collisions
-            if env.collision_counter >= 3:
-                print(f"🛑 Too many collisions during {current_state} — skipping to next grasp")
-                # Record failure due to collisions
-                if current_state == "GRASP" or current_state == "PREGRASP":
-                    graped = False
-                else:
-                    graped = True
-                env.results.append({
-                    "index": env.data_index,
-                    "grasp": graped,
-                    "collision_counter": env.collision_counter,
-                    "reason": "collision_limit",
-                    "forced_completion": env.forced_completion
-                })
-                # Reset counters/state and move on
-                env.collision_counter = 0
-                env.state = "FAIL"
-                env.controller.reset()
-                return False
+                # NEW: Abort this attempt if too many collisions
+                if env.collision_counter >= 3:
+                    print(f"🛑 Too many collisions during {current_state} — skipping to next grasp")
+                    # Record failure due to collisions
+                    env.results.append({
+                        "index": env.data_index,
+                        "grasp": True,  # Always True for post-grasp stages
+                        "collision_counter": env.collision_counter,
+                        "prediction_score": pred_collision_val,
+                        "reason": "collision_limit",
+                        "forced_completion": env.forced_completion
+                    })
+                    # Reset counters/state and move on
+                    env.collision_counter = 0
+                    env.state = "FAIL"
+                    env.controller.reset()
+                    return False
+            else:
+                # For pre-grasp stages, just print the collision but don't count it
+                print(f"⚠️ Collision detected during {current_state} (not counted - pre-grasp stage)")
         # if env.collision_counter >= 300000000000000:
         #     print(f"🛑 Too many collisions during {current_state} — trying next grasp")
         #     env.collision_counter = 0
@@ -349,6 +325,7 @@ def robot_action(env: Simulator, grasp_pose, current_state, next_state):
             "index": env.data_index,
             "grasp": True,
             "collision_counter": env.collision_counter,
+            "prediction_score": pred_collision_val,
             "reason": "IK_fail",
             "forced_completion": env.forced_completion
         })
@@ -364,6 +341,8 @@ def write_results_to_file(results, file_path, mode='a'):
             f.write(json.dumps(r) + "\n")
 
 def main(checkpoint, use_physics):
+    global global_normalization_stats  # Declare we're modifying the global variable
+    
     env = Simulator(use_physics=use_physics)
     env.start()
     
@@ -375,9 +354,18 @@ def main(checkpoint, use_physics):
     # Load the checkpoint using the latest architecture
     try:
         from model_eval import load_checkpoint_with_original_architecture
-        model, checkpoint_data = load_checkpoint_with_original_architecture(checkpoint, device)
+        model, checkpoint_data = load_checkpoint_with_original_architecture(checkpoint, device, original_architecture=False)
         model.eval()
         print("✅ Loaded model with latest architecture")
+        
+        # Extract normalization stats from checkpoint (MUCH FASTER!)
+        global_normalization_stats = checkpoint_data.get('normalization_stats', None)
+        if global_normalization_stats is None:
+            print("❌ No normalization stats in checkpoint! Please retrain model with normalization stats.")
+            return
+        else:
+            print("✅ Loaded normalization stats from checkpoint")
+            
     except Exception as e:
         print(f"❌ Error loading model: {e}")
         return
@@ -389,8 +377,8 @@ def main(checkpoint, use_physics):
     write_interval = 1
     last_written = 0
 
-    # Track how many times we have failed for a given initial object pose
-    env.fail_counts = {}
+    # Track how many times we have failed to GRASP for a given initial object pose
+    env.grasp_fail_counts = {}
 
     while simulation_app.is_running():
         # Handle simulation step
@@ -402,10 +390,18 @@ def main(checkpoint, use_physics):
             continue
         
         if env.state == "SETUP":            
-            # Skip samples that have already failed many times
+            # Skip samples that have already failed to GRASP many times (not movement failures)
             pose_key = tuple(env.current_data["initial_object_pose"].tolist()) if isinstance(env.current_data["initial_object_pose"], np.ndarray) else tuple(env.current_data["initial_object_pose"])
-            while env.fail_counts.get(pose_key, 0) >= 10:
-                print(f"🔁 Skipping sample index {env.data_index} – initial pose has already failed {env.fail_counts[pose_key]} times")
+            
+            # Debug: Print current grasp fail counts
+            print(f"🔍 Debug - Current pose key: {pose_key}")
+            print(f"🔍 Debug - Fail count for this pose: {env.grasp_fail_counts.get(pose_key, 0)}")
+            print(f"🔍 Debug - Total poses with failures: {len(env.grasp_fail_counts)}")
+            if env.grasp_fail_counts:
+                print(f"🔍 Debug - Sample fail counts: {dict(list(env.grasp_fail_counts.items())[:3])}")
+            
+            while env.grasp_fail_counts.get(pose_key, 0) >= 10:
+                print(f"🔁 Skipping sample index {env.data_index} – initial pose has already failed to GRASP {env.grasp_fail_counts[pose_key]} times")
                 env.data_index += 1
                 if env.data_index >= len(env.test_data):
                     print("✅ Reached end of dataset while skipping.")
@@ -421,23 +417,31 @@ def main(checkpoint, use_physics):
             grasp_orientation = env.current_data["grasp_pose"][3:]
             grasp_pose = grasp_position + grasp_orientation
             # Update the grasp pose to be in the tool_center frame of the object
-            fixed_grasp_pose = local_transform(grasp_pose, [0, 0, -0.08])
+            fixed_grasp_pose = local_transform(grasp_pose, [0, 0, 0])
             grasp_position = fixed_grasp_pose[:3]
             grasp_orientation = fixed_grasp_pose[3:]
 
 
             # pregrasp_position = copy.deepcopy(grasp_position)
             # pregrasp_position[2] = 0.5
-            pregrasp_position, pregrasp_orientation = get_prepose(grasp_position, grasp_orientation, offset=0.1)
+            pregrasp_position, pregrasp_orientation = get_reachable_prepose(grasp_position, grasp_orientation, env, max_offset=0.10)
+            if pregrasp_position is None:
+                print("No reachable pre-grasp for this grasp – skipping")
+                env.state = "FAIL"
+                continue
+
             placement_position, placement_orientation = env.calculate_placement_pose(fixed_grasp_pose, 
                                                                                      env.current_data["initial_object_pose"], 
                                                                                      env.current_data["final_object_pose"])
 
             
-            pre_placement_position, pre_placement_orientation = get_prepose(placement_position, placement_orientation)
-            # pre_placement_position = copy.deepcopy(placement_position)
-            # pre_placement_position[2] = 0.5
-            pre_placement_orientation = euler_angles_to_quat(np.array([180, 0, -90]), degrees=True)
+            pre_placement_position, pre_placement_orientation = get_reachable_prepose(grasp_position, grasp_orientation, env, max_offset=0.10)
+            r_grasp = R.from_quat([grasp_orientation[1], grasp_orientation[2], grasp_orientation[3], grasp_orientation[0]])
+            r_place = R.from_quat([placement_orientation[1], placement_orientation[2], placement_orientation[3], placement_orientation[0]])
+            r_diff = r_grasp.inv() * r_place
+            angle_diff_rad = r_diff.magnitude()
+            angle_diff_deg = np.rad2deg(angle_diff_rad)
+            skip_preplace_two = angle_diff_deg < 10.0  # skip PREPLACE_TWO if very similar
 
             # This one is object's placement preview
             final_object_position = env.current_data["final_object_pose"][:3]
@@ -452,19 +456,20 @@ def main(checkpoint, use_physics):
                 object_scale=np.array(env.current_data["object_dimensions"]),
             )
 
-            pred_collision_val = model_prediction(model, env.current_data, device)
+            pred_collision_val = model_prediction(model, env.current_data, env, device)
             # Since we only have collision prediction, use it as the score
             score = pred_collision_val
             # Print prediction results
             print(f"Prediction: no collision probability: {pred_collision_val:.4f}")
+            
+            # Reset controller to clear any state from IK checks during setup
+            env.controller.reset()
+            
             env.state = "PREGRASP"
             env.contact_force = 0.0
 
         elif env.state == "FAIL":
-            # Record this failure in the fail-count dictionary before moving on
-            pose_key = tuple(env.current_data["initial_object_pose"].tolist()) if isinstance(env.current_data["initial_object_pose"], np.ndarray) else tuple(env.current_data["initial_object_pose"])
-            env.fail_counts[pose_key] = env.fail_counts.get(pose_key, 0) + 1
-
+            # Don't count movement failures - only grasp failures are counted elsewhere
             env.data_index += 1
             env.current_data = env.test_data[env.data_index]
             
@@ -475,25 +480,26 @@ def main(checkpoint, use_physics):
         elif env.state == "PREGRASP":
             # On first entry to PREGRASP, initialize collision counter
             env.gripper.open()
-            pregrasp_pose = [pregrasp_position, grasp_orientation]
-            robot_action(env, pregrasp_pose, "PREGRASP", "GRASP")
+            pregrasp_pose = [pregrasp_position, pregrasp_orientation]
+            robot_action(env, pregrasp_pose, "PREGRASP", "GRASP", pred_collision_val)
             
         elif env.state == "GRASP":
             env.gripper.open()
-            if robot_action(env, [grasp_position, grasp_orientation], "GRASP", "GRIPPER"):
+            if robot_action(env, [grasp_position, grasp_orientation], "GRASP", "GRIPPER", pred_collision_val):
                 env.open = False
 
         elif env.state == "PREPLACE_ONE":
             preplace_one_pose = [pre_placement_position, grasp_orientation]
-            robot_action(env, preplace_one_pose, "PREPLACE_ONE", "PREPLACE_TWO")
+            next_state = "PLACE" if skip_preplace_two else "PREPLACE_TWO"
+            robot_action(env, preplace_one_pose, "PREPLACE_ONE", next_state, pred_collision_val)
         
-        elif env.state == "PREPLACE_TWO":   
+        elif env.state == "PREPLACE_TWO":
             preplace_two_pose = [pre_placement_position, placement_orientation]
-            robot_action(env, preplace_two_pose, "PREPLACE_TWO", "PLACE")
+            robot_action(env, preplace_two_pose, "PREPLACE_TWO", "PLACE", pred_collision_val)
             
         elif env.state == "PLACE":
             place_pose = [placement_position, placement_orientation]
-            if robot_action(env, place_pose, "PLACE", "GRIPPER"):
+            if robot_action(env, place_pose, "PLACE", "GRIPPER", pred_collision_val):
                 env.open = True 
 
         elif env.state == "END":
@@ -593,11 +599,23 @@ def main(checkpoint, use_physics):
                 if not env.open:
                     if env.check_grasp_success() and not env.forced_completion:
                         print("Successfully grasped the object")
+                        # Reset collision counter for post-grasp stages
+                        env.collision_counter = 0
                         env.state = "PREPLACE_ONE"
                         env.controller.reset()
                         env.task.preview_box.set_world_pose(final_object_position, final_object_orientation)
                     else:
                         print("----------------- Grasp failed -----------------")
+                        
+                        # Count this as a grasp failure for this pose
+                        pose_key = tuple(env.current_data["initial_object_pose"].tolist()) if isinstance(env.current_data["initial_object_pose"], np.ndarray) else tuple(env.current_data["initial_object_pose"])
+                        env.grasp_fail_counts[pose_key] = env.grasp_fail_counts.get(pose_key, 0) + 1
+                        
+                        # Debug: Print grasp failure info
+                        print(f"🔍 Debug - GRASP FAILED for pose: {pose_key}")
+                        print(f"🔍 Debug - New fail count: {env.grasp_fail_counts[pose_key]}")
+                        print(f"🔍 Debug - Moving from data_index {env.data_index} to {env.data_index + 1}")
+                        
                         # reset state & counter for a retry, this is the failure case
                         env.results.append({
                             "index": env.data_index,
@@ -655,6 +673,6 @@ def main(checkpoint, use_physics):
         write_results_to_file(env.results[last_written:], results_file, mode='a')
 
 if __name__ == "__main__":
-    model_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/training/models/model_20250804_001543/best_model_roc_20250804_001543.pth"
+    model_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/training/models/model_20250804_175834/best_model_roc_20250804_175834.pth"
     use_physics = True
     main(model_path, use_physics)

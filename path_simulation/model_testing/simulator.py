@@ -67,7 +67,7 @@ class Simulator:
             self.test_data: list[dict] = json.load(f)
 
         self.current_data = None
-        self.data_index = 0
+        self.data_index = 7
         self.results = []
 
 
