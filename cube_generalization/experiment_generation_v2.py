@@ -4,7 +4,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
-from placement_quality.cube_generalization.grasp_pose_generator import (
+from grasp_pose_generator import (
     sample_dims,
     six_face_up_orientations,
     pose_from_R_t,
@@ -175,7 +175,7 @@ def main():
         seed=980579,
     )
 
-    out_path = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiments.json"
+    out_path = "/home/riot/Chris/placement_quality/cube_generalization/experiments.json"
     with open(out_path, "w") as f:
         json.dump(data, f, indent=2)
     print(f"Generated {len(data)} trials → {out_path}")

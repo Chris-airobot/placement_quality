@@ -7,6 +7,33 @@ import json
 from collections import defaultdict
 from typing import Optional, List
 
+def local_transform(pose, offset):
+    """Apply offset in the local frame of the pose"""
+    from pyquaternion import Quaternion
+    position = pose[:3]
+    orientation = pose[3:]
+
+    # Convert to matrices
+    T_pose = np.eye(4)
+    q = Quaternion(orientation)  # [w, x, y, z]
+    T_pose[:3, :3] = q.rotation_matrix
+    T_pose[:3, 3] = position
+    
+    # Create offset matrix (identity rotation)
+    T_offset = np.eye(4)
+    T_offset[:3, 3] = offset
+    
+    # Multiply in correct order: pose * offset (applies offset in local frame)
+    T_result = np.dot(T_pose, T_offset)
+    
+    # Convert back to position, orientation
+    new_position = T_result[:3, 3].tolist()
+    q_new = Quaternion(matrix=T_result[:3, :3])
+    new_orientation = q_new.elements.tolist()  # [w, x, y, z]
+    
+    return new_position + new_orientation
+
+
 def sample_dims(n=400, min_s=0.05, max_s=0.20, seed=None):
     """Return `n` (default=400) [dx, dy, dz] triples:
        75 thin flat, 75 long, 75 tall, 75 cube-like, 100 fully random."""

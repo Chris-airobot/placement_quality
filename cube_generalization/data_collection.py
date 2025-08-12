@@ -4,9 +4,9 @@ import sys
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
-
+ 
 from isaacsim import SimulationApp
-
+ 
 # Display options for the simulation viewport
 DISP_FPS        = 1<<0
 DISP_AXIS       = 1<<1
@@ -16,20 +16,20 @@ DISP_MESH       = 1<<10
 DISP_PROGRESS   = 1<<11
 DISP_DEV_MEM    = 1<<13
 DISP_HOST_MEM   = 1<<14
-
+ 
 # Simulation configuration
 CONFIG = {
     "width": 1920,
     "height": 1080,
-    "headless": True,
+    "headless": False,
     "renderer": "RayTracedLighting",
     # "display_options": DISP_FPS|DISP_RESOLUTION|DISP_MESH|DISP_DEV_MEM|DISP_HOST_MEM,
 }
-
+ 
 # Initialize the simulation application
 simulation_app = SimulationApp(CONFIG)
-
-import datetime 
+ 
+import datetime
 import numpy as np
 import json
 import carb
@@ -45,48 +45,15 @@ from omni.isaac.core.prims import XFormPrim
 from omni.isaac.motion_generation import ArticulationKinematicsSolver, LulaKinematicsSolver
 from omni.isaac.motion_generation import interface_config_loader
 from pxr import Sdf, UsdLux, Gf, UsdGeom
-from collision_check import GroundCollisionDetector
-from utils import sample_object_poses, sample_dims
-from placement_quality.cube_simulation import helper
+from cube_generalization.collision_check import GroundCollisionDetector
+from cube_generalization.utils import sample_object_poses, sample_dims
 from collections import defaultdict
-import socket
 import json
-import struct
-import time
-
-def obtain_grasps(dims, port):
-    HOST = '127.0.0.1'  # or container IP / hostname
-    PORT = port
-    # Set up a TCP client socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.connect((HOST, PORT))
-
-        # Send the pointcloud data in JSON
-        data = json.dumps({ "dimensions": dims }).encode("utf-8")
-        send_len = struct.pack(">I", len(data))
-        s.sendall(send_len + data)
-
-        # Receive the response (list of grasps)
-        response_len = struct.unpack('>I', s.recv(4))[0]
-        response_bytes = s.recv(response_len)  # adjust as needed
-        response_str = response_bytes.decode('utf-8')
-        # print(f"received data:{response_str}")
-        response_data = json.loads(response_str)
-
-    raw_grasps = response_data
-
-    grasps = []
-    for key in sorted(raw_grasps.keys(), key=int):
-        item = raw_grasps[key]
-        position = item["position"]
-        orientation = item["orientation_wxyz"]
-        # Each grasp: [ [position], [orientation] ]
-        grasps.append([position, orientation])
-
-    return grasps
-
-
-
+from scipy.spatial.transform import Rotation as R
+from cube_generalization.grasp_pose_generator import generate_grasp_poses_including_bottom
+ 
+ 
+ 
 class DataCollection:
     def __init__(self):
         # Core variables for the kinematic solver
@@ -102,23 +69,24 @@ class DataCollection:
         self.collision_detected = False
         self.dimension_set = sample_dims()
         self.box_dims = self.dimension_set.pop(0)
-
+ 
         self.pedestal_height = 0.10  # meters
-
+ 
         # Offset of the grasp from the object center
-        # Grasp poses are based on the gripper center, so we need to offset it to transform it to the tool_center, i.e. 
+        # Grasp poses are based on the gripper center, so we need to offset it to transform it to the tool_center, i.e.
         # the middle of the gripper fingers
-        self.grasp_offset = [0, 0, -0.065] 
+        self.grasp_offset = [0, 0, -0.065]
         self.episode_count = 0
         self.grasp_count = 0
         self.object_count = 0
         self.grasps = None
         self.object_poses = None
         self.data_dict = defaultdict(list)
-        self.data_folder = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/data_collection/raw_data/"
-
-
-
+        self.data_folder = "/home/riot/Chris/data/box_simulation/v5/data_collection/raw_data/"
+        # No heartbeat files or external markers
+ 
+ 
+ 
     def setup_scene(self):
         """Create a new stage and set up the scene with lighting and camera"""
         create_new_stage()
@@ -139,12 +107,12 @@ class DataCollection:
         
         # Set up the physics scene
         self.world.reset()
-
+ 
         # Set up the kinematics solver
         self.setup_kinematics()
-
-
-
+ 
+ 
+ 
     def _add_light_to_stage(self):
         """Add a spherical light to the stage"""
         sphereLight = UsdLux.SphereLight.Define(omni.usd.get_context().get_stage(), Sdf.Path("/World/SphereLight"))
@@ -152,7 +120,7 @@ class DataCollection:
         sphereLight.CreateIntensityAttr(100000)
         XFormPrim(str(sphereLight.GetPath())).set_world_pose([6.5, 0, 12])
         
-
+ 
     def load_assets(self):
         """Load the Franka robot and target frame"""
         # Add the Franka robot to the stage
@@ -172,7 +140,7 @@ class DataCollection:
         )
         return articulation, object
     
-
+ 
     def setup_kinematics(self):
         """Set up the kinematics solver for the Franka robot"""
         # Load kinematics configuration for the Franka robot
@@ -181,11 +149,13 @@ class DataCollection:
         # Configure the articulation kinematics solver with the end effector
         end_effector_name = "panda_hand"
         self._articulation_kinematics_solver = ArticulationKinematicsSolver(
-            self._articulation, 
-            self._kinematics_solver, 
+            self._articulation,
+            self._kinematics_solver,
             end_effector_name
         )
 
+    # Heartbeat removed per user's request
+ 
     def setup_collision_detection(self):
         """Set up the ground collision detector"""
         stage = omni.usd.get_context().get_stage()
@@ -193,11 +163,11 @@ class DataCollection:
         
         # Create a virtual ground plane at z=0 (ground level)
         self.collision_detector.create_virtual_ground(
-            size_x=20.0, 
-            size_y=20.0, 
+            size_x=20.0,
+            size_y=20.0,
             position=Gf.Vec3f(0, 0, 0)  # Ground level
         )
-
+ 
         self.collision_detector.create_virtual_pedestal(
             position=Gf.Vec3f(0.2, -0.3, 0.05)
         )
@@ -216,8 +186,8 @@ class DataCollection:
             f"{self.base_path}/panda_rightfinger"
         ]
         # Note: panda_link0 is deliberately excluded since it's expected to touch the ground
-
-
+ 
+ 
     def check_for_collisions(self):
         """Check if any robot parts are colliding with ground, pedestal, or box."""
         ground_hit = any(
@@ -249,7 +219,7 @@ class DataCollection:
         if not found:
             # If none exists, create one (rare for VisualCuboid)
             xform.AddScaleOp().Set(Gf.Vec3d(*new_scale))
-
+ 
     def save_data(self):
         """Save the data to a file"""
         # Create the directory if it doesn't exist
@@ -261,22 +231,22 @@ class DataCollection:
         # Save the data to the file
         with open(file_path, "w") as f:
             json.dump(self.data_dict, f)
-
+ 
         self.data_dict = defaultdict(list)
-
+ 
     
     def reset(self):
         """Reset the simulation"""
         if self.world:
             self.world.reset()
-
+ 
     def run(self):
         """Main loop to run the simulation"""
         # Set up the scene
         self.setup_scene()
-
+ 
         current_object_finished = True
-
+ 
         
         # Main simulation loop
         while simulation_app.is_running():
@@ -286,85 +256,85 @@ class DataCollection:
                 self.box_dims = self.dimension_set.pop(0)
                 self.set_cuboid_scale(self.box_dims)
                 self.object_poses = sample_object_poses(36, self.box_dims)
-                self.grasps = obtain_grasps(self.box_dims, 12345)
-                if len(self.grasps) < 10:
-                    time.sleep(3)
-                print(f"Starting new {self.episode_count} th object: {self.box_dims}/{len(self.dimension_set)}")
+ 
+                # Precompute grasps once per object pose
+                TILT_SET = (75.0, 90.0, 105.0)
+                YAW_SET  = (-15.0, 0.0, 15.0)
+                ROLL_SET = (-15.0, 0.0, 15.0)
+ 
+                self.grasp_batches = []
+                for object_pose in self.object_poses:
+                    q_wxyz = np.array(object_pose[3:7], dtype=float)
+                    q_xyzw = np.array([q_wxyz[1], q_wxyz[2], q_wxyz[3], q_wxyz[0]], dtype=float)
+                    R_obj = R.from_quat(q_xyzw).as_matrix()
+                    t_obj = np.array(object_pose[:3], dtype=float)
+                    t_obj[2] += self.pedestal_height  # use the same z as during execution
+ 
+                    acc = []
+                    for tilt in TILT_SET:
+                        for yaw in YAW_SET:
+                            for roll in ROLL_SET:
+                                acc.extend(generate_grasp_poses_including_bottom(
+                                    dims_xyz=np.array(self.box_dims, dtype=float),
+                                    R_obj_to_world=R_obj,
+                                    t_obj_world=t_obj,
+                                    enable_tilt=True, tilt_deg=tilt,
+                                    enable_yaw=True,  yaw_deg=yaw,
+                                    enable_roll=True, roll_deg=roll,
+                                    filter_by_gripper_open=False,
+                                    apply_hand_to_tcp=True, hand_to_tcp_z=0.1034, extra_insert=-0.0334,
+                                ))
+                    # Cap to 300; no dedup
+                    self.grasp_batches.append(acc)
+ 
+                # Reduced console spam to avoid potential IO stalls
+                print(f"Prepared {len(self.object_poses)} poses with ~300 grasps each")
                 current_object_finished = False
                 
             else:
-                for grasp in self.grasps:
-                    for object_pose in self.object_poses:
-                        self.current_object_pose = object_pose.copy()  
-                        self.current_object_pose[2] += self.pedestal_height
-                        self.object.set_world_pose(self.current_object_pose[:3], 
-                                                   self.current_object_pose[3:])
-                        print(f"The current {self.episode_count}th object, {self.grasp_count}/{len(self.grasps)} grasps, {self.object_count}/{len(self.object_poses)} object poses")
-                        
-                        self.world.step(render=True)
-                        
-                        # Local grasp pose in gripper frame   
-
-                        # World grasp pose in gripper frame
-                        grasp_pose_world = helper.transform_relative_pose(grasp, 
-                                                                          self.current_object_pose[:3], 
-                                                                          self.current_object_pose[3:])
-                        # World grasp pose in tool center frame
-                        grasp_pose_center = helper.local_transform(grasp_pose_world, self.grasp_offset)
-                        
-                        # draw_frame(grasp_pose_center[0], grasp_pose_center[1])
-                        # Track any movements of the robot base
-                        robot_base_translation, robot_base_orientation = self._articulation.get_world_pose()
-                        self._kinematics_solver.set_robot_base_pose(robot_base_translation, robot_base_orientation)
-                        
-                        # Compute inverse kinematics to find joint positions
-                        action, success = self._articulation_kinematics_solver.compute_inverse_kinematics(
-                            np.array(grasp_pose_center[0]), 
-                            np.array(grasp_pose_center[1])
-                        )
-                        
-                        # Apply the joint positions if IK was successful
+                # After: self.object_poses = sample_object_poses(...)
+                for obj_idx, object_pose in enumerate(self.object_poses):
+                    self.current_object_pose = object_pose.copy()
+                    self.current_object_pose[2] += self.pedestal_height  # keep pedestal
+                    self.object.set_world_pose(self.current_object_pose[:3], self.current_object_pose[3:])
+                    # Minimal logging per pose
+                    print(f"Pose set {obj_idx+1}/{len(self.object_poses)}")
+ 
+                    grasps = self.grasp_batches[obj_idx]
+                    for g_idx, g in enumerate(grasps):
+                        hand_pos = np.array(g['hand_position_world'], dtype=float)
+                        hand_quat = np.array(g['hand_quaternion_wxyz'], dtype=float)
+ 
+                        base_t, base_q = self._articulation.get_world_pose()
+                        self._kinematics_solver.set_robot_base_pose(base_t, base_q)
+ 
+                        action, success = self._articulation_kinematics_solver.compute_inverse_kinematics(hand_pos, hand_quat)
                         if success:
                             self._articulation.apply_action(action)
-                        else:
-                            carb.log_warn("IK did not converge to a solution. No action is being taken")
-                        
-                        # Check for collisions with the ground
+ 
+                        # step the sim for THIS grasp (so it’s not “all at once”)
+                        self.world.step(render=False)
+ 
+                        # now check collisions and log
                         collision = self.check_for_collisions()
-                        # Get detailed collision information
-                        ground_hit = any(
-                            self.collision_detector.is_colliding_with_ground(part_path)
-                            for part_path in self.robot_parts_to_check
-                        )
-                        pedestal_hit = any(
-                            self.collision_detector.is_colliding_with_pedestal(part_path)
-                            for part_path in self.robot_parts_to_check
-                        )
-                        box_hit = any(
-                            self.collision_detector.is_colliding_with_box(part_path)
-                            for part_path in self.robot_parts_to_check
-                        )
-                        grasp_pose = grasp_pose_center[0] + grasp_pose_center[1]
-                        self.data_dict[f"grasp_{self.grasp_count}"].append([grasp_pose, 
-                                                                            self.current_object_pose, 
-                                                                            success, collision, 
-                                                                            ground_hit, 
-                                                                            pedestal_hit, 
-                                                                            box_hit]) 
-                        self.object_count += 1
-                        
-                        
-                    self.grasp_count += 1
-                    self.object_count = 0
-
+                        ground_hit   = any(self.collision_detector.is_colliding_with_ground(p)   for p in self.robot_parts_to_check)
+                        pedestal_hit = any(self.collision_detector.is_colliding_with_pedestal(p) for p in self.robot_parts_to_check)
+                        box_hit      = any(self.collision_detector.is_colliding_with_box(p)      for p in self.robot_parts_to_check)
+ 
+                        grasp_pose = hand_pos.tolist() + hand_quat.tolist()
+                        self.data_dict[f"grasp_{obj_idx}"].append([grasp_pose, self.current_object_pose, success, collision, ground_hit, pedestal_hit, box_hit])
+ 
+                        # Optional: comment out to further reduce IO
+                        # print(f"Pose {obj_idx+1}/{len(self.object_poses)} | Grasp {g_idx+1}/{len(grasps)}")
+ 
                 self.save_data()
                 self.episode_count += 1
                 self.grasp_count = 0
                 current_object_finished = True
         
         print("Simulation ended.")
-
-
+ 
+ 
 if __name__ == "__main__":
     # Create and run the standalone IK example
     env = DataCollection()

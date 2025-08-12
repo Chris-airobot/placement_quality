@@ -103,7 +103,7 @@ class GroundCollisionDetector:
                 if hit_path_str not in self.excluded_paths:
                     collision_detected[0] = True
                     self.colliding_parts.add(hit_path_str)
-                    print(f"Right now, the colliding parts are: {self.colliding_parts}")
+                    # print(f"Right now, the colliding parts are: {self.colliding_parts}")
                     
                     # Change the color of the virtual ground instead of the robot parts
                     try:
@@ -160,7 +160,7 @@ class GroundCollisionDetector:
                 hit_path_str = str(hit.rigid_body)
                 # Exclude the pedestal itself, and (optionally) other exclusions
                 if hit_path_str not in self.excluded_paths:
-                    print(f"hitted part: {hit_path_str}")
+                    # print(f"hitted part: {hit_path_str}")
                     collision_detected[0] = True
                     self.colliding_parts.add(hit_path_str)
                     # Optional: change pedestal color if you want visual feedback
@@ -255,8 +255,8 @@ class GroundCollisionDetector:
                 # Check if the object is colliding with the pedestal
                 if hit_path_str == self.box_path:
                     collision_detected[0] = True
-                    print(f"hit path: {hit_path_str}")
-                    print(f"⚠️ Object collision with pedestal detected!")
+                    # print(f"hit path: {hit_path_str}")
+                    # print(f"⚠️ Object collision with pedestal detected!")
                     # Optional: change pedestal color for visual feedback
                     try:
                         from pxr import UsdGeom, Gf

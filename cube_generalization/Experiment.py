@@ -37,30 +37,24 @@ import datetime
 from omni.isaac.core.utils import extensions
 from simulator import Simulator
 import numpy as np
-import rclpy
 import torch
-import open3d as o3d
 import json
-from placement_quality.cube_simulation import helper
-from rclpy.executors import SingleThreadedExecutor
 import time
+from cube_generalization.utils import local_transform
 from model import EnhancedCollisionPredictionNet  # Fixed: use the correct model class
 from scipy.spatial.transform import Rotation as R
 from omni.isaac.core.utils.types import ArticulationAction
 from omni.isaac.core.utils.rotations import euler_angles_to_quat
 from cube_generalization.utils import *
-from ycb_simulation.utils.helper import local_transform
 # from omni.isaac.core import SimulationContext
 import copy
 # # Before running simulation
 # sim = SimulationContext(physics_dt=1.0/240.0)  # 240 Hz
 PEDESTAL_SIZE = np.array([0.09, 0.11, 0.1])   # X, Y, Z in meters
 
-# Enable ROS2 bridge extension
-extensions.enable_extension("omni.isaac.ros2_bridge")
 simulation_app.update()
 
-base_dir = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4"
+base_dir = "/home/riot/Chris/data/box_simulation/v4"
 time_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 DIR_PATH = os.path.join(base_dir, f"experiments")
 # Define color codes
@@ -158,7 +152,7 @@ def model_prediction(model, data, env: Simulator, device):
         corners = cuboid_corners_local_ordered(dx, dy, dz).astype(np.float32)
 
         # Load real embeddings for this experiment
-        embeddings_file = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/embeddings/experiment_embeddings.npy"
+        embeddings_file = "/home/riot/Chris/placement_quality/cube_generalization/experiment_embeddings.npy"
         
         experiments = env.test_data
         
@@ -673,6 +667,6 @@ def main(checkpoint, use_physics):
         write_results_to_file(env.results[last_written:], results_file, mode='a')
 
 if __name__ == "__main__":
-    model_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/training/models/model_20250804_175834/best_model_roc_20250804_175834.pth"
+    model_path = "/home/riot/Chris/placement_quality/cube_generalization/best_model_roc_20250804_175834.pth"
     use_physics = True
     main(model_path, use_physics)

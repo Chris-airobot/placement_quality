@@ -62,11 +62,11 @@ class Simulator:
         self.forced_completion = False
 
         # Test data
-        with open("/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiments.json", "r") as f:
+        with open("/home/riot/Chris/placement_quality/cube_generalization/experiments.json", "r") as f:
             self.test_data: list[dict] = json.load(f)
 
         self.current_data = None
-        self.data_index = 3391
+        self.data_index = 6389
         # 0, 97, 146
         self.results = []
 

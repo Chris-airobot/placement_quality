@@ -60,7 +60,7 @@ from model_training.train import load_pointcloud
 from scipy.spatial.transform import Rotation as R
 from omni.isaac.core.utils.types import ArticulationAction
 from omni.isaac.core.utils.rotations import euler_angles_to_quat
-from utils import *
+from path_simulation.model_testing.utils import *
 # from omni.isaac.core import SimulationContext
 import copy
 # # Before running simulation
@@ -71,7 +71,7 @@ PEDESTAL_SIZE = np.array([0.09, 0.11, 0.1])   # X, Y, Z in meters
 extensions.enable_extension("omni.isaac.ros2_bridge")
 simulation_app.update()
 
-base_dir = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2"
+base_dir = "/home/riot/Chris/data/box_simulation/v4"
 time_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 DIR_PATH = os.path.join(base_dir, f"experiments")
 # Define color codes
@@ -565,6 +565,6 @@ def main(checkpoint, use_physics, test_mode=False):
         write_results_to_file(env.results[last_written:], results_file, mode='a')
 
 if __name__ == "__main__":
-    model_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/models/model_20250626_220307/best_model_0_1045_pth"
+    model_path = "/home/riot/Chris/placement_quality/cube_generalization/best_model_roc_20250804_175834.pth"
     use_physics = True
     main(model_path, use_physics)

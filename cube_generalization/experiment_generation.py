@@ -5,7 +5,7 @@ import copy
 import torch
 
 from scipy.spatial.transform import Rotation as R
-from utils import sample_object_poses, sample_fixed_surface_poses_increments, flip_pose_keep_delta, sample_dims
+from cube_generalization.utils import sample_object_poses, sample_fixed_surface_poses_increments, flip_pose_keep_delta, sample_dims
 from collections import defaultdict
 
 # Import your model and dataset

@@ -5,7 +5,6 @@ import os
 import sys
 from tqdm import tqdm
 from dataset import PlacementDataset, generate_box_pointcloud, transform_points_to_world
-import psutil
 
 # Add PointNet++ path
 pointnet_path = '/home/chris/Chris/placement_ws/src/Pointnet_Pointnet2_pytorch'
@@ -27,7 +26,7 @@ def precompute_embeddings(data_path, output_file):
     print(f"Loaded dataset with {len(dataset)} samples")
     
     # Load pre-trained PointNet++ model
-    pretrained_model_path = '/home/chris/Chris/placement_ws/src/Pointnet_Pointnet2_pytorch/log/classification/pointnet2_ssg_wo_normals/checkpoints/best_model.pth'
+    pretrained_model_path = '/home/riot/Chris/Pointnet_Pointnet2_pytorch/log/classification/pointnet2_ssg_wo_normals/checkpoints/best_model.pth'
     
     # Create PointNet++ model
     pointnet = get_model(num_class=40, normal_channel=False).to(device)  # 40 classes for ModelNet40
@@ -130,8 +129,7 @@ def precompute_experiment_embeddings(experiment_file, output_file):
     print(f"Loaded {len(experiments)} experiments from {experiment_file}")
     
     # Load pre-trained PointNet++ model
-    pretrained_model_path = '/home/chris/Chris/placement_ws/src/Pointnet_Pointnet2_pytorch/log/classification/pointnet2_ssg_wo_normals/checkpoints/best_model.pth'
-    
+    pretrained_model_path = '/home/riot/Chris/Pointnet_Pointnet2_pytorch/log/classification/pointnet2_ssg_wo_normals/checkpoints/best_model.pth'
     # Create PointNet++ model
     pointnet = get_model(num_class=40, normal_channel=False).to(device)
     
@@ -406,8 +404,8 @@ if __name__ == "__main__":
         validate_full_dataset()
     elif experiment:
         # Process experiment generation data
-        experiment_file = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiments.json"
-        output_file = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiment_embeddings.npy"
+        experiment_file = "/home/riot/Chris/placement_quality/cube_generalization/experiments.json"
+        output_file = "/home/riot/Chris/placement_quality/cube_generalization/experiment_embeddings.npy"
         
         precompute_experiment_embeddings(experiment_file, output_file)
     else:

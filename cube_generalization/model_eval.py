@@ -52,7 +52,6 @@ def compute_advanced_metrics(y_true, y_pred_probs, threshold=0.5):
 
 def load_checkpoint_with_original_architecture(checkpoint_path, device, original_architecture=True):
     """Load checkpoint using the original model architecture"""
-    
     # Load checkpoint
     checkpoint_data = torch.load(checkpoint_path, map_location=device)
     
@@ -597,4 +596,4 @@ if __name__ == '__main__':
         generate_experiment_predictions()
     else:
         dir_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/"
-        main(dir_path)
+        # main(dir_path)

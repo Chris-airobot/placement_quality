@@ -1,18 +1,24 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import os
+import sys
 
-# Import PointNet++ only if available
+# Import PointNet++ only if available (used by legacy models only)
 POINTNET_AVAILABLE = True
 try:
-    import sys
-    pointnet_path = '/home/chris/Chris/placement_ws/src/Pointnet_Pointnet2_pytorch'
-    sys.path.append(pointnet_path)
-    sys.path.append(pointnet_path + '/models')
-    from pointnet2_cls_ssg import get_model
-except ImportError:
-    POINTNET_AVAILABLE = False
-    print("Warning: PointNet++ not available. Models that require PointNet++ will be disabled.")
+    # Prefer the local implementation bundled with this repo
+    from pointnet2.pointnet2_cls_ssg import get_model
+except Exception:
+    try:
+        # Fallback: add local folder explicitly to sys.path
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        sys.path.append(os.path.join(current_dir, 'pointnet2'))
+        from pointnet2_cls_ssg import get_model
+    except Exception:
+        # If still not available, disable PointNet-dependent legacy models
+        POINTNET_AVAILABLE = False
+        print("Warning: PointNet++ not available. Legacy models that require PointNet++ will be disabled.")
 
 class PointNetEncoder(nn.Module):
     def __init__(self, feat_dim=256):
@@ -59,7 +65,8 @@ class EnhancedCollisionPredictionNet(nn.Module):
     """
     def __init__(self, use_pointnet=True, use_corners=True, embed_dim=1024):
         super().__init__()
-        self.use_pointnet = use_pointnet and POINTNET_AVAILABLE
+        # Enhanced model uses precomputed embeddings; it does NOT require PointNet++ runtime
+        self.use_pointnet = use_pointnet
         self.use_corners = use_corners
         
         if not self.use_pointnet and not self.use_corners:
@@ -262,7 +269,8 @@ def create_original_enhanced_model():
         """
         def __init__(self, use_pointnet=True, use_corners=True, embed_dim=1024):
             super().__init__()
-            self.use_pointnet = use_pointnet and POINTNET_AVAILABLE
+            # Original enhanced model also operates on precomputed embeddings
+            self.use_pointnet = use_pointnet
             self.use_corners = use_corners
             
             if not self.use_pointnet and not self.use_corners:
