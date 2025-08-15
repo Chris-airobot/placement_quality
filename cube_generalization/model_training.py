@@ -8,14 +8,15 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 from tqdm import tqdm
 import os
+import glob
 import json
 import sys
 
 # Import sklearn for advanced metrics
 from sklearn.metrics import roc_auc_score, average_precision_score, classification_report
 
-from dataset import WorldFrameDataset
-from model import create_combined_model  # Use the latest architecture
+from dataset import WorldFrameDataset, WorldFrameCornersOnlyDataset
+from model import create_combined_model, create_corners_only_fast_model  # latest + corners-only
 
 class FocalLoss(nn.Module):
     """Focal Loss for handling class imbalance"""
@@ -158,9 +159,15 @@ def compute_advanced_metrics(y_true, y_pred_probs, threshold=0.5):
         'pr_auc': pr_auc
     }
 
-def main(dir_path):
+def main(dir_path, emb_path=None, corners_only: bool = False):
     # Setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    try:
+        # Enable TF32 matmul on Ampere+ for faster training
+        torch.set_float32_matmul_precision('high')
+    except Exception:
+        pass
+    torch.backends.cudnn.benchmark = True
     print(f"=== Enhanced Training started on {device} ===")
     
     # Logging
@@ -177,33 +184,51 @@ def main(dir_path):
     sys.stdout = Tee(orig_stdout, log_file)
     
     # ✨ ENHANCED HYPERPARAMETERS ✨
-    BATCH_SIZE = 64
+    BATCH_SIZE = 16384
     EPOCHS = 150
     INITIAL_LR = 1e-4  # 🚨 INCREASED from 5e-5 
     WEIGHT_DECAY = 1e-4
+    NUM_WORKERS = max(8, min(32, (os.cpu_count() or 8) - 2))
+    # Speed controls (do not limit data per epoch)
+    COMPUTE_TRAIN_ADVANCED = False  # Skip train ROC/PR to save time
+    CLIP_MAX_NORM = None            # Disable grad clipping by default
     
     # Load datasets with feature normalization
     train_path = os.path.join(dir_path, "data_collection/combined_data/train.json")
     val_path = os.path.join(dir_path, "data_collection/combined_data/val.json")
-    train_embeddings_file = os.path.join(dir_path, "embeddings/train_embeddings.npy")
-    val_embeddings_file = os.path.join(dir_path, "embeddings/val_embeddings.npy")
+    if not corners_only:
+        # Use shard directories directly; dataset will stream all *_chunk_*.npy inside
+        train_embeddings_file = os.path.join(emb_path, "train")
+        val_embeddings_file = os.path.join(emb_path, "val")
     
     print("Loading datasets with feature normalization...")
     
     # Load training dataset (computes normalization stats)
-    train_dataset = WorldFrameDataset(train_path, train_embeddings_file, 
-                                    normalization_stats=None, is_training=True)
-    
-    # Load validation dataset (uses training stats)
-    val_dataset = WorldFrameDataset(val_path, val_embeddings_file, 
-                                  normalization_stats=train_dataset.normalization_stats, 
-                                  is_training=False)
+    # Optional cache dir if embeddings path is provided; otherwise skip
+    if emb_path:
+        fast_cache = os.path.join(emb_path, "_mm_cache")
+        os.makedirs(fast_cache, exist_ok=True)
+    if corners_only:
+        train_dataset = WorldFrameCornersOnlyDataset(train_path, normalization_stats=None, is_training=True)
+        val_dataset = WorldFrameCornersOnlyDataset(val_path, normalization_stats=train_dataset.normalization_stats, is_training=False)
+    else:
+        train_dataset = WorldFrameDataset(train_path, train_embeddings_file,
+                                          normalization_stats=None, is_training=True)
+        val_dataset = WorldFrameDataset(val_path, val_embeddings_file,
+                                        normalization_stats=train_dataset.normalization_stats,
+                                        is_training=False)
     
     print(f"  → {len(train_dataset)} train samples")
     print(f"  → {len(val_dataset)} val samples")
     
     # ✨ ENHANCED MODEL ✨
-    model = create_combined_model().to(device)  # Uses EnhancedCollisionPredictionNet
+    model = (create_corners_only_fast_model() if corners_only else create_combined_model()).to(device)
+    # Optional graph capture / compile for small MLP speedup
+    try:
+        model = torch.compile(model, mode='reduce-overhead')
+        print("✅ torch.compile enabled")
+    except Exception as e:
+        print(f"⚠️ torch.compile unavailable/failed: {e}")
     scaler = GradScaler()
     
     # ✨ CLASS IMBALANCE ANALYSIS (moved here for WeightedRandomSampler) ✨
@@ -222,39 +247,46 @@ def main(dir_path):
     print("Setting up DataLoaders...")
     
     # ✨ WEIGHTED RANDOM SAMPLER FOR CLASS BALANCE ✨
-    # Create weights for sampling (inverse of class frequency)
-    collision_labels = train_dataset.label[:, 1].cpu()  # Get collision labels
-    
-    # Calculate sample weights (higher weight for minority class)
-    sample_weights = torch.zeros_like(collision_labels)
-    sample_weights[collision_labels == 0] = 1.0 / collision_counts[0]  # Negative class
-    sample_weights[collision_labels == 1] = 1.0 / collision_counts[1]  # Positive class
-    
-    # Create weighted sampler for first 10 epochs
-    weighted_sampler = WeightedRandomSampler(
-        sample_weights, 
-        len(sample_weights), 
-        replacement=True
-    )
-    
-    # Create both loaders (with and without sampler)
-    train_loader_weighted = DataLoader(
-        train_dataset, 
-        batch_size=BATCH_SIZE, 
-        sampler=weighted_sampler,  # ✨ Use weighted sampler
-        num_workers=4, 
-        pin_memory=True
-    )
+    # Torch's multinomial has a 2^24 category limit; skip weighted sampler for huge datasets
+    USE_WEIGHTED = len(train_dataset) <= (1 << 24)
+    if USE_WEIGHTED:
+        collision_labels = train_dataset.label[:, 1].cpu()
+        sample_weights = torch.zeros_like(collision_labels)
+        sample_weights[collision_labels == 0] = 1.0 / collision_counts[0]
+        sample_weights[collision_labels == 1] = 1.0 / collision_counts[1]
+        weighted_sampler = WeightedRandomSampler(sample_weights, len(sample_weights), replacement=True)
+        train_loader_weighted = DataLoader(
+            train_dataset,
+            batch_size=BATCH_SIZE,
+            sampler=weighted_sampler,
+            num_workers=NUM_WORKERS,
+            pin_memory=True,
+            persistent_workers=True,
+            prefetch_factor=16,
+        )
+    else:
+        print("Dataset > 2^24; disabling WeightedRandomSampler to avoid multinomial limit.")
+        train_loader_weighted = None
     
     train_loader_normal = DataLoader(
-        train_dataset, 
-        batch_size=BATCH_SIZE, 
-        shuffle=True,  # Normal random sampling
-        num_workers=4, 
-        pin_memory=True
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=NUM_WORKERS,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=16
     )
     
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=NUM_WORKERS,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=16
+    )
     
     print(f"✅ Created weighted sampler for balanced training")
     print(f"   Negative class weight: {(1.0 / collision_counts[0]).item():.2e}")
@@ -262,17 +294,17 @@ def main(dir_path):
     
     # ✨ LOSS FUNCTION WITH FOCAL LOSS FOR CLASS IMBALANCE ✨
     # Use focal loss instead of BCE for better handling of class imbalance
-    criterion = FocalLoss(alpha=0.75, gamma=2.0)
-    print(f"✅ Using Focal Loss (alpha=0.75, gamma=2.0) for better class imbalance handling")
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(device))
+    print(f"✅ Using BCEWithLogitsLoss with pos_weight={pos_weight.item():.3f}")
     
     # ✨ ENHANCED OPTIMIZER & SCHEDULER ✨
     optimizer = optim.Adam(model.parameters(), lr=INITIAL_LR, weight_decay=WEIGHT_DECAY)
     
     # Warm-up scheduler + ReduceLROnPlateau
-    warmup_scheduler = optim.lr_scheduler.LinearLR(optimizer, start_factor=0.1, total_iters=2)
-    main_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, 
-                                                         patience=10, verbose=True, min_lr=1e-6)
-    
+    warmup_epochs = 5
+    warmup_scheduler = optim.lr_scheduler.LinearLR(optimizer, start_factor=0.1, total_iters=warmup_epochs)
+    cosine_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, EPOCHS - warmup_epochs), eta_min=1e-6)
+        
     # ✨ ENHANCED HISTORY TRACKING ✨
     history = {k: [] for k in [
         'train_collision_loss', 'train_collision_accuracy', 'train_collision_precision',
@@ -282,16 +314,18 @@ def main(dir_path):
     ]}
     
     best_val_loss = float("inf")
-    best_val_roc_auc = 0.0  # Track best ROC-AUC too
+    best_val_roc_auc = 0.0
+    best_val_pr_auc = 0.0
     patience = 30
     patience_counter = 0
+
     
     print(f"Starting training for {EPOCHS} epochs...")
     print(f"Initial learning rate: {INITIAL_LR}")
     
     for epoch in range(EPOCHS):
-        # ✨ SWITCH BETWEEN WEIGHTED AND NORMAL SAMPLING ✨
-        use_weighted_sampler = epoch < 10  # First 10 epochs use weighted sampling
+        # Always use weighted sampler when available
+        use_weighted_sampler = (train_loader_weighted is not None)
         current_train_loader = train_loader_weighted if use_weighted_sampler else train_loader_normal
         
         sampler_type = "Weighted" if use_weighted_sampler else "Normal"
@@ -299,25 +333,36 @@ def main(dir_path):
         
         model.train()
         train_loss, train_correct, train_total = 0.0, 0, 0
-        train_predictions, train_labels = [], []
+        train_predictions, train_labels = ([] if COMPUTE_TRAIN_ADVANCED else None), ([] if COMPUTE_TRAIN_ADVANCED else None)
         
-        for corners, embeddings, grasp, init, final, label in tqdm(current_train_loader, desc=f"Epoch {epoch+1} [Train]", file=orig_stderr):
-            # ✨ CHANGE: Handle float16 embeddings properly
-            corners, grasp, init, final, label = [t.to(device) for t in (corners, grasp, init, final, label)]
-            
-            # Convert embeddings to float32 AFTER moving to GPU (more efficient)
-            embeddings = embeddings.to(device).float() if embeddings.dtype == torch.float16 else embeddings.to(device)
-            
+        for batch in tqdm(current_train_loader, desc=f"Epoch {epoch+1} [Train]", file=orig_stderr):
+            if corners_only:
+                corners, grasp, init, final, label = batch
+                embeddings = None
+            else:
+                corners, embeddings, grasp, init, final, label = batch
+            # Non-blocking H2D copies (requires pin_memory=True in DataLoader)
+            corners = corners.to(device, non_blocking=True)
+            grasp   = grasp.to(device, non_blocking=True)
+            init    = init.to(device, non_blocking=True)
+            final   = final.to(device, non_blocking=True)
+            label   = label.to(device, non_blocking=True)
+            if embeddings is not None:
+                embeddings = embeddings.to(device, non_blocking=True)
             collision_label = label[:, 1:2]
             
             optimizer.zero_grad()
             with autocast(device_type='cuda'):
-                collision_logits = model(embeddings, corners, grasp, init, final)
+                if corners_only:
+                    collision_logits = model(corners=corners, grasp_pose=grasp, init_pose=init, final_pose=final)
+                else:
+                    collision_logits = model(embeddings, corners, grasp, init, final)
                 loss = criterion(collision_logits, collision_label)
             
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if CLIP_MAX_NORM is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=CLIP_MAX_NORM)
             scaler.step(optimizer)
             scaler.update()
             
@@ -326,19 +371,32 @@ def main(dir_path):
             train_loss += loss.item() * batch_size
             train_total += batch_size
             
-            # Store predictions for advanced metrics
-            probs = torch.sigmoid(collision_logits).detach().cpu().numpy().flatten()
-            labels = collision_label.detach().cpu().numpy().flatten()
-            train_predictions.extend(probs)
-            train_labels.extend(labels)
+            # Metrics
+            with torch.no_grad():
+                probs = torch.sigmoid(collision_logits)
+                preds = (probs > 0.5).to(collision_label.dtype)
+                train_correct += (preds == collision_label).sum().item()
+                if COMPUTE_TRAIN_ADVANCED:
+                    train_predictions.extend(probs.detach().cpu().numpy().flatten())
+                    train_labels.extend(collision_label.detach().cpu().numpy().flatten())
         
         # Apply warmup for first 2 epochs
         if epoch < 2:
             warmup_scheduler.step()
         
         # Compute training metrics
-        train_loss /= train_total
-        train_metrics = compute_advanced_metrics(np.array(train_labels), np.array(train_predictions))
+        train_loss /= max(1, train_total)
+        if COMPUTE_TRAIN_ADVANCED:
+            train_metrics = compute_advanced_metrics(np.array(train_labels), np.array(train_predictions))
+        else:
+            train_metrics = {
+                'accuracy': (train_correct / max(1, train_total)),
+                'precision': float('nan'),
+                'recall': float('nan'),
+                'f1': float('nan'),
+                'roc_auc': float('nan'),
+                'pr_auc': float('nan')
+            }
         
         # Validation phase
         model.eval()
@@ -346,14 +404,27 @@ def main(dir_path):
         val_predictions, val_labels = [], []
         
         with torch.no_grad():
-            for corners, embeddings, grasp, init, final, label in tqdm(val_loader, desc=f"Epoch {epoch+1} [Val]", file=orig_stderr):
-                corners, grasp, init, final, label = [t.to(device) for t in (corners, grasp, init, final, label)]
-                embeddings = embeddings.to(device).float() if embeddings.dtype == torch.float16 else embeddings.to(device)
+            for batch in tqdm(val_loader, desc=f"Epoch {epoch+1} [Val]", file=orig_stderr):
+                if corners_only:
+                    corners, grasp, init, final, label = batch
+                    embeddings = None
+                else:
+                    corners, embeddings, grasp, init, final, label = batch
+                corners = corners.to(device, non_blocking=True)
+                grasp   = grasp.to(device, non_blocking=True)
+                init    = init.to(device, non_blocking=True)
+                final   = final.to(device, non_blocking=True)
+                label   = label.to(device, non_blocking=True)
+                if embeddings is not None:
+                    embeddings = embeddings.to(device, non_blocking=True)
                 
                 collision_label = label[:, 1:2]
                 
                 with autocast(device_type='cuda'):
-                    collision_logits = model(embeddings, corners, grasp, init, final)
+                    if corners_only:
+                        collision_logits = model(corners=corners, grasp_pose=grasp, init_pose=init, final_pose=final)
+                    else:
+                        collision_logits = model(embeddings, corners, grasp, init, final)
                     loss = criterion(collision_logits, collision_label)
                     
                     batch_size = collision_label.size(0)
@@ -367,12 +438,22 @@ def main(dir_path):
                     val_labels.extend(labels)
         
         # Compute validation metrics
-        val_loss /= val_total
+        val_loss /= max(1, val_total)
         val_metrics = compute_advanced_metrics(np.array(val_labels), np.array(val_predictions))
+
+        # Optional: quick threshold sweep on val for F1
+        probs = np.array(val_predictions)
+        labels = np.array(val_labels)
+        ths = np.linspace(0.05, 0.95, 19)
+        f1s = [compute_advanced_metrics(labels, probs, threshold=t)['f1'] for t in ths]
+        best_t = float(ths[int(np.argmax(f1s))])
+        print(f"  Val best F1 threshold ≈ {best_t:.2f}")
         
         # Apply main scheduler after warmup
-        if epoch >= 2:
-            main_scheduler.step(val_loss)
+        if epoch < warmup_epochs:
+            warmup_scheduler.step()
+        else:
+            cosine_scheduler.step()
         
         # Store metrics in history
         history['train_collision_loss'].append(train_loss)
@@ -396,7 +477,7 @@ def main(dir_path):
         sampling_status = "🎯 Weighted" if use_weighted_sampler else "📊 Normal"
         
         print(f"Epoch {epoch+1}/{EPOCHS} | {sampling_status} | LR: {current_lr:.2e}")
-        print(f"  Train - Loss: {train_loss:.4f}, Acc: {train_metrics['accuracy']:.4f}, ROC-AUC: {train_metrics['roc_auc']:.4f}, PR-AUC: {train_metrics['pr_auc']:.4f}")
+        print(f"  Train - Loss: {train_loss:.4f}, Acc: {train_metrics['accuracy']:.4f}")
         print(f"  Val   - Loss: {val_loss:.4f}, Acc: {val_metrics['accuracy']:.4f}, ROC-AUC: {val_metrics['roc_auc']:.4f}, PR-AUC: {val_metrics['pr_auc']:.4f}")
         
         # ✨ MONITOR TARGET METRICS (as suggested) ✨
@@ -441,6 +522,19 @@ def main(dir_path):
                 'focal_loss_config': {'alpha': 0.25, 'gamma': 2.0}  # Save focal loss config
             }, os.path.join(model_dir, f'best_model_roc_{timestamp}.pth'))
             print(f"  🎯 Saved best ROC-AUC model (ROC-AUC: {val_metrics['roc_auc']:.4f})")
+
+        # Save best by PR-AUC (new)
+        if val_metrics['pr_auc'] > best_val_pr_auc:
+            best_val_pr_auc = val_metrics['pr_auc']
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_loss': val_loss,
+                'val_roc_auc': val_metrics['roc_auc'],
+                'val_pr_auc': val_metrics['pr_auc'],
+                'normalization_stats': train_dataset.normalization_stats,
+            }, os.path.join(model_dir, f'best_model_prauc_{timestamp}.pth'))
         
         if not is_best_loss:
             patience_counter += 1
@@ -481,5 +575,11 @@ def main(dir_path):
     print(f"🎯 Best validation ROC-AUC: {best_val_roc_auc:.4f}")
 
 if __name__ == "__main__":
-    data_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4"
-    main(data_path)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data", type=str, default="/home/chris/Chris/placement_ws/src/data/box_simulation/v5",
+                        help="Root data dir containing data_collection/combined_data")
+    parser.add_argument("--embeddings", type=str, default="/home/chris/Chris/placement_ws/src/data/box_simulation/v5/embeddings")
+    parser.add_argument("--corners-only", action="store_true", help="Train without embeddings using corners-only model")
+    args = parser.parse_args()
+    main(args.data, None if args.corners_only else args.embeddings, corners_only=args.corners_only)

@@ -347,3 +347,40 @@ def create_original_enhanced_model():
             return logits
     
     return OriginalEnhancedCollisionPredictionNet(use_pointnet=True, use_corners=True, embed_dim=1024)
+
+
+class CornersOnlyCollisionNet(nn.Module):
+    """
+    Lightweight corners-only model that uses concatenated init+final corners (16×3)
+    and the three poses (grasp/init/final).
+    """
+    def __init__(self):
+        super().__init__()
+        # corners: 16*3 = 48 dims
+        self.corners_net = nn.Sequential(
+            nn.Linear(16*3, 128), nn.ReLU(), nn.Dropout(0.1),
+            nn.Linear(128, 64), nn.ReLU(), nn.Dropout(0.1),
+            nn.Linear(64, 32)
+        )
+        # poses (grasp + init + final)
+        self.pose_net = nn.Sequential(
+            nn.Linear(7*3, 64), nn.ReLU(), nn.Dropout(0.1),
+            nn.Linear(64, 32), nn.ReLU()
+        )
+        self.fusion_head = nn.Sequential(
+            nn.Linear(32 + 32, 128), nn.ReLU(), nn.Dropout(0.2),
+            nn.Linear(128, 64), nn.ReLU(), nn.Dropout(0.1),
+            nn.Linear(64, 1)
+        )
+
+    def forward(self, corners=None, grasp_pose=None, init_pose=None, final_pose=None, **_):
+        if corners is None or grasp_pose is None or init_pose is None or final_pose is None:
+            raise ValueError("corners, grasp_pose, init_pose, final_pose are required")
+        c = self.corners_net(corners.view(corners.size(0), -1))
+        p = self.pose_net(torch.cat([grasp_pose, init_pose, final_pose], dim=1))
+        return self.fusion_head(torch.cat([c, p], dim=1))
+
+
+def create_corners_only_fast_model():
+    """Create the lightweight corners-only model (16×3 corners)."""
+    return CornersOnlyCollisionNet()

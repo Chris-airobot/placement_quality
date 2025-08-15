@@ -9,7 +9,7 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader
 import glob
 from dataset import WorldFrameDataset
-from model import create_combined_model, create_original_enhanced_model
+from model import create_combined_model, create_original_enhanced_model, create_corners_only_fast_model
 import json
 from sklearn.metrics import roc_auc_score, average_precision_score, classification_report
 
@@ -50,6 +50,94 @@ def compute_advanced_metrics(y_true, y_pred_probs, threshold=0.5):
     }
 
 
+class ShardEmbeddings:
+    """Lightweight reader for experiment embeddings supporting:
+    - Single .npy array (memmap)
+    - Directory of shard .npy files (e.g., *_chunk_*.npy)
+    - Shard index file: <stem>_shards.txt listing absolute or relative shard paths
+    """
+    def __init__(self, embeddings_path: str):
+        self._init_backend(embeddings_path)
+
+    def _init_backend(self, embeddings_path: str):
+        ep = os.path.abspath(embeddings_path)
+        base_dir = os.path.dirname(ep)
+        base_name = os.path.basename(ep)
+        base_stem = base_name[:-4] if base_name.endswith('.npy') else base_name
+        shards_txt = os.path.join(base_dir, base_stem + "_shards.txt")
+
+        def _open_single(path: str):
+            self.is_sharded = False
+            self.arr = np.load(path, mmap_mode='r')
+            self.total = int(self.arr.shape[0])
+            print(f"Loaded experiment embeddings (single): {self.arr.shape}, dtype: {self.arr.dtype}")
+
+        def _prepare_shards(paths: list):
+            paths = sorted(paths)
+            if not paths:
+                raise FileNotFoundError("Shard list is empty")
+            self.is_sharded = True
+            self.shards = paths
+            self.shapes = []
+            self.starts = []
+            acc = 0
+            for p in paths:
+                a = np.load(p, mmap_mode='r')
+                self.shapes.append(int(a.shape[0]))
+                self.starts.append(acc)
+                acc += int(a.shape[0])
+                del a
+            self.total = acc
+            self.cache = {}
+            print(f"Loaded experiment embeddings (sharded): {len(paths)} shards, total rows={self.total}")
+
+        if os.path.isdir(ep):
+            shard_paths = sorted(glob.glob(os.path.join(ep, "*_chunk_*.npy")))
+            if not shard_paths:
+                shard_paths = sorted(glob.glob(os.path.join(ep, "*.npy")))
+            _prepare_shards(shard_paths)
+            return
+
+        if os.path.isfile(ep) and ep.endswith('.npy'):
+            try:
+                _open_single(ep)
+                return
+            except Exception:
+                pass
+
+        if os.path.isfile(shards_txt):
+            with open(shards_txt, 'r') as f:
+                shard_paths = [line.strip() for line in f if line.strip()]
+            _prepare_shards(shard_paths)
+            return
+
+        # Auto-detect sibling chunk files
+        pattern = os.path.join(base_dir, f"{base_stem}_chunk_*.npy")
+        shard_paths = sorted(glob.glob(pattern))
+        if shard_paths:
+            _prepare_shards(shard_paths)
+            return
+
+        raise FileNotFoundError(f"Embeddings not found: {embeddings_path}")
+
+    def __len__(self):
+        return self.total
+
+    def get_row(self, idx: int):
+        if not getattr(self, 'is_sharded', False):
+            return self.arr[idx]
+        import bisect
+        si = bisect.bisect_right(self.starts, idx) - 1
+        if si < 0:
+            si = 0
+        local_idx = idx - self.starts[si]
+        mm = self.cache.get(si)
+        if mm is None:
+            mm = np.load(self.shards[si], mmap_mode='r')
+            self.cache[si] = mm
+        return mm[local_idx]
+
+
 def load_checkpoint_with_original_architecture(checkpoint_path, device, original_architecture=True):
     """Load checkpoint using the original model architecture"""
     
@@ -76,6 +164,7 @@ def load_checkpoint_with_original_architecture(checkpoint_path, device, original
     if original_architecture:
         model = create_original_enhanced_model().to(device)
     else:
+        print("Using combined model")
         model = create_combined_model().to(device)
     
     # Load the state dict - should work perfectly now
@@ -85,6 +174,25 @@ def load_checkpoint_with_original_architecture(checkpoint_path, device, original
         return model, checkpoint_data
     except RuntimeError as e:
         print(f"❌ Error loading with original architecture: {str(e)}")
+        raise e
+
+
+def load_corners_only_checkpoint(checkpoint_path, device):
+    """Load a corners-only checkpoint into the corners-only model."""
+    checkpoint_data = torch.load(checkpoint_path, map_location=device)
+    raw_sd = checkpoint_data['model_state_dict'] if 'model_state_dict' in checkpoint_data else checkpoint_data
+    # Strip torch.compile prefix if present
+    prefix = "_orig_mod."
+    state_dict = {}
+    for k, v in raw_sd.items():
+        state_dict[k[len(prefix):]] = v if k.startswith(prefix) else v
+    model = create_corners_only_fast_model().to(device)
+    try:
+        model.load_state_dict(state_dict)
+        print("✅ Loaded corners-only checkpoint")
+        return model, checkpoint_data
+    except RuntimeError as e:
+        print(f"❌ Error loading corners-only model: {str(e)}")
         raise e
 
 
@@ -388,13 +496,23 @@ def analyze_experiment_predictions():
         print()
 
 
-def generate_experiment_predictions():
-    """Generate model predictions for experiments and write to test_data_predictions.json"""
+def generate_experiment_predictions(corners_only: bool = True, zero_embeddings: bool = False):
+    """Generate model predictions for experiments and write predictions JSON.
+
+    - corners_only: use corners-only model/checkpoint
+    - zero_embeddings: for combined model, feed a zero vector for embeddings to test usefulness
+    """
     
     # Paths
-    experiment_file = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiment_generation.json"
-    embeddings_file = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/embeddings/experiment_embeddings.npy"
-    predictions_file = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/test_data_predictions.json"
+    experiment_file = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiments.json"
+    # Can be a single .npy file, a directory containing *_chunk_*.npy, or a shards index <stem>_shards.txt
+    embeddings_path = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiment_embeddings.npy"
+    if corners_only:
+        predictions_file = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/test_data_predictions_corners_only.json"
+    elif zero_embeddings:
+        predictions_file = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/test_data_predictions_zero_emb.json"
+    else:
+        predictions_file = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/test_data_predictions.json"
     
     print("🚀 GENERATING EXPERIMENT PREDICTIONS")
     print("=" * 60)
@@ -411,37 +529,39 @@ def generate_experiment_predictions():
         print(f"❌ Error loading experiment file: {e}")
         return
     
-    # Load embeddings
-    try:
-        embeddings = np.load(embeddings_file)
-        print(f"✅ Loaded {embeddings.shape[0]} embeddings from {embeddings_file}")
-    except FileNotFoundError:
-        print(f"❌ Embeddings file not found: {embeddings_file}")
-        return
-    except Exception as e:
-        print(f"❌ Error loading embeddings file: {e}")
-        return
+    # Load embeddings only if not corners-only and not zero-embedding mode
+    if not corners_only and not zero_embeddings:
+        try:
+            emb = ShardEmbeddings(embeddings_path)
+            print(f"✅ Loaded experiment embeddings backend, total rows: {len(emb):,}")
+        except Exception as e:
+            print(f"❌ Error initializing embeddings backend from {embeddings_path}: {e}")
+            return
     
     # Setup device and model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
-    # Load the best model checkpoint
-    checkpoint_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/training/models/model_20250804_001543/best_model_roc_20250804_001543.pth"
+    # Load the best model checkpoint (update path as needed)
+    checkpoint_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v5/training/models/model_20250814_210656/best_model_roc_20250814_210656.pth"
     
     try:
-        model, checkpoint_data = load_checkpoint_with_original_architecture(checkpoint_path, device)
+        if corners_only:
+            model, checkpoint_data = load_corners_only_checkpoint(checkpoint_path, device)
+        else:
+            model, checkpoint_data = load_checkpoint_with_original_architecture(checkpoint_path, device, False)
         model.eval()
         print(f"✅ Loaded model from {checkpoint_path}")
         
         # Extract normalization stats from checkpoint data
         normalization_stats = checkpoint_data.get('normalization_stats', None)
+
         
         if normalization_stats is None:
             print("⚠️ No normalization stats found in checkpoint. Computing from training dataset...")
             # Load training dataset to compute normalization stats
-            train_data_json = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/data_collection/combined_data/train.json"
-            train_embeddings_file = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/embeddings/train_embeddings.npy"
+            train_data_json = "/home/chris/Chris/placement_ws/src/data/box_simulation/v5/data_collection/combined_data/train.json"
+            train_embeddings_file = "/home/chris/Chris/placement_ws/src/data/box_simulation/v5/embeddings/train_embeddings.npy"
             
             try:
                 from dataset import WorldFrameDataset
@@ -461,38 +581,33 @@ def generate_experiment_predictions():
         print(f"❌ Error loading model: {e}")
         return
     
-    # Import the correct function name
-    from dataset import cuboid_corners_local_ordered, _zscore_normalize
+    # Import helpers
+    from dataset import cuboid_corners_local_ordered, _zscore_normalize, transform_points_to_world
     
     # Generate predictions
     print(f"\n🔮 Generating predictions for {len(experiments)} experiments...")
     result_records = []
     
     for i, data in enumerate(tqdm(experiments, desc="Predicting")):
-        # Extract dimensions and generate corners
+        # Extract dimensions and poses
         dx, dy, dz = data['object_dimensions']
-        corners = cuboid_corners_local_ordered(dx, dy, dz).astype(np.float32)
-        
-        # Load real embedding for this experiment
-        real_embedding = embeddings[i]
+        init_pose = np.array(data['initial_object_pose'], dtype=np.float32)
+        final_pose = np.array(data['final_object_pose'], dtype=np.float32)
+        grasp_pose = np.array(data['grasp_pose'], dtype=np.float32)
+
+        # Compute world-frame corners for init and final
+        corners_local = cuboid_corners_local_ordered(dx, dy, dz).astype(np.float32)
+        init_world = transform_points_to_world(corners_local, init_pose).reshape(1, -1)  # [1,24]
+        final_world = transform_points_to_world(corners_local, final_pose).reshape(1, -1)  # [1,24]
         
         # Apply normalization if stats are available and have the right keys
         if normalization_stats is not None and 'corners_mean' in normalization_stats:
-            print(f"Applying normalization with keys: {list(normalization_stats.keys())}")
-            
-            # Normalize corners
-            corners_flat = corners.reshape(1, -1)  # [1, 24]
-            corners_norm, _, _ = _zscore_normalize(
-                corners_flat,
-                normalization_stats['corners_mean'],
-                normalization_stats['corners_std']
-            )
-            corners = corners_norm.reshape(1, 8, 3).numpy()
-            
-            # Extract and normalize pose components
-            grasp_pose = np.array(data["grasp_pose"])
-            init_pose = np.array(data["initial_object_pose"])
-            final_pose = np.array(data["final_object_pose"])
+            # Normalize corners separately for init and final using same stats
+            c_mean = normalization_stats['corners_mean']
+            c_std  = normalization_stats['corners_std']
+            init_norm, _, _ = _zscore_normalize(init_world, c_mean, c_std)
+            # Use single-pose corners (init) to match training (8x3 input)
+            corners = init_norm.numpy().reshape(1, 8, 3)
             
             # Split position and orientation
             grasp_pos = grasp_pose[:3]
@@ -538,29 +653,40 @@ def generate_experiment_predictions():
             init_normalized = np.concatenate([init_pos_norm.flatten(), init_ori_norm.flatten()])
             final_normalized = np.concatenate([final_pos_norm.flatten(), final_ori_norm.flatten()])
         else:
-            print("⚠️ Using raw features (no normalization stats or missing keys)")
-            # Use raw features if no normalization stats
-            grasp_normalized = np.array(data["grasp_pose"])
-            init_normalized = np.array(data["initial_object_pose"])
-            final_normalized = np.array(data["final_object_pose"])
+            # Raw features (use init-only corners to match training)
+            corners = init_world.reshape(1, 8, 3)
+            grasp_normalized = grasp_pose
+            init_normalized = init_pose
+            final_normalized = final_pose
         
         # Convert to tensors with batch dimension
-        corners_tensor = torch.tensor(corners, dtype=torch.float32).unsqueeze(0).to(device)
-        embedding_tensor = torch.tensor(real_embedding, dtype=torch.float32).unsqueeze(0).to(device)
+        corners_tensor = torch.tensor(corners, dtype=torch.float32).to(device)
         grasp_tensor = torch.tensor(grasp_normalized, dtype=torch.float32).unsqueeze(0).to(device)
         init_tensor = torch.tensor(init_normalized, dtype=torch.float32).unsqueeze(0).to(device)
         final_tensor = torch.tensor(final_normalized, dtype=torch.float32).unsqueeze(0).to(device)
         
         # Get prediction
         with torch.no_grad():
-            collision_logits = model(embedding_tensor, corners_tensor, grasp_tensor, init_tensor, final_tensor)
+            if corners_only:
+                collision_logits = model(corners=corners_tensor, grasp_pose=grasp_tensor, init_pose=init_tensor, final_pose=final_tensor)
+            else:
+                # Build embedding tensor
+                if zero_embeddings:
+                    # Use a zero vector matching embed_dim (1024 in combined model)
+                    embedding_tensor = torch.zeros((1, 1024), dtype=torch.float32, device=device)
+                else:
+                    real_embedding = emb.get_row(i)
+                    embedding_tensor = torch.tensor(real_embedding, dtype=torch.float32).unsqueeze(0).to(device)
+                collision_logits = model(embedding_tensor, corners_tensor, grasp_tensor, init_tensor, final_tensor)
             pred_collision = torch.sigmoid(collision_logits)
             pred_no_collision = 1 - pred_collision.item()  # Probability of no collision
+            pred_no_collision_label = 1 if pred_no_collision > 0.9 else 0
         
         # Store result in the same format as the original file
         result_record = {
             "object_dimensions": data["object_dimensions"],
-            "pred_no_collision": float(pred_no_collision)
+            "pred_no_collision": float(pred_no_collision),
+            "pred_no_collision_label": int(pred_no_collision_label)
         }
         result_records.append(result_record)
         
@@ -592,9 +718,9 @@ def generate_experiment_predictions():
 
 
 if __name__ == '__main__':
-    experiment = False
+    experiment = True
     if experiment:
-        generate_experiment_predictions()
+        generate_experiment_predictions(corners_only=False, zero_embeddings=True)
     else:
         dir_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/"
         main(dir_path)

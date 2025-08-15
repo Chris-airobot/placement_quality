@@ -356,6 +356,79 @@ def generate_grasp_poses(
     return results
 
 
+
+def generate_grasp_poses_including_bottom(
+    dims_xyz: np.ndarray,
+    R_obj_to_world: np.ndarray,
+    t_obj_world: np.ndarray,
+    enable_tilt: bool = False,
+    tilt_deg: float = 90.0,
+    enable_yaw: bool = False,
+    yaw_deg: float = 0.0,
+    enable_roll: bool = False,
+    roll_deg: float = 0.0,
+    filter_by_gripper_open: bool = False,   # do NOT gate for training
+    gripper_open_max: float = 0.08,
+    apply_hand_to_tcp: bool = True,
+    hand_to_tcp_z: float = 0.1034,
+    extra_insert: float = -0.0334,
+) -> List[Dict]:
+    dims_xyz = np.asarray(dims_xyz, dtype=float)
+    R_obj_to_world = np.asarray(R_obj_to_world, dtype=float)
+    t_obj_world = np.asarray(t_obj_world, dtype=float)
+
+    # Keep ALL contacts, including bottom face
+    contacts = generate_contact_metadata(dims_xyz, approach_offset=0.01)
+
+    results: List[Dict] = []
+    for meta in contacts:
+        if filter_by_gripper_open:
+            half_extents = 0.5 * dims_xyz
+            axis_obj = np.asarray(meta['axis'], dtype=float)
+            jaw_span = float(2.0 * np.sum(np.abs(axis_obj) * half_extents))
+            if jaw_span > float(gripper_open_max):
+                continue
+
+        p_local = np.asarray(meta['p_local'], dtype=float)
+        p_world = R_obj_to_world @ p_local + t_obj_world
+
+        R_tool = build_tool_orientation_from_meta(meta, R_obj_to_world)
+        R_tool = _apply_local_rotations(
+            R_tool,
+            enable_tilt, tilt_deg,
+            enable_yaw, yaw_deg,
+            enable_roll, roll_deg,
+        )
+        q_wxyz = _quat_wxyz_from_R(R_tool)
+
+        n_face_world = R_obj_to_world @ face_surface_frame(meta['face'])[2]
+        result: Dict = {
+            'face': meta['face'],
+            'fraction': float(meta['fraction']),
+            'contact_position_world': p_world.astype(float),
+            'tool_quaternion_wxyz': q_wxyz.astype(float),
+            'tool_rotation': R_tool.astype(float),
+            'face_normal_world': n_face_world.astype(float),
+        }
+
+        if apply_hand_to_tcp:
+            z_tool_w = R_tool[:, 2]
+            cos_theta = max(1e-3, -float(np.dot(z_tool_w, n_face_world)))
+            z_local = -(float(hand_to_tcp_z) + float(extra_insert)) / cos_theta
+            hand_position_world = p_world + R_tool @ np.array([0.0, 0.0, z_local], dtype=float)
+            result['hand_position_world'] = hand_position_world.astype(float)
+            result['hand_quaternion_wxyz'] = q_wxyz.astype(float)
+
+        results.append(result)
+    return results
+
+
+
+
+
+
+
+
 if __name__ == "__main__":
     dims_xyz = np.array([0.111, 0.149, 0.05], dtype=float)
     R_init = six_face_up_orientations(spin_degs=(INIT_SPIN_DEG,))["+Z"][0]
