@@ -21,7 +21,7 @@ DISP_HOST_MEM   = 1<<14
 CONFIG = {
     "width": 1920,
     "height": 1080,
-    "headless": True,
+    "headless": False,
     "renderer": "RayTracedLighting",
     # "display_options": DISP_FPS|DISP_RESOLUTION|DISP_MESH|DISP_DEV_MEM|DISP_HOST_MEM,
 }
@@ -46,7 +46,7 @@ from omni.isaac.motion_generation import ArticulationKinematicsSolver, LulaKinem
 from omni.isaac.motion_generation import interface_config_loader
 from pxr import Sdf, UsdLux, Gf, UsdGeom
 from collision_check import GroundCollisionDetector
-from utils import sample_object_poses, sample_dims
+from utils import sample_object_poses, sample_dims, quat_wxyz_to_R, corners_local, face_id_from_R, hand_object_local_features
 from placement_quality.cube_simulation import helper
 from collections import defaultdict
 import json
@@ -83,7 +83,7 @@ class DataCollection:
         self.grasps = None
         self.object_poses = None
         self.data_dict = defaultdict(list)
-        self.data_folder = "/home/chris/Chris/placement_ws/src/data/box_simulation/v5/data_collection/raw_data/"
+        self.data_folder = "/home/chris/Chris/placement_ws/src/data/box_simulation/v6/data_collection/raw_data/"
 
 
 
@@ -318,7 +318,41 @@ class DataCollection:
                         box_hit      = any(self.collision_detector.is_colliding_with_box(p)      for p in self.robot_parts_to_check)
 
                         grasp_pose = hand_pos.tolist() + hand_quat.tolist()
-                        self.data_dict[f"grasp_{obj_idx}"].append([grasp_pose, self.current_object_pose, success, collision, ground_hit, pedestal_hit, box_hit])
+                        # unpack dims for this object/orientation
+                        dx, dy, dz = float(self.box_dims[0]), float(self.box_dims[1]), float(self.box_dims[2])
+
+                        # compute local hand-object features
+                        t_loc, R_loc6 = hand_object_local_features(grasp_pose, self.current_object_pose)
+
+                        # corners → min Z at FINAL pose
+                        R_obj = quat_wxyz_to_R(self.current_object_pose[3:7])
+                        t_obj = np.array(self.current_object_pose[:3], float)
+                        cw = corners_local(dx, dy, dz)
+                        final_world = (R_obj @ cw.T).T + t_obj
+                        min_z_corner_final = float(final_world[:,2].min())
+
+                        # face id and hand z
+                        final_face_id = face_id_from_R(R_obj)
+                        z_hand_final  = float(grasp_pose[2])
+
+                        # build extras (only must-have fields here)
+                        extras = {
+                            "dims": [dx, dy, dz],
+                            "orientation_id": int(obj_idx),
+                            "grasp_id_local": int(g_idx),           # whatever counter you use in this loop
+                            "final_face_id": final_face_id,         # 1..6 as defined above
+                            "t_loc": t_loc.tolist(),                # [3]
+                            "R_loc6": R_loc6.tolist(),              # [6]
+                            "min_z_corner_final": min_z_corner_final,
+                            "z_hand_final": z_hand_final
+                            # (optional) "gen_ver": "exp_v6", "dataset_ver": "2025-08-16"
+                            # (optional) "jaw_span_m": ..., "lateral_offset_rel": ...
+                        }
+
+                        # append with extras as 8th element — order of the first 7 elements untouched
+                        self.data_dict[f"grasp_{obj_idx}"].append(
+                            [grasp_pose, self.current_object_pose, success, collision, ground_hit, pedestal_hit, box_hit, extras]
+                        )
 
                         # optional: per-grasp progress
                         print(f"Pose {obj_idx+1}/{len(self.object_poses)} | Grasp {g_idx+1}/{len(grasps)}")
@@ -327,6 +361,16 @@ class DataCollection:
                 self.episode_count += 1
                 self.grasp_count = 0
                 current_object_finished = True
+                rows = self.data_dict[f"grasp_{obj_idx}"]
+                faces = {}
+                colls = succs = 0
+                for r in rows:
+                    extras = r[7]
+                    faces[extras["final_face_id"]] = faces.get(extras["final_face_id"], 0) + 1
+                    succs += int(bool(r[2]))
+                    colls += int(bool(r[3]))
+                print(f"[obj_idx={obj_idx}] count={len(rows)} face_counts={faces} success={succs} collision={colls}")
+
         
         print("Simulation ended.")
 

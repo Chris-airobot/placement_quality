@@ -1,702 +1,295 @@
-import os
-import json
-import glob
-import numpy as np
+# Minimal data pipeline: regroup -> rich pairs -> combine -> split
+# Keep it tight and deterministic.
+
+import os, json, glob, math, re, hashlib, random
+from collections import defaultdict
 from tqdm import tqdm
-import re
-import random
-import math
+import numpy as np
 from scipy.spatial.transform import Rotation as R
-import decimal
-import concurrent.futures
-import itertools
+from collections import Counter
 
-# Load data from JSON files
-def completing_pairs(data_folder):
-    # Create the output directory if it doesn't exist
-    os.makedirs(data_folder, exist_ok=True)
-    
-    raw_data_path = os.path.join(data_folder, "raw_data")
-    processed_data_path = os.path.join(data_folder, "processed_data")
-    os.makedirs(processed_data_path, exist_ok=True)
-    output = {}
-    json_files = sorted(glob.glob(os.path.join(raw_data_path, "object_*.json")))
-    # json_files.extend(sorted(glob.glob(os.path.join(data_path, "data_1.json"))))
-    print(f"Found {len(json_files)} JSON files")
+# ---------------------------- CONFIG (edit these) ----------------------------
+DATA_DIR          = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/data_collection"
+RAW_SUBDIR        = "raw_data"
+FIXED_SUBDIR      = "fixed_data"        # regrouped (grasp-first)
+PROCESSED_SUBDIR  = "processed_data"    # paired samples
+COMBINED_SUBDIR   = "combined_data"     # all_data.json + splits
+RAW_GLOB          = "object_*.json"
 
-    for json_file in tqdm(json_files, desc="Loading data"):
-        with open(json_file, 'r') as f:
-            data = json.load(f)
+# Robust regroup rounding (5 is safe; use 6 only if tiny boxes collapse too much)
+REGROUP_ROUND_DECIMALS = 5
 
-        # Identify clearly initial valid poses (both success=True and collision=False)
-        output = {
-            "grasp_poses": [],
-            "initial_object_poses": [],
-            "final_object_poses": [],
-            "success_labels": [],
-            "collision_labels": [],
-        }
-
-        # Loop over each grasp key (one key = one grasp pose)
-        for grasp_key, case_list in data.items():
-            # Find all valid picking configs in this grasp group (success=True, collision=False)
-            valid_pick_indices = [
-                i for i, item in enumerate(case_list)
-                if item[2] and not item[3]
-            ]
-
-            for pick_idx in valid_pick_indices:
-                pick_case = case_list[pick_idx]
-                pick_grasp_pose = pick_case[0]  # List or array
-                pick_object_pose = pick_case[1] # List or array
-
-                for place_idx, place_case in enumerate(case_list):
-                    # Skip self-pairing (same pick and place pose)
-                    if pick_idx == place_idx:
-                        continue
-
-                    place_object_pose = place_case[1]
-                    success_label = float(place_case[2])
-                    collision_label = float(place_case[3])
-
-                    output["grasp_poses"].append(list(pick_grasp_pose))
-                    output["initial_object_poses"].append(list(pick_object_pose))
-                    output["final_object_poses"].append(list(place_object_pose))
-                    output["success_labels"].append(success_label)
-                    output["collision_labels"].append(collision_label)
-
-        # Save output to JSON file
-        final_path = os.path.join(processed_data_path, f"processed_{os.path.basename(json_file)}")
-        with open(final_path, "w") as f:
-            json.dump(output, f)
-        print(f"Saved processed data: {final_path}")
+# Bucket quotas & prior target (robot ≈ 0.371 success / 0.629 collision)
+QUOTAS = {'SAME':0, 'SMALL':2, 'MEDIUM':3, 'ADJACENT':3, 'OPPOSITE':2}
+TARGET_SUCCESS_RATE = 0.37   # fraction of non-collision placements per bucket
+GROUP_CAP = 300              # max pairs per grasp group (per grasp key)
+SEED = 42
+# ----------------------------------------------------------------------------
 
 
+# ========================== 1) REGROUP (robust) ==============================
+def _quat_wxyz_to_R(q):
+    w,x,y,z = [float(v) for v in q]
+    n = math.sqrt(w*w+x*x+y*y+z*z) or 1.0
+    w,x,y,z = w/n, x/n, y/n, z/n
+    xx,yy,zz = x*x, y*y, z*z
+    wx,wy,wz = w*x, w*y, w*z
+    xy,xz,yz = x*y, x*z, y*z
+    return np.array([
+        [1-2*(yy+zz), 2*(xy-wz),   2*(xz+wy)],
+        [2*(xy+wz),   1-2*(xx+zz), 2*(yz-wx)],
+        [2*(xz-wy),   2*(yz+wx),   1-2*(xx+yy)],
+    ], float)
 
-def _load_json_fast(path):
-    try:
-        import orjson  # type: ignore
-        with open(path, "rb") as f:
-            return orjson.loads(f.read())
-    except Exception:
-        with open(path, "r") as f:
-            return json.load(f)
-
-
-def _dump_json_fast(obj, path):
-    try:
-        import orjson  # type: ignore
-        with open(path, "wb") as f:
-            f.write(orjson.dumps(obj))
-    except Exception:
-        with open(path, "w") as f:
-            json.dump(obj, f)
-
-
-def _process_single_file(json_file, processed_data_path):
-    # Worker: replicate completing_pairs logic for a single file
-    data = _load_json_fast(json_file)
-    output = {
-        "grasp_poses": [],
-        "initial_object_poses": [],
-        "final_object_poses": [],
-        "success_labels": [],
-        "collision_labels": [],
-    }
-
-    for grasp_key, case_list in data.items():
-        valid_pick_indices = [
-            i for i, item in enumerate(case_list)
-            if item[2] and not item[3]
-        ]
-
-        for pick_idx in valid_pick_indices:
-            pick_case = case_list[pick_idx]
-            pick_grasp_pose = pick_case[0]
-            pick_object_pose = pick_case[1]
-
-            for place_idx, place_case in enumerate(case_list):
-                if pick_idx == place_idx:
-                    continue
-                place_object_pose = place_case[1]
-                success_label = float(place_case[2])
-                collision_label = float(place_case[3])
-
-                output["grasp_poses"].append(list(pick_grasp_pose))
-                output["initial_object_poses"].append(list(pick_object_pose))
-                output["final_object_poses"].append(list(place_object_pose))
-                output["success_labels"].append(success_label)
-                output["collision_labels"].append(collision_label)
-
-    final_path = os.path.join(processed_data_path, f"processed_{os.path.basename(json_file)}")
-    _dump_json_fast(output, final_path)
-    return final_path
-
-
-def completing_pairs_parallel(
-    data_folder,
-    quotas: dict = None,
-    balance_collision: bool = True,
-    group_cap: int = 1000,
-    source_subdir: str = "fixed_data",
-    source_glob: str = "reordered_object_*.json",
-    out_subdir: str = "processed_data",
-    seed: int = 42,
-):
+def _local_signature(item, nd=5):
     """
-    Build rich, bounded pairs for ALL files by delegating to build_rich_pairs.
-
-    Defaults assume you've reordered raw files into <data_folder>/fixed_data/reordered_*.json.
+    item = [hand_pose7, obj_pose7, ...] with [x,y,z, qw,qx,qy,qz]
+    Return a robust local (t, R) signature rounded to nd decimals.
     """
-    os.makedirs(data_folder, exist_ok=True)
-    # Tighter, diversity-focused default quotas; can be overridden by caller
-    quotas = quotas or {'SAME':0,'SMALL':1,'MEDIUM':2,'ADJACENT':3,'OPPOSITE':4}
-    print(f"Building rich pairs from {os.path.join(data_folder, source_subdir)} matching {source_glob}")
-    build_rich_pairs(
-        data_folder=data_folder,
-        seed=seed,
-        quotas=quotas,
-        balance_collision=balance_collision,
-        group_cap=group_cap,
-        source_subdir=source_subdir,
-        source_glob=source_glob,
-        out_subdir=out_subdir,
-    )
-    print("Finished building rich processed_data files")
+    hand, obj = item[0], item[1]
+    t_h = np.array(hand[:3], float)
+    R_h = _quat_wxyz_to_R(hand[3:7])
+    t_o = np.array(obj[:3], float)
+    R_o = _quat_wxyz_to_R(obj[3:7])
 
+    R_loc = R_o.T @ R_h
+    t_loc = R_o.T @ (t_h - t_o)
+    t_sig = tuple(np.round(t_loc, nd))
+    R_sig = tuple(np.round(R_loc.flatten(), nd))
+    return (t_sig, R_sig)
 
-def combine_processed_data(data_folder):
-    # Create the output directory if it doesn't exist
-    os.makedirs(data_folder, exist_ok=True)
-    
-    processed_data_path = os.path.join(data_folder, "processed_data")
-    files = sorted(glob.glob(os.path.join(processed_data_path, "processed_*.json")))
-    
-    combined_data_path = os.path.join(data_folder, "combined_data")
-    os.makedirs(combined_data_path, exist_ok=True)
-    output_file = os.path.join(combined_data_path, "all_data.json")
-    
-    print("Writing all_data.json incrementally...")
-    with open(output_file, "w") as f:
-        f.write("[\n")  # Start JSON array
-        
-        first_sample = True
-        for file in tqdm(files, desc="Processing files"):
-            # ----- Extract object dimensions from filename -----
-            m = re.search(r'object_([0-9.]+)_([0-9.]+)_([0-9.]+)\.json', file)
-            if m:
-                dims = [float(m.group(1)), float(m.group(2)), float(m.group(3))]
-            else:
-                dims = [None, None, None]  # or raise an error if preferred
-            
-            with open(file, "r") as data_f:
-                data = json.load(data_f)
-
-            # Process each sample in the file
-            num_samples = len(data["grasp_poses"])
-            for i in range(num_samples):
-                sample = {
-                    "grasp_pose": data["grasp_poses"][i],
-                    "initial_object_pose": data["initial_object_poses"][i],
-                    "final_object_pose": data["final_object_poses"][i],
-                    "success_label": data["success_labels"][i],
-                    "collision_label": data["collision_labels"][i],
-                    "object_dimensions": dims  # <--- Add dimensions here
-                }
-                
-                # Add comma separator between samples
-                if not first_sample:
-                    f.write(",\n")
-                else:
-                    first_sample = False
-                
-                # Write the sample
-                f.write(json.dumps(sample))
-        
-        f.write("\n]")  # End JSON array
-    
-    print("Finished writing.")
-
-    
-
-
-def reorder_single_file_to_grasp_first(raw_json_path: str, output_dir: str = None) -> str:
+def verify_repacked_alignment(path, sample_grasps=10, tol_pos=1e-4, tol_deg=1e-3):
     """
-    Read ONE raw JSON where keys are object-pose buckets (e.g., 'grasp_0', 'grasp_1', ...),
-    and rewrite it into the previous grasp-first layout:
-      - Keys become 'grasp_{g}' where g is the global grasp index
-      - Each value is a list over all object poses for that same index g
-
-    This function does NOT create grasp–place pairs. It only reorders the data.
-
-    Args:
-        raw_json_path: path to original raw JSON file.
-        output_dir: optional directory to write reordered file. Defaults to
-                    sibling directory 'processed_data' next to 'raw_data'.
-
-    Returns:
-        Path to the written reordered file.
+    Spot-check that grasp-first packing preserved geometry:
+    using pose 0 to define local (t,R), re-predict every other pose and compare.
     """
-    raw_json_path = os.path.abspath(raw_json_path)
-    with open(raw_json_path, "r") as f:
+    with open(path, "r") as f:
+        data = json.load(f)
+    if not data:
+        print(f"[regroup verify] {os.path.basename(path)}: empty, skipped")
+        return {"ok": True, "skipped": True}
+
+    # Object poses from any grasp (they all share poses)
+    first_seq = next(iter(data.values()))
+    R_objs = [_quat_wxyz_to_R(s[1][3:7]) for s in first_seq]
+    t_objs = [np.array(s[1][:3], float) for s in first_seq]
+
+    # sample a few grasp IDs
+    rng = random.Random(0)
+    keys = list(data.keys())
+    sel = rng.sample(keys, min(sample_grasps, len(keys)))
+
+    max_pos = 0.0
+    max_deg = 0.0
+    for k in sel:
+        seq = data[k]
+        t_h0 = np.array(seq[0][0][:3], float)
+        R_h0 = _quat_wxyz_to_R(seq[0][0][3:7])
+        R_o0, t_o0 = R_objs[0], t_objs[0]
+        R_loc = R_o0.T @ R_h0
+        t_loc = R_o0.T @ (t_h0 - t_o0)
+
+        for i, s in enumerate(seq):
+            R_pred = R_objs[i] @ R_loc
+            t_pred = t_objs[i] + R_objs[i] @ t_loc
+            R_true = _quat_wxyz_to_R(s[0][3:7])
+            t_true = np.array(s[0][:3], float)
+
+            pos_err = float(np.linalg.norm(t_pred - t_true))
+            R_rel = R_pred.T @ R_true
+            c = max(-1.0, min(1.0, (np.trace(R_rel) - 1.0) / 2.0))
+            deg = math.degrees(math.acos(c))
+
+            max_pos = max(max_pos, pos_err)
+            max_deg = max(max_deg, deg)
+
+    ok = (max_pos <= tol_pos) and (max_deg <= tol_deg)
+    print(f"[regroup verify] {os.path.basename(path)}: "
+          f"max_pos={max_pos:.2e} m, max_rot={max_deg:.2e} deg, ok={ok}")
+    return {"ok": ok, "max_pos": max_pos, "max_rot_deg": max_deg}
+
+def regroup_raw_v5_to_grasp_first(raw_path, out_path, nd=5):
+    """
+    INPUT (raw v5): keys are object-pose buckets ('grasp_0', ...), values = list of items
+    OUTPUT (grasp-first): 'grasp_g' -> [item over every pose], aligned by local signature
+    """
+    with open(raw_path, "r") as f:
         data = json.load(f)
 
-    # Default output directory: sibling processed_data
-    raw_dir = os.path.dirname(raw_json_path)
-    if output_dir is None:
-        parent = os.path.dirname(raw_dir)
-        output_dir = os.path.join(parent, "processed_data")
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Collect and sort object-pose keys by numeric index
-    keyed = []
-    for k in data.keys():
-        m = re.match(r"grasp_(\d+)$", k)
-        if m:
-            keyed.append((int(m.group(1)), k))
-    keyed.sort(key=lambda x: x[0])
-    sorted_keys = [k for _, k in keyed]
-
-    if not sorted_keys:
-        # Nothing to reorder; write empty structure
-        out = {}
-        out_path = os.path.join(output_dir, f"reordered_{os.path.basename(raw_json_path)}")
+    # sort pose buckets by numeric index
+    pose_keys = sorted([k for k in data if k.startswith("grasp_")],
+                       key=lambda k: int(k.split("_")[1]))
+    if not pose_keys:
         with open(out_path, "w") as f:
-            json.dump(out, f)
-        return out_path
+            json.dump({}, f)
+        return {"num_grasps": 0, "num_poses": 0, "out": out_path}
 
-    # Use minimum length across groups to stay safe
-    N = min(len(data[k]) for k in sorted_keys)
+    # per-pose map: sig -> item
+    per_pose_maps = []
+    for k in pose_keys:
+        m = {}
+        for itm in data[k]:
+            sig = _local_signature(itm, nd=nd)
+            m[sig] = itm  # last wins if duplicates
+        per_pose_maps.append(m)
 
-    reordered = {}
-    for g in range(N):
-        key = f"grasp_{g}"
-        reordered[key] = [data[k][g] for k in sorted_keys]
+    # intersection of signatures across ALL poses -> rectangular set
+    common = set(per_pose_maps[0].keys())
+    for m in per_pose_maps[1:]:
+        common &= set(m.keys())
+    common = sorted(list(common))  # deterministic order
 
-    out_path = os.path.join(output_dir, f"reordered_{os.path.basename(raw_json_path)}")
+    out = {}
+    for g, sig in enumerate(common):
+        out[f"grasp_{g}"] = [m[sig] for m in per_pose_maps]
+
     with open(out_path, "w") as f:
-        json.dump(reordered, f)
-    return out_path
+        json.dump(out, f)
+    return {"num_grasps": len(common), "num_poses": len(pose_keys), "out": out_path}
 
-def split_all_data(data_folder: str,
-                   train_frac: float = 0.8,
-                   val_frac:   float = 0.1,
-                   test_frac:  float = 0.1,
-                   seed:       int   = 42,
-                   show_progress: bool = True,
-                   pre_count: bool = False):
-    """
-    Stream-split combined_data/all_data.json into train/val/test without loading
-    the entire file into memory. Writes JSON arrays: train.json, val.json, test.json
-    in the same combined_data/ directory.
-    """
-    assert abs(train_frac + val_frac + test_frac - 1.0) < 1e-6, "Fractions must sum to 1"
-    out_dir = os.path.join(data_folder, "combined_data")
-    in_path = os.path.join(out_dir, "all_data.json")
+def regroup_all_raw(data_dir=DATA_DIR, nd=REGROUP_ROUND_DECIMALS):
+    raw_dir = os.path.join(data_dir, RAW_SUBDIR)
+    fix_dir = os.path.join(data_dir, FIXED_SUBDIR)
+    os.makedirs(fix_dir, exist_ok=True)
+    files = sorted(glob.glob(os.path.join(raw_dir, RAW_GLOB)))
+    print(f"[regroup] {len(files)} raw files in {raw_dir}")
+    stats = []
+    for p in tqdm(files, desc="regrouping"):
+        out = os.path.join(fix_dir, f"repacked_{os.path.basename(p)}")
+        info = regroup_raw_v5_to_grasp_first(p, out, nd=nd)
+        # spot-verify a few files (cheap)
+        if len(stats) < 10:
+            verify_repacked_alignment(out)
+        stats.append((os.path.basename(p), info["num_grasps"], info["num_poses"]))
+    if stats:
+        g_counts = [g for _,g,_ in stats]
+        print(f"[regroup] grasps per pose: mean={np.mean(g_counts):.1f}, min={min(g_counts)}, max={max(g_counts)}")
+    return stats
+
+
+# ====================== 2) BUILD RICH (paired) ===============================
+_ADJ = {1:{2,4,5,6}, 2:{1,3,5,6}, 3:{2,4,5,6}, 4:{1,3,5,6}, 5:{1,2,3,4}, 6:{1,2,3,4}}
+
+def _face_id_from_q(w,x,y,z):
+    # Isaac uses WXYZ; Rotation wants [x,y,z,w]
+    rot = R.from_quat([x,y,z,w])
+    up = np.array([0,0,1], float)
+    # world-up projection of each object face normal
+    faces = {1:[0,0,1], 2:[1,0,0], 3:[0,0,-1], 4:[-1,0,0], 5:[0,-1,0], 6:[0,1,0]}
+    return max(faces, key=lambda k: np.dot(rot.apply(faces[k]), up))
+
+def _bucket(meta_i, meta_j):
+    fi, fj = meta_i['face'], meta_j['face']
+    if fi == fj:
+        dq = R.from_quat(meta_j['quat']) * R.from_quat(meta_i['quat']).inv()
+        ang = dq.magnitude() * 180.0 / math.pi
+        if ang < 1:   return 'SAME'
+        if ang <= 30: return 'SMALL'
+        if ang <= 90: return 'MEDIUM'
+        return 'MEDIUM'
+    return 'ADJACENT' if fj in _ADJ[fi] else 'OPPOSITE'
+
+def _sample_bucket(indices, k, cases, rng, target_success_rate=TARGET_SUCCESS_RATE):
+    if not indices or k <= 0:
+        return []
+    # success = no collision at placement -> cases[j][3] == False
+    pos = [j for j in indices if not cases[j][3]]
+    neg = [j for j in indices if cases[j][3]]
+    k_pos = min(len(pos), int(round(k * target_success_rate)))
+    k_neg = min(len(neg), max(0, k - k_pos))
+    chosen = []
+    if pos:
+        chosen.extend(pos if len(pos) <= k_pos else rng.sample(pos, k_pos))
+    if neg:
+        chosen.extend(neg if len(neg) <= k_neg else rng.sample(neg, k_neg))
+    rem = k - len(chosen)
+    if rem > 0:
+        pool = [j for j in indices if j not in chosen]
+        if pool:
+            chosen.extend(pool if len(pool) <= rem else rng.sample(pool, rem))
+    return chosen
+
+def build_rich_pairs(data_dir=DATA_DIR,
+                     source_subdir=FIXED_SUBDIR,
+                     source_glob="repacked_object_*.json",
+                     out_subdir=PROCESSED_SUBDIR,
+                     quotas=QUOTAS,
+                     group_cap=GROUP_CAP,
+                     seed=SEED):
+    rng = random.Random(seed)
+    src_dir = os.path.join(data_dir, source_subdir)
+    out_dir = os.path.join(data_dir, out_subdir)
     os.makedirs(out_dir, exist_ok=True)
 
-    # Open outputs
-    outs = {
-        "train.json": open(os.path.join(out_dir, "train.json"), "w"),
-        "val.json":   open(os.path.join(out_dir, "val.json"),   "w"),
-        "test.json":  open(os.path.join(out_dir, "test.json"),  "w"),
-    }
-    try:
-        import hashlib
-        for f in outs.values():
-            f.write("[\n")
-        first = {k: True for k in outs.keys()}
-        rng = random.Random(seed)
+    global_counts = Counter()   # buckets
+    total_pairs = 0
+    succ_pairs  = 0            # non-collision at placement
 
-        def _norm_dims(dims, nd=6):
-            # dims is [x,y,z]; round to avoid float jitter
-            if dims is None: 
-                return None
-            try:
-                return tuple(round(float(d), nd) for d in dims)
-            except Exception:
-                return None
-
-        def pick_split_by_key(key_tuple, train_frac=0.8, val_frac=0.1, seed=42):
-            """
-            Map an entire key (e.g., one object_dimensions tuple) to a single split.
-            Uses a seeded hash so buckets are assigned stably and approximately
-            proportional to the requested fractions.
-            """
-            if key_tuple is None:
-                # fallback: random row-level (rare if combine wrote dims)
-                r = random.Random(seed).random()
-                return "train.json" if r < train_frac else ("val.json" if r < train_frac + val_frac else "test.json")
-            # salted, stable hash -> [0,1)
-            h = hashlib.md5((str(key_tuple) + f"|{seed}").encode("utf-8")).digest()
-            u = int.from_bytes(h[:8], "big") / 2**64
-            if u < train_frac:
-                return "train.json"
-            elif u < train_frac + val_frac:
-                return "val.json"
-            else:
-                return "test.json"
-
-
-        # Try fast streaming with ijson; fallback to manual streaming
-        use_ijson = False
-        try:
-            import ijson  # type: ignore
-            use_ijson = True
-        except Exception:
-            use_ijson = False
-
-        # Optional pre-count for progress bar / ETA
-        total_items = None
-        if show_progress and pre_count:
-            try:
-                if use_ijson:
-                    c = 0
-                    with open(in_path, "rb") as f:
-                        for _ in ijson.items(f, "item"):
-                            c += 1
-                    total_items = c
-                else:
-                    # reuse manual stream to count
-                    def _stream_for_count(fp):
-                        buf = []
-                        depth = 0
-                        in_str = False
-                        esc = False
-                        started = False
-                        while True:
-                            chunk = fp.read(8192)
-                            if not chunk:
-                                break
-                            for ch in chunk:
-                                c = ch if isinstance(ch, str) else chr(ch)
-                                if not started:
-                                    if c == '[':
-                                        started = True
-                                    continue
-                                if c == ']' and not in_str and depth == 0:
-                                    return
-                                if c == '"' and not esc:
-                                    in_str = not in_str
-                                esc = (c == '\\' and in_str and not esc)
-                                if not in_str:
-                                    if c == '{':
-                                        depth += 1
-                                    elif c == '}':
-                                        depth -= 1
-                                if depth == 0 and c == '}':
-                                    yield 1
-                    total_items = 0
-                    with open(in_path, "rb") as f:
-                        for _ in _stream_for_count(f):
-                            total_items += 1
-            except Exception:
-                total_items = None
-
-        pbar = None
-        if show_progress:
-            try:
-                pbar = tqdm(total=total_items, desc="Splitting all_data.json", unit="items")
-            except Exception:
-                pbar = None
-
-        count = 0
-        # JSON default to handle Decimal → float
-        def _json_default(o):
-            if isinstance(o, decimal.Decimal):
-                return float(o)
-            return str(o)
-
-        if use_ijson:
-            with open(in_path, "rb") as f:
-                for obj in ijson.items(f, "item"):
-                    dims_key = _norm_dims(obj.get("object_dimensions"))
-                    tgt = pick_split_by_key(dims_key, train_frac=train_frac, val_frac=val_frac, seed=seed)
-                    if not first[tgt]:
-                        outs[tgt].write(",\n")
-                    else:
-                        first[tgt] = False
-                    outs[tgt].write(json.dumps(obj, default=_json_default))
-                    count += 1
-                    if pbar is not None:
-                        pbar.update(1)
-        else:
-            # Minimal manual streaming for a JSON array of objects
-            def stream_objects(fp):
-                buf = []
-                depth = 0
-                in_str = False
-                esc = False
-                started = False
-                while True:
-                    chunk = fp.read(8192)
-                    if not chunk:
-                        break
-                    for ch in chunk:
-                        if isinstance(ch, str):
-                            c = ch
-                        else:
-                            c = chr(ch)
-                        if not started:
-                            if c == '[':
-                                started = True
-                            continue
-                        if c == ']' and not in_str and depth == 0:
-                            # end of array
-                            yield from ()
-                            return
-                        if c == '"' and not esc:
-                            in_str = not in_str
-                        esc = (c == '\\' and in_str and not esc)
-                        if not in_str:
-                            if c == '{':
-                                depth += 1
-                            elif c == '}':
-                                depth -= 1
-                        if depth > 0:
-                            buf.append(c)
-                            if depth == 0:
-                                # finished an object
-                                try:
-                                    yield json.loads(''.join(buf))
-                                finally:
-                                    buf.clear()
-                        elif c == '{':
-                            buf.append(c)
-                            # depth increment already handled
-                        else:
-                            continue
-
-            with open(in_path, "rb") as f:
-                for obj in stream_objects(f):
-                    dims_key = _norm_dims(obj.get("object_dimensions"))
-                    tgt = pick_split_by_key(dims_key, train_frac=train_frac, val_frac=val_frac, seed=seed)
-                    if not first[tgt]:
-                        outs[tgt].write(",\n")
-                    else:
-                        first[tgt] = False
-                    outs[tgt].write(json.dumps(obj, default=_json_default))
-                    count += 1
-                    if pbar is not None:
-                        pbar.update(1)
-
-        for name, f in outs.items():
-            f.write("\n]")
-            f.close()
-        if pbar is not None:
-            pbar.close()
-        print(f"Stream-split {count} samples to {out_dir}/train.json, val.json, test.json")
-    except Exception:
-        for f in outs.values():
-            try:
-                f.close()
-            except Exception:
-                pass
-        raise
-
-
-def extract_data_from_json(data_path, output_path):
-    """
-    Extract a dataset balanced only on the collision label:
-    - Take all non-collision samples (collision_label == 0)
-    - Randomly sample an equal number of collision samples (collision_label == 1)
-    - Combine and shuffle for a balanced dataset
-    
-    Args:
-        data_path: Path to the input JSON file
-        output_path: Directory to save the output file
-    """
-    import os
-    import json
-    import random
-
-    target_path = os.path.join(output_path, "collision_balanced_samples.json")
-
-    print(f"Extracting collision-balanced samples from {data_path} to {output_path}")
-    os.makedirs(output_path, exist_ok=True)
-
-    with open(data_path, "r") as f:
-        full_data = json.load(f)
-    print(f"Loaded {len(full_data)} total samples")
-
-    # Separate by collision label
-    non_collision = [s for s in full_data if s["collision_label"] <= 0.5]
-    collision = [s for s in full_data if s["collision_label"] > 0.5]
-
-    print(f"Non-collision samples: {len(non_collision)}")
-    print(f"Collision samples: {len(collision)}")
-
-    n = len(non_collision)
-    if n == 0:
-        print("No non-collision samples found. Cannot balance.")
-        return
-    if len(collision) == 0:
-        print("No collision samples found. Cannot balance.")
-        return
-
-    # Randomly sample collision samples to match non-collision count
-    if len(collision) > n:
-        collision_balanced = random.sample(collision, n)
-    else:
-        collision_balanced = collision
-        print(f"Warning: Not enough collision samples to fully balance. Using {len(collision)}.")
-        n = len(collision)  # adjust n to match available collision samples
-        non_collision = random.sample(non_collision, n)
-
-    balanced_data = non_collision + collision_balanced
-    random.shuffle(balanced_data)
-
-    with open(target_path, "w") as f:
-        json.dump(balanced_data, f, indent=2)
-
-    print(f"Successfully saved {len(balanced_data)} collision-balanced samples to {target_path}")
-    print(f"Breakdown: {len(non_collision)} non-collision, {len(collision_balanced)} collision samples")
-
-
-# ──────────────────────────────────────────────────────────────────────────
-def build_rich_pairs(
-    data_folder,
-    seed: int = 42,
-    quotas: dict = None,
-    balance_collision: bool = True,
-    group_cap: int = 1000,
-    source_subdir: str = "raw_data",
-    source_glob: str = "*.json",
-    out_subdir: str = "processed_data",
-):
-    """
-    Convert every JSON in <data_folder>/<source_subdir>/ into a processed_*.json
-    with rich but bounded initial–placement pairs using bucketed quotas.
-
-    Tweaks:
-      - quotas: dict like {'SAME':1,'SMALL':2,'MEDIUM':2,'ADJACENT':2,'OPPOSITE':3}
-      - balance_collision: within each bucket, sample ~50/50 by collision label when possible
-      - group_cap: optional max pairs per grasp group (cap output per key)
-      - source_subdir/source_glob: allows using reordered files (e.g., fixed_data/reordered_*.json)
-      - out_subdir: output directory name (default 'processed_data')
-      - Always ensure at least one ADJACENT and one OPPOSITE placement per clean pick when available
-    """
-    rng = random.Random(seed)
-
-    quotas = quotas or {'SAME':0, 'SMALL':1, 'MEDIUM':2, 'ADJACENT':3, 'OPPOSITE':4}
-
-    raw_dir  = os.path.join(data_folder, source_subdir)
-    proc_dir = os.path.join(data_folder, out_subdir)
-    os.makedirs(proc_dir, exist_ok=True)
-
-    # ------------------ helpers ------------------------------------------------
-    ADJ = {1:{2,4,5,6}, 2:{1,3,5,6}, 3:{2,4,5,6},
-           4:{1,3,5,6}, 5:{1,2,3,4}, 6:{1,2,3,4}}
-
-    def face_id(qw,qx,qy,qz):
-        rot = R.from_quat([qx,qy,qz,qw])
-        up  = np.array([0,0,1])
-        faces = {1:[0,0,1], 2:[1,0,0], 3:[0,0,-1], 4:[-1,0,0], 5:[0,-1,0], 6:[0,1,0]}
-        return max(faces, key=lambda k: np.dot(rot.apply(faces[k]), up))
-
-    def bucket(meta_i, meta_j):
-        fi, fj = meta_i['face'], meta_j['face']
-        if fi == fj:
-            dq = R.from_quat(meta_j['quat']) * R.from_quat(meta_i['quat']).inv()
-            ang = dq.magnitude() * 180 / math.pi
-            if ang < 1:   return 'SAME'
-            if ang <= 30: return 'SMALL'
-            if ang <= 90: return 'MEDIUM'
-            return 'MEDIUM'
-        return 'ADJACENT' if fj in ADJ[fi] else 'OPPOSITE'
-
-    def sample_bucket(indices, k, cases):
-        if not indices or k <= 0:
-            return []
-        if not balance_collision:
-            return indices if len(indices) <= k else rng.sample(indices, k)
-        # balance by collision label at placement
-        pos = [j for j in indices if not cases[j][3]]  # no collision
-        neg = [j for j in indices if cases[j][3]]      # collision
-        take_pos = min(len(pos), k // 2)
-        take_neg = min(len(neg), k - take_pos)
-        chosen = []
-        if pos:
-            chosen.extend(pos if take_pos >= len(pos) else rng.sample(pos, take_pos))
-        if neg:
-            chosen.extend(neg if take_neg >= len(neg) else rng.sample(neg, take_neg))
-        rem = k - len(chosen)
-        if rem > 0:
-            pool = [j for j in indices if j not in chosen]
-            if pool:
-                chosen.extend(pool if len(pool) <= rem else rng.sample(pool, rem))
-        return chosen
-
-    # ------------------ iterate files -----------------------------------------
-    raw_files = sorted(glob.glob(os.path.join(raw_dir, source_glob)))
-    print(f"Found {len(raw_files)} files in {raw_dir} matching {source_glob}")
-    for raw_path in tqdm(raw_files, desc="building rich pairs"):
-        with open(raw_path, "r") as f:
-            raw = json.load(f)
+    files = sorted(glob.glob(os.path.join(src_dir, source_glob)))
+    print(f"[pairs] {len(files)} fixed files in {src_dir}")
+    for path in tqdm(files, desc="building pairs"):
+        with open(path, "r") as f:
+            grasp_first = json.load(f)
 
         out = {k: [] for k in ("grasp_poses","initial_object_poses",
                                "final_object_poses","success_labels",
                                "collision_labels")}
 
-        # ------- per grasp group ---------------------------------------------
-        for grasp_key, cases in raw.items():
-            # pre‑compute per‑orientation metadata (quat + face ID)
+        for g_key, cases in grasp_first.items():
+            # meta per pose index for this grasp: from object pose quaternion
             meta = []
             for c in cases:
                 qw,qx,qy,qz = c[1][3:7]
-                meta.append({'quat':[qx,qy,qz,qw], 'face':face_id(qw,qx,qy,qz)})
+                meta.append({'quat':[qx,qy,qz,qw], 'face':_face_id_from_q(qw,qx,qy,qz)})
 
-            # candidate initial: fully clean
-            clean_idx = [i for i,c in enumerate(cases)
-                         if not c[3] and not c[4] and not c[5] and not c[6]]
+            # pick candidates: clean pick (success True AND no collision) + optional extras off
+            clean_idx = []
+            for i,c in enumerate(cases):
+                ok = (bool(c[2]) and not bool(c[3]))
+                # if extra flags exist (topple/slip/etc.), require them False for pick
+                if len(c) > 6:
+                    ok = ok and (not bool(c[4])) and (not bool(c[5])) and (not bool(c[6]))
+                if ok:
+                    clean_idx.append(i)
 
-            produced_for_group = 0
+            produced = 0
             for i in clean_idx:
-                if group_cap is not None and produced_for_group >= group_cap:
+                if group_cap is not None and produced >= group_cap:
                     break
 
-                # build buckets
-                buckets = {b: [] for b in quotas}
+                # bucket all placements relative to this initial pose
+                buckets = {b: [] for b in quotas.keys()}
                 for j in range(len(cases)):
-                    b = bucket(meta[i], meta[j])
+                    b = _bucket(meta[i], meta[j])
                     if b in buckets:
                         buckets[b].append(j)
 
-                # primary pass with quotas
                 chosen = []
                 leftovers = 0
                 for b, k in quotas.items():
                     lst = buckets.get(b, [])
-                    take = sample_bucket(lst, k, cases)
+                    take = _sample_bucket(lst, k, cases, rng, TARGET_SUCCESS_RATE)
                     chosen.extend(take)
                     leftovers += max(0, k - len(take))
 
-                # redistribute unused quota to any remaining items
                 if leftovers > 0:
                     pool = []
                     for b, lst in buckets.items():
                         pool.extend([j for j in lst if j not in chosen])
                     if pool:
-                        extra = pool if len(pool) <= leftovers else rng.sample(pool, leftovers)
-                        chosen.extend(extra)
+                        chosen.extend(pool if len(pool) <= leftovers else rng.sample(pool, leftovers))
 
-                # enforce at least one ADJACENT and one OPPOSITE when available
-                for must in ("ADJACENT", "OPPOSITE"):
+                # ensure at least one ADJACENT & one OPPOSITE if available
+                for must in ("ADJACENT","OPPOSITE"):
                     lst = buckets.get(must, [])
                     if lst and not any(j in lst for j in chosen):
                         pool = [j for j in lst if j not in chosen]
                         if pool:
                             chosen.append(rng.sample(pool, 1)[0])
 
-                # cap pairs produced per group
-                remaining_group_slots = None
-                if group_cap is not None:
-                    remaining_group_slots = max(0, group_cap - produced_for_group)
-                    if remaining_group_slots == 0:
-                        break
-                    if len(chosen) > remaining_group_slots:
-                        # Randomly subsample to remove ordering bias under the cap
-                        chosen = rng.sample(chosen, remaining_group_slots)
+                # cap per-grasp output
+                if group_cap is not None and len(chosen) > (group_cap - produced):
+                    chosen = rng.sample(chosen, group_cap - produced)
 
                 pick = cases[i]
                 for j in chosen:
@@ -706,71 +299,349 @@ def build_rich_pairs(
                     out['final_object_poses'].append(place[1])
                     out['success_labels'].append(float(place[2]))
                     out['collision_labels'].append(float(place[3]))
-                produced_for_group += len(chosen)
-
-        # -------- save -------------------------------------------------------
-        fname = f"processed_{os.path.basename(raw_path)}"
-        with open(os.path.join(proc_dir, fname), "w") as f:
+                    # stats
+                    b = _bucket(meta[i], meta[j])
+                    global_counts[b] += 1
+                    total_pairs += 1
+                    if not place[3]:
+                        succ_pairs += 1
+                produced += len(chosen)
+        
+        fname = f"processed_{os.path.basename(path)}"
+        with open(os.path.join(out_dir, fname), "w") as f:
             json.dump(out, f)
-        print(f"  {fname}: {len(out['grasp_poses'])} pairs")
-    
+        # quick count to see balance
+        col = sum(1 for x in out['collision_labels'] if x > 0.5)
+        n = len(out['collision_labels'])
+        print(f"  {fname}: {n} pairs | collision rate {col/n:.3f}")
+        
+
+    # Concise global summary across all files
+    if total_pairs > 0:
+        succ_rate = succ_pairs / total_pairs
+        print(f"[pairs] GLOBAL: pairs={total_pairs}  success_rate={succ_rate:.3f}  (target={TARGET_SUCCESS_RATE:.3f})")
+        for k in ('SAME','SMALL','MEDIUM','ADJACENT','OPPOSITE'):
+            n = global_counts[k]
+            print(f"        {k:<8} {n:>8}  {n/total_pairs:6.3f}")
 
 
+# ==================== 3) COMBINE (streaming writer) =========================
+def combine_processed_data(data_dir=DATA_DIR,
+                           processed_subdir=PROCESSED_SUBDIR,
+                           out_subdir=COMBINED_SUBDIR):
+    proc_dir = os.path.join(data_dir, processed_subdir)
+    out_dir  = os.path.join(data_dir, out_subdir)
+    os.makedirs(out_dir, exist_ok=True)
+    files = sorted(glob.glob(os.path.join(proc_dir, "processed_*.json")))
+    out_path = os.path.join(out_dir, "all_data.json")
+    total_written = 0
+    succ_total = 0
+    dims_fail = 0
+
+    print(f"[combine] writing {out_path} from {len(files)} files")
+    with open(out_path, "w") as out_f:
+        out_f.write("[\n")
+        first = True
+        for fp in tqdm(files, desc="combining"):
+            m = re.search(r'object_([0-9.]+)_([0-9.]+)_([0-9.]+)\.json', fp)
+            if m is None:
+                dims_fail += 1
+            dims = [float(m.group(1)), float(m.group(2)), float(m.group(3))] if m else [None,None,None]
+            d = json.load(open(fp, "r"))
+            n = len(d["grasp_poses"])
+            for i in range(n):
+                obj = {
+                    "grasp_pose": d["grasp_poses"][i],
+                    "initial_object_pose": d["initial_object_poses"][i],
+                    "final_object_pose": d["final_object_poses"][i],
+                    "success_label": d["success_labels"][i],
+                    "collision_label": d["collision_labels"][i],
+                    "object_dimensions": dims
+                }
+                if not first: out_f.write(",\n")
+                first = False
+                out_f.write(json.dumps(obj))
+                total_written += 1
+                if obj["success_label"] and not obj["collision_label"]:
+                    succ_total += 1
+        out_f.write("\n]")
+    print("[combine] done")
+    if total_written > 0:
+        print(f"[combine] total={total_written}  success_rate={succ_total/total_written:.3f}  dims_parse_fail={dims_fail}")
+
+
+# ====================== 4) SPLIT (no leakage) ===============================
+def _dims_key(dims, nd=6):
+    if not dims: return None
+    try:
+        return tuple(round(float(x), nd) for x in dims)
+    except Exception:
+        return None
+
+def _stream_array(path):
+    """Stream a JSON array of objects from disk without loading into memory."""
+    with open(path, "r") as f:
+        in_array = False
+        buf = []
+        depth = 0
+        in_str = False
+        esc = False
+
+        while True:
+            chunk = f.read(65536)
+            if not chunk:
+                break
+            for c in chunk:
+                if not in_array:
+                    if c == '[':
+                        in_array = True
+                    continue
+
+                # end of array?
+                if c == ']' and not in_str and depth == 0:
+                    return
+
+                # string handling
+                if c == '"' and not esc:
+                    in_str = not in_str
+                esc = (c == '\\' and in_str and not esc)
+                if in_str:
+                    if depth > 0:
+                        buf.append(c)
+                    continue
+
+                # structural handling
+                if c == '{':
+                    if depth == 0:
+                        buf = ['{']
+                        depth = 1
+                    else:
+                        buf.append('{')
+                        depth += 1
+                elif c == '}':
+                    if depth > 0:
+                        buf.append('}')
+                        depth -= 1
+                        if depth == 0:
+                            yield json.loads(''.join(buf))
+                            buf = []
+                else:
+                    if depth > 0:
+                        buf.append(c)
+
+
+def _count_split_file(path):
+    """Stream-count size, success rate, collision rate and gather unique dims keys."""
+    n = succ = coll = 0
+    dims_set = set()
+    for obj in _stream_array(path):
+        n += 1
+        if obj.get("collision_label"):
+            coll += 1
+        if obj.get("success_label") and not obj.get("collision_label"):
+            succ += 1
+        dims_set.add(_dims_key(obj.get("object_dimensions")))
+    succ_rate = (succ / n) if n else 0.0
+    coll_rate = (coll / n) if n else 0.0
+    return {"n": n, "succ_rate": succ_rate, "coll_rate": coll_rate, "dims": dims_set}
+
+from tqdm import tqdm  # already imported at top
+
+def split_all_data(data_dir=DATA_DIR,
+                   out_subdir=COMBINED_SUBDIR,
+                   train_frac=0.8, val_frac=0.1, test_frac=0.1, seed=SEED,
+                   expected_total: int | None = None,
+                   show_progress: bool = True):
+    assert abs(train_frac + val_frac + test_frac - 1.0) < 1e-6
+    out_dir = os.path.join(data_dir, out_subdir)
+    in_path = os.path.join(out_dir, "all_data.json")
+    train_p = os.path.join(out_dir, "train.json")
+    val_p   = os.path.join(out_dir, "val.json")
+    test_p  = os.path.join(out_dir, "test.json")
+
+    # open outputs and write array headers
+    outs = {"train.json": open(train_p, "w"),
+            "val.json":   open(val_p, "w"),
+            "test.json":  open(test_p, "w")}
+    for f in outs.values():
+        f.write("[\n")
+    first = {k: True for k in outs}
+
+    def pick_split_by_key(key_tuple):
+        if key_tuple is None:
+            r = random.Random(seed).random()
+            return "train.json" if r < train_frac else ("val.json" if r < train_frac + val_frac else "test.json")
+        h = hashlib.md5((str(key_tuple) + f"|{seed}").encode("utf-8")).digest()
+        u = int.from_bytes(h[:8], "big") / 2**64
+        return "train.json" if u < train_frac else ("val.json" if u < train_frac + val_frac else "test.json")
+
+    # stream the big array into the 3 splits, with a progress bar
+    print(f"[split] streaming {in_path}")
+    iterator = _stream_array(in_path)
+    if show_progress:
+        iterator = tqdm(iterator, total=expected_total, unit="obj", desc="Splitting", smoothing=0.05)
+
+    for obj in iterator:
+        key = _dims_key(obj.get("object_dimensions"))
+        tgt = pick_split_by_key(key)
+        if not first[tgt]:
+            outs[tgt].write(",\n")
+        else:
+            first[tgt] = False
+        outs[tgt].write(json.dumps(obj))
+
+    # close the arrays/files
+    for k, f in outs.items():
+        f.write("\n]")
+        f.close()
+    print("[split] wrote train/val/test")
+
+    # streaming sanity: priors + leakage by dims keys (uses _stream_array)
+    train_stats = _count_split_file(train_p)
+    val_stats   = _count_split_file(val_p)
+    test_stats  = _count_split_file(test_p)
+
+    print(f"train.json: n={train_stats['n']}  success_rate={train_stats['succ_rate']:.3f}  collision_rate={train_stats['coll_rate']:.3f}")
+    print(f"val.json:   n={val_stats['n']}    success_rate={val_stats['succ_rate']:.3f}    collision_rate={val_stats['coll_rate']:.3f}")
+    print(f"test.json:  n={test_stats['n']}   success_rate={test_stats['coll_rate']:.3f}   collision_rate={test_stats['coll_rate']:.3f}")
+
+    leak_tv = train_stats["dims"] & val_stats["dims"] - {None}
+    leak_tt = train_stats["dims"] & test_stats["dims"] - {None}
+    leak_vt = val_stats["dims"]   & test_stats["dims"]  - {None}
+    print(f"leaky buckets (train∩val): {len(leak_tv)}")
+    print(f"leaky buckets (train∩test): {len(leak_tt)}")
+    print(f"leaky buckets (val∩test): {len(leak_vt)}")
+    if leak_tv or leak_tt or leak_vt:
+        ex = list(leak_tv or leak_tt or leak_vt)[:5]
+        print(f"examples: {ex}")
+
+def split_all_data_fast_ijson(
+    data_dir=DATA_DIR,
+    out_subdir=COMBINED_SUBDIR,
+    train_frac=0.8, val_frac=0.1, test_frac=0.1,
+    seed=SEED,
+    expected_total: int | None = None,
+):
+    """
+    SUPER-FAST splitter using ijson (C backend) for streaming parse of a giant JSON array.
+    Writes JSON arrays (not JSONL) so downstream stays unchanged.
+    """
+    import decimal
+    import ijson
+    try:
+        import orjson as _fastjson
+        def _default(o):
+            if isinstance(o, decimal.Decimal):
+                return float(o)
+            raise TypeError
+        _dumps = lambda o: _fastjson.dumps(
+            o, default=_default  # convert any lingering Decimal -> float
+        ).decode("utf-8")
+    except Exception:
+        _dumps = lambda o: json.dumps(
+            o,
+            default=lambda x: float(x) if isinstance(x, decimal.Decimal) else str(x)
+        )
+
+    out_dir = os.path.join(data_dir, out_subdir)
+    in_path = os.path.join(out_dir, "all_data.json")
+    train_p = os.path.join(out_dir, "train.json")
+    val_p   = os.path.join(out_dir, "val.json")
+    test_p  = os.path.join(out_dir, "test.json")
+
+    # Open outputs & headers
+    outs = {
+        "train.json": open(train_p, "w"),
+        "val.json":   open(val_p, "w"),
+        "test.json":  open(test_p, "w"),
+    }
+    for f in outs.values():
+        f.write("[\n")
+    first = {k: True for k in outs}
+
+    # Same split-by-dims-key logic you already use
+    def _dims_key(dims, nd=6):
+        if not dims: return None
+        try:
+            return tuple(round(float(x), nd) for x in dims)
+        except Exception:
+            return None
+
+    import hashlib, random
+    def pick_split_by_key(key_tuple):
+        if key_tuple is None:
+            r = random.Random(seed).random()
+            return "train.json" if r < train_frac else ("val.json" if r < train_frac + val_frac else "test.json")
+        h = hashlib.md5((str(key_tuple) + f"|{seed}").encode("utf-8")).digest()
+        u = int.from_bytes(h[:8], "big") / 2**64
+        return "train.json" if u < train_frac else ("val.json" if u < train_frac + val_frac else "test.json")
+
+    # Small stats & leakage via dims sets (tiny)
+    from collections import defaultdict
+    succ = defaultdict(int)
+    coll = defaultdict(int)
+    count = defaultdict(int)
+    dims_sets = defaultdict(set)
+
+    print(f"[split-fast] streaming {in_path} with ijson")
+    with open(in_path, "rb") as f:
+        it = ijson.items(f, "item", use_float=True)  # iterates each object in the top-level array
+        from tqdm import tqdm
+        if expected_total is not None:
+            it = tqdm(it, total=expected_total, unit="obj", smoothing=0.05, desc="Splitting (ijson)")
+        for obj in it:
+            key = _dims_key(obj.get("object_dimensions"))
+            tgt = pick_split_by_key(key)
+
+            # write
+            if not first[tgt]:
+                outs[tgt].write(",\n")
+            else:
+                first[tgt] = False
+            outs[tgt].write(_dumps(obj))
+
+            # stats
+            count[tgt] += 1
+            if obj.get("collision_label"):
+                coll[tgt] += 1
+            if obj.get("success_label") and not obj.get("collision_label"):
+                succ[tgt] += 1
+            dims_sets[tgt].add(key)
+
+    # Close arrays
+    for k, f in outs.items():
+        f.write("\n]")
+        f.close()
+    print("[split-fast] wrote train/val/test")
+
+    # Print concise summary
+    for name in ["train.json","val.json","test.json"]:
+        n = count[name]
+        s = succ[name]
+        c = coll[name]
+        sr = (s / n) if n else 0.0
+        cr = (c / n) if n else 0.0
+        print(f"{name}: n={n}  success_rate={sr:.3f}  collision_rate={cr:.3f}")
+
+    # Leakage by dims keys (tiny sets)
+    tv = (dims_sets["train.json"] & dims_sets["val.json"]) - {None}
+    tt = (dims_sets["train.json"] & dims_sets["test.json"]) - {None}
+    vt = (dims_sets["val.json"]   & dims_sets["test.json"]) - {None}
+    print(f"leaky buckets (train∩val): {len(tv)}")
+    print(f"leaky buckets (train∩test): {len(tt)}")
+    print(f"leaky buckets (val∩test): {len(vt)}")
+    if tv or tt or vt:
+        ex = list(tv or tt or vt)[:5]
+        print(f"examples: {ex}")
+# =============================== PIPELINE ===================================
+def run_pipeline():
+    # regroup_all_raw()
+    source_subdir = "raw_data"
+    source_glob = "object_*.json"
+    build_rich_pairs(source_subdir=source_subdir, source_glob=source_glob)
+    combine_processed_data()
+    split_all_data(expected_total=28880120)
+    # split_all_data_fast_ijson(expected_total=28880120)
 
 if __name__ == "__main__":
-    # import argparse
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument("--data-folder", type=str, default="/home/chris/Chris/placement_ws/src/data/box_simulation/v5/data_collection")
-    # parser.add_argument("--build", action="store_true", help="Build processed pairs from fixed_data")
-    # parser.add_argument("--combine", action="store_true", help="Combine processed files into one JSON array")
-    # parser.add_argument("--split", action="store_true", help="Split combined all_data.json into train/val/test")
-    # parser.add_argument("--group-cap", type=int, default=100)
-    # parser.add_argument("--balance", action="store_true", default=True)
-    # parser.add_argument("--source-subdir", type=str, default="fixed_data")
-    # parser.add_argument("--source-glob", type=str, default="reordered_object_*.json")
-    # args = parser.parse_args()
-
-    # # Default to --build if no action flags provided (helpful for IDE Run)
-    # if not (args.build or args.combine or args.split):
-    #     print("No action flags provided. Defaulting to --build.")
-    #     args.build = False
-    #     args.combine = False
-    #     args.split = True
-
-    # if args.build:
-    #     print("Building processed pairs from fixed_data")
-    #     completing_pairs_parallel(
-    #         data_folder=args.data_folder,
-    #         quotas={'SAME':0,'SMALL':1,'MEDIUM':2,'ADJACENT':3,'OPPOSITE':4},
-    #         balance_collision=args.balance,
-    #         group_cap=args.group_cap,
-    #         source_subdir=args.source_subdir,
-    #         source_glob=args.source_glob,
-    #         out_subdir="processed_data",
-    #         seed=42,
-    #     )
-    # if args.combine:
-    #     combine_processed_data(args.data_folder)
-    # if args.split:
-    #     split_all_data(args.data_folder)
-
-    import json, os
-    dd="/home/chris/Chris/placement_ws/src/data/box_simulation/v5/data_collection/combined_data"
-    for name in ["train.json","val.json","test.json"]:
-        d=json.load(open(os.path.join(dd,name)))
-        pos=sum(int(bool(s["success_label"]) and not bool(s["collision_label"])) for s in d)
-        n=len(d); print(name, {"n":n,"pos_rate": pos/n})
-
-    import json, os
-
-    dd = "/home/chris/Chris/placement_ws/src/data/box_simulation/v5/data_collection/combined_data"
-    seen = {}
-    for name in ["train.json","val.json","test.json"]:
-        for obj in json.load(open(os.path.join(dd,name))):
-            k = tuple(round(float(x),6) for x in obj["object_dimensions"])
-            seen.setdefault(k, set()).add(name)
-
-    leaky = {k:v for k,v in seen.items() if len(v)>1}
-    print("leaky buckets:", len(leaky))   # should be 0
-
-
+    run_pipeline()

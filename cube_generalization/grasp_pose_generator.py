@@ -418,6 +418,8 @@ def generate_grasp_poses_including_bottom(
             hand_position_world = p_world + R_tool @ np.array([0.0, 0.0, z_local], dtype=float)
             result['hand_position_world'] = hand_position_world.astype(float)
             result['hand_quaternion_wxyz'] = q_wxyz.astype(float)
+            result['axis_obj'] = np.asarray(meta['axis'], dtype=float)  # NEW
+            result['p_local']  = p_local.astype(float) 
 
         results.append(result)
     return results

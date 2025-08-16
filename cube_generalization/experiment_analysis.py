@@ -6,7 +6,7 @@ from sklearn.metrics import roc_auc_score, average_precision_score, balanced_acc
 # --- EDIT THESE TWO PATHS ONLY ---
 FILE_A = "/home/chris/Chris/placement_ws/src/data/box_simulation/v5/experiments/experiment_results_test_data.indexed.jsonl"     # your new model run
 FILE_B = "/home/chris/Chris/placement_ws/src/data/box_simulation/v5/experiments/experiment_results_v4.jsonl"     # your GPD model run (or leave None)
-FILE_C = "/home/chris/Chris/placement_ws/src/data/box_simulation/v5/experiments/experiment_results_test_data_zero_emb.jsonl"     # your new model run
+FILE_C = "/home/chris/Chris/placement_ws/src/data/box_simulation/v5/experiments/new_corners_only.jsonl"     # your new model run
 # ---------------------------------
 
 FILTER_IK_FAIL = True   # set False to include IK_fail rows

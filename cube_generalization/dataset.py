@@ -120,72 +120,6 @@ def _zscore_normalize(x, mean=None, std=None, eps=1e-8):
     normalized = (x - mean) / (std + eps)
     return normalized, mean, std
 
-class PlacementDataset(Dataset):
-    def __init__(self, data_path, processed_data_dir=None):
-        with open(data_path, 'r') as f:
-            data = json.load(f)
-        N = len(data)
-        
-        # Extract unique dimensions from processed_data directory if provided
-        if processed_data_dir is None:
-            # Default path based on data_path structure
-            base_dir = os.path.dirname(os.path.dirname(data_path))  # Go up from combined_data/
-            processed_data_dir = os.path.join(base_dir, "processed_data")
-        
-        self.unique_dimensions = get_unique_dimensions_from_files(processed_data_dir)
-        self.dim_to_index = {dim: i for i, dim in enumerate(self.unique_dimensions)}
-        
-        # Pre-allocate tensors
-        self.corners = torch.empty((N, 8, 3), dtype=torch.float32)
-        self.dimension_indices = torch.empty(N, dtype=torch.long)  # Map each sample to dimension index
-        self.grasp = torch.empty((N, 7), dtype=torch.float32)
-        self.init_pose = torch.empty((N, 7), dtype=torch.float32)
-        self.final_pose = torch.empty((N, 7), dtype=torch.float32)
-        self.label = torch.empty((N, 2), dtype=torch.float32)
-        
-        for i, sample in enumerate(data):
-            dx, dy, dz = sample['object_dimensions']
-            init_pose = np.array(sample['initial_object_pose'])
-            
-            # Generate ordered corners in local frame, then transform to world frame
-            corners_local_ordered = cuboid_corners_local_ordered(dx, dy, dz).astype(np.float32)
-            corners_world = transform_points_to_world(corners_local_ordered, init_pose)
-            self.corners[i] = torch.from_numpy(corners_world)
-            
-            # Map sample to its dimension index
-            dim_key = tuple(sample['object_dimensions'])
-            if dim_key in self.dim_to_index:
-                self.dimension_indices[i] = self.dim_to_index[dim_key]
-            else:
-                # Find closest match if exact match not found (for floating point precision issues)
-                closest_idx = 0
-                min_diff = float('inf')
-                for j, (udx, udy, udz) in enumerate(self.unique_dimensions):
-                    diff = abs(dx - udx) + abs(dy - udy) + abs(dz - udz)
-                    if diff < min_diff:
-                        min_diff = diff
-                        closest_idx = j
-                self.dimension_indices[i] = closest_idx
-            
-            self.grasp[i] = torch.tensor(sample['grasp_pose'], dtype=torch.float32)
-            self.init_pose[i] = torch.tensor(sample['initial_object_pose'], dtype=torch.float32)
-            self.final_pose[i] = torch.tensor(sample['final_object_pose'], dtype=torch.float32)
-            self.label[i, 0] = float(sample['success_label'])
-            self.label[i, 1] = float(sample['collision_label'])
-
-    def __len__(self):
-        return self.corners.size(0)
-
-    def __getitem__(self, idx):
-        return (
-            self.corners[idx],
-            self.dimension_indices[idx],  # Return dimension index instead of PCD
-            self.grasp[idx],
-            self.init_pose[idx],
-            self.final_pose[idx],
-            self.label[idx]
-        )
-
 class WorldFrameDataset(Dataset):
     def __init__(self, data_path, embeddings_file, normalization_stats=None, is_training=True, cache_dir: str = None):
         """
@@ -583,8 +517,52 @@ class WorldFrameCornersOnlyDataset(Dataset):
         return WorldFrameDataset._setup_storage(self, json_path, cache_dir)
 
     def _compute_stats_streamed(self, sample_cap: int = 200000):
-        # Reuse implementation from WorldFrameDataset
-        return WorldFrameDataset._compute_stats_streamed(self, sample_cap)
+        """Compute normalization stats:
+        - corners: init-local (flattened 1×24)
+        - positions/orientations: world (same as WorldFrameDataset)
+        """
+        N = self.N
+        take = int(min(sample_cap, N))
+        rng = np.random.RandomState(42)
+        idxs = rng.choice(N, size=take, replace=False).astype(np.int64)
+        idxs.sort()
+
+        # Positions across grasp, init, final (world)
+        gp = self.mm_grasp[idxs, :3]
+        ip = self.mm_init[idxs, :3]
+        fp = self.mm_final[idxs, :3]
+        all_pos = np.concatenate([gp, ip, fp], axis=0)
+        pos_mean = torch.from_numpy(all_pos.mean(axis=0, keepdims=True).astype(np.float32))
+        pos_std  = torch.from_numpy(all_pos.std(axis=0, keepdims=True).astype(np.float32)) + 1e-8
+
+        # Orientations (world) — z-score per component
+        go = torch.from_numpy(self.mm_grasp[idxs, 3:].astype(np.float32))
+        io = torch.from_numpy(self.mm_init[idxs, 3:].astype(np.float32))
+        fo = torch.from_numpy(self.mm_final[idxs, 3:].astype(np.float32))
+        _, grasp_ori_mean, grasp_ori_std = _zscore_normalize(go)
+        _, init_ori_mean,  init_ori_std  = _zscore_normalize(io)
+        _, final_ori_mean, final_ori_std = _zscore_normalize(fo)
+
+        # Corners (init-local), accumulate mean/std over flattened (1×24)
+        acc_sum = torch.zeros((1, 24), dtype=torch.float32)
+        acc_sq  = torch.zeros((1, 24), dtype=torch.float32)
+        for i in idxs:
+            dx, dy, dz = self.mm_dims[i]
+            corners_local = cuboid_corners_local_ordered(float(dx), float(dy), float(dz)).astype(np.float32)
+            cf = torch.from_numpy(corners_local.reshape(1, -1))  # (1,24)
+            acc_sum += cf
+            acc_sq  += cf * cf
+        m = float(len(idxs))
+        corners_mean = acc_sum / m
+        corners_std  = torch.sqrt(torch.clamp(acc_sq / m - corners_mean * corners_mean, min=1e-12)) + 1e-8
+
+        return {
+            'corners_mean': corners_mean, 'corners_std': corners_std,
+            'pos_mean': pos_mean, 'pos_std': pos_std,
+            'grasp_ori_mean': grasp_ori_mean, 'grasp_ori_std': grasp_ori_std,
+            'init_ori_mean': init_ori_mean,   'init_ori_std': init_ori_std,
+            'final_ori_mean': final_ori_mean, 'final_ori_std': final_ori_std,
+        }
 
     def __len__(self):
         return self.N
@@ -600,24 +578,16 @@ class WorldFrameCornersOnlyDataset(Dataset):
         # Compute corners on-the-fly for BOTH poses and concatenate (init || final)
         cx, cy, cz = float(dims[0]), float(dims[1]), float(dims[2])
         corners_local = cuboid_corners_local_ordered(cx, cy, cz).astype(np.float32)
-        corners_world_init = transform_points_to_world(corners_local, init.numpy()).astype(np.float32)
-        corners_world_final = transform_points_to_world(corners_local, final.numpy()).astype(np.float32)
-        corners_both = np.concatenate([corners_world_init.reshape(1, -1), corners_world_final.reshape(1, -1)], axis=1)
-        corners = torch.from_numpy(corners_both).to(torch.float32)
+        corners = torch.from_numpy(corners_local).to(torch.float32)
 
         # Apply normalization (reuse stats keys from WorldFrameDataset)
         ns = self.normalization_stats
-        # If stats were computed by WorldFrameDataset, we only have single-pose corners stats.
-        # Build per-sample z-score using those stats separately for each half.
-        if 'corners_mean' in ns and 'corners_std' in ns and ns['corners_mean'].numel() == 24:
-            c_mean = ns['corners_mean']
-            c_std  = ns['corners_std']
-            c_init = (corners[:, :24] - c_mean) / c_std
-            c_final = (corners[:, 24:] - c_mean) / c_std
-            corners = torch.cat([c_init, c_final], dim=1)
-        else:
-            # Fallback: compute mean/std from this sample shape (rare)
-            corners = (corners - corners.mean(dim=1, keepdim=True)) / (corners.std(dim=1, keepdim=True) + 1e-8)
+        # Z-score corners as a single 8×3 set using (1×24) stats
+        c_mean = ns['corners_mean']  # shape (1,24)
+        c_std  = ns['corners_std']   # shape (1,24)
+        corners = corners.reshape(1, 24)
+        corners = (corners - c_mean) / (c_std + 1e-8)
+        corners = corners.reshape(8, 3)
 
         # Positions (unified)
         pos_mean = ns['pos_mean']; pos_std = ns['pos_std']
@@ -635,7 +605,7 @@ class WorldFrameCornersOnlyDataset(Dataset):
 
         # Return: corners (init||final), poses, label
         return (
-            corners.reshape(16, 3),  # two faces of 8 corners each flattened then re-shaped is not semantic; keep as (16,3)
+            corners,  # two faces of 8 corners each flattened then re-shaped is not semantic; keep as (16,3)
             grasp_n,
             init_n,
             final_n,
@@ -645,3 +615,154 @@ class WorldFrameCornersOnlyDataset(Dataset):
     @property
     def label(self):
         return torch.from_numpy(self.mm_label)
+
+
+
+# --- ADD THIS SMALL CLASS TO dataset.py ---------------------------------------
+class FinalCornersHandDataset(Dataset):
+    """
+    Minimal dataset for Option-B:
+      X_corners: final pose corners in WORLD frame, flattened (24) and z-scored
+      X_hand:    [ t_loc (3, z-scored) , R_loc 6D (6, raw) ]  => 9 dims
+      y:         collision label at placement (float scalar)
+
+    Shapes returned:
+      corners_24   : torch.float32, (24,)
+      hand_9       : torch.float32, (9,)
+      label        : torch.float32, ()  # scalar 0/1
+
+    Normalization keys it saves/loads:
+      'final_corners_mean', 'final_corners_std', 'tloc_mean', 'tloc_std'
+    """
+    def __init__(self, data_path, normalization_stats=None, is_training=True, cache_dir: str = None,
+                 stats_sample_cap: int = 200_000):
+        self.data_path = data_path
+        # Reuse your existing memmap cache builder
+        WorldFrameDataset._setup_storage(self, data_path, cache_dir)
+        self.N = int(self._meta['num_items'])
+
+        # Memmaps (same as your other datasets)
+        self.mm_dims  = np.memmap(self._meta['dims_file'],  dtype=np.float32, mode='r', shape=(self.N, 3))
+        self.mm_grasp = np.memmap(self._meta['grasp_file'], dtype=np.float32, mode='r', shape=(self.N, 7))
+        self.mm_init  = np.memmap(self._meta['init_file'],  dtype=np.float32, mode='r', shape=(self.N, 7))
+        self.mm_final = np.memmap(self._meta['final_file'], dtype=np.float32, mode='r', shape=(self.N, 7))
+        self.mm_label = np.memmap(self._meta['label_file'], dtype=np.float32, mode='r', shape=(self.N, 2))
+
+        # Stats: compute once (training) or use provided (evaluation)
+        if is_training or normalization_stats is None:
+            self.normalization_stats = self._compute_stats(stats_sample_cap)
+            print("✅ FinalCornersHandDataset: computed stats for final corners + t_loc")
+        else:
+            self.normalization_stats = normalization_stats
+            print("✅ FinalCornersHandDataset: using provided stats")
+
+    def __len__(self):
+        return self.N
+
+    def __getitem__(self, idx):
+        # --- load rows (numpy -> torch) ---------------------------------------
+        dims  = self.mm_dims[idx]            # (3,)
+        grasp = self.mm_grasp[idx]           # (7,) [tx,ty,tz,qw,qx,qy,qz]
+        init  = self.mm_init[idx]            # (7,)
+        final = self.mm_final[idx]           # (7,)
+        y     = self.mm_label[idx, 1]        # collision label at placement
+
+        dx, dy, dz = float(dims[0]), float(dims[1]), float(dims[2])
+
+        # --- final corners in WORLD frame (24) --------------------------------
+        corners_local = cuboid_corners_local_ordered(dx, dy, dz).astype(np.float32)  # (8,3)
+        final_corners_world = transform_points_to_world(corners_local, final).reshape(-1)  # (24,)
+        # z-score with dataset stats
+        ns = self.normalization_stats
+        final_corners_24 = (torch.from_numpy(final_corners_world) - ns['final_corners_mean']) / (ns['final_corners_std'] + 1e-8)
+
+        # --- tiny hand-relative block wrt INIT pose ---------------------------
+        t_h = np.asarray(grasp[:3], np.float32)
+        t_o = np.asarray(init[:3],  np.float32)
+
+        # scipy uses [x,y,z,w]
+        R_h = R.from_quat([grasp[4], grasp[5], grasp[6], grasp[3]]).as_matrix().astype(np.float32)
+        R_o = R.from_quat([init[4],  init[5],  init[6],  init[3]]).as_matrix().astype(np.float32)
+
+        R_loc = (R_o.T @ R_h).astype(np.float32)            # (3,3)
+        t_loc = (R_o.T @ (t_h - t_o)).astype(np.float32)    # (3,)
+
+        # 6D rotation representation = first two columns of R_loc
+        r6 = R_loc[:, :2].reshape(-1)                       # (6,)
+
+        # z-score t_loc, leave r6 raw (already bounded)
+        t_loc_z = (torch.from_numpy(t_loc) - ns['tloc_mean']) / (ns['tloc_std'] + 1e-8)
+        r6_t    = torch.from_numpy(r6)
+
+        hand_9  = torch.cat([t_loc_z.to(torch.float32), r6_t.to(torch.float32)], dim=0)  # (9,)
+
+        # dims z-score (if stats exist), then append → aux12 (12,)
+        ns = self.normalization_stats
+        d_mean = ns.get('dims_mean', None)
+        d_std  = ns.get('dims_std',  None)
+        dims_f32 = torch.from_numpy(dims.astype(np.float32))
+        if d_mean is not None and d_std is not None:
+            dims_z = (dims_f32 - d_mean) / (d_std + 1e-8)
+        else:
+            dims_z = dims_f32
+
+        aux12 = torch.cat([hand_9, dims_z.to(torch.float32)], dim=0)  # (12,)
+
+        return final_corners_24.to(torch.float32), aux12, torch.tensor(float(y), dtype=torch.float32)
+
+    # ---- helpers --------------------------------------------------------------
+    def _compute_stats(self, sample_cap: int = 200_000):
+        N = self.N
+        take = int(min(sample_cap, N))
+        rng = np.random.RandomState(42)
+        idxs = rng.choice(N, size=take, replace=False).astype(np.int64)
+        idxs.sort()
+
+        # Accumulate mean/std for final-corners (24) and t_loc (3)
+        sum_c = np.zeros(24, dtype=np.float64)
+        sq_c  = np.zeros(24, dtype=np.float64)
+        sum_t = np.zeros(3,  dtype=np.float64)
+        sq_t  = np.zeros(3,  dtype=np.float64)
+        sum_d = np.zeros(3, dtype=np.float64)
+        sq_d  = np.zeros(3, dtype=np.float64)
+
+        for i in idxs:
+            dims  = self.mm_dims[i]
+            final = self.mm_final[i]
+            grasp = self.mm_grasp[i]
+            init  = self.mm_init[i]
+
+            dims = self.mm_dims[i]             # (3,)
+            sum_d += dims
+            sq_d  += dims * dims
+
+            dx, dy, dz = float(dims[0]), float(dims[1]), float(dims[2])
+
+            # corners(final, world)
+            cl = cuboid_corners_local_ordered(dx, dy, dz).astype(np.float32)
+            cw = transform_points_to_world(cl, final).reshape(-1)  # (24,)
+            sum_c += cw
+            sq_c  += cw * cw
+
+            # t_loc wrt init
+            t_h = np.asarray(grasp[:3], np.float32)
+            t_o = np.asarray(init[:3],  np.float32)
+            R_o = R.from_quat([init[4], init[5], init[6], init[3]]).as_matrix().astype(np.float32)
+            t_loc = (R_o.T @ (t_h - t_o)).astype(np.float32)  # (3,)
+            sum_t += t_loc
+            sq_t  += t_loc * t_loc
+
+        m = float(len(idxs))
+        c_mean = torch.from_numpy((sum_c / m).astype(np.float32))
+        c_std  = torch.from_numpy(np.sqrt(np.maximum(sq_c / m - (sum_c / m)**2, 1e-12)).astype(np.float32))
+        t_mean = torch.from_numpy((sum_t / m).astype(np.float32))
+        t_std  = torch.from_numpy(np.sqrt(np.maximum(sq_t / m - (sum_t / m)**2, 1e-12)).astype(np.float32))
+        d_mean = torch.from_numpy((sum_d / m).astype(np.float32))
+        d_std  = torch.from_numpy(np.sqrt(np.maximum(sq_d / m - (sum_d / m)**2, 1e-12)).astype(np.float32))
+
+        return {
+            'final_corners_mean': c_mean, 'final_corners_std': c_std,
+            'tloc_mean': t_mean, 'tloc_std': t_std,
+            'dims_mean': d_mean, 'dims_std': d_std,
+        }
+# --- END ADDITION -----

@@ -441,6 +441,60 @@ def get_reachable_prepose(grasp_pos, grasp_quat,
     # Nothing worked – return None so caller can handle gracefully
     return None, None
 
+
+def quat_wxyz_to_R(q):
+    w, x, y, z = map(float, q)
+    n = math.sqrt(w*w + x*x + y*y + z*z) or 1.0
+    w, x, y, z = w/n, x/n, y/n, z/n
+    xx, yy, zz = x*x, y*y, z*z
+    wx, wy, wz = w*x, w*y, w*z
+    xy, xz, yz = x*y, x*z, y*z
+    return np.array([
+        [1-2*(yy+zz), 2*(xy-wz),   2*(xz+wy)],
+        [2*(xy+wz),   1-2*(xx+zz), 2*(yz-wx)],
+        [2*(xz-wy),   2*(yz+wx),   1-2*(xx+yy)]
+    ], float)
+
+def corners_local(dx, dy, dz):
+    hx, hy, hz = dx/2.0, dy/2.0, dz/2.0
+    return np.array([[sx*hx, sy*hy, sz*hz]
+                     for sx in (-1,1) for sy in (-1,1) for sz in (-1,1)], float)
+
+def face_id_from_R(R_obj):
+    # Map world +Z alignment of object axes to IDs: 1: +Z(top), 2:+X, 3:-Z(bottom), 4:-X, 5:-Y, 6:+Y
+    axes = {
+        1: np.array([0,0, 1.0]),  # +Z (top)
+        2: np.array([1.0,0,0 ]),  # +X
+        3: np.array([0,0,-1.0]),  # -Z (bottom)
+        4: np.array([-1.0,0,0]),  # -X
+        5: np.array([0,-1.0,0]),  # -Y
+        6: np.array([0, 1.0,0])   # +Y
+    }
+    # Take object Z/X/-Z/-X/-Y/+Y normals in world, pick which aligns most with +Z_world
+    z_world = np.array([0,0,1.0])
+    cand = {
+        1: R_obj[:,2],   # +Z_obj in world
+        2: R_obj[:,0],   # +X_obj
+        3: -R_obj[:,2],  # -Z_obj
+        4: -R_obj[:,0],  # -X_obj
+        5: -R_obj[:,1],  # -Y_obj
+        6: R_obj[:,1],   # +Y_obj
+    }
+    best_k = max(cand, key=lambda k: float(np.dot(cand[k], z_world)))
+    return int(best_k)
+
+def hand_object_local_features(hand_pose_wxyz, obj_pose_wxyz):
+    t_h = np.array(hand_pose_wxyz[:3], float)
+    qh  = hand_pose_wxyz[3:7]
+    t_o = np.array(obj_pose_wxyz[:3], float)
+    qo  = obj_pose_wxyz[3:7]
+    R_h = quat_wxyz_to_R(qh)
+    R_o = quat_wxyz_to_R(qo)
+    t_loc = R_o.T @ (t_h - t_o)
+    R_loc = R_o.T @ R_h
+    R6 = np.concatenate([R_loc[:,0], R_loc[:,1]]).astype(float)  # 6D ortho rep
+    return t_loc.astype(float), R6
+
 if __name__ == "__main__":
     result = sample_dims()
     print(len(result))
