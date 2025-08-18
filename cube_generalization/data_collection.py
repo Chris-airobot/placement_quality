@@ -21,7 +21,7 @@ DISP_HOST_MEM   = 1<<14
 CONFIG = {
     "width": 1920,
     "height": 1080,
-    "headless": False,
+    "headless": True,
     "renderer": "RayTracedLighting",
     # "display_options": DISP_FPS|DISP_RESOLUTION|DISP_MESH|DISP_DEV_MEM|DISP_HOST_MEM,
 }
@@ -361,15 +361,15 @@ class DataCollection:
                 self.episode_count += 1
                 self.grasp_count = 0
                 current_object_finished = True
-                rows = self.data_dict[f"grasp_{obj_idx}"]
-                faces = {}
-                colls = succs = 0
-                for r in rows:
-                    extras = r[7]
-                    faces[extras["final_face_id"]] = faces.get(extras["final_face_id"], 0) + 1
-                    succs += int(bool(r[2]))
-                    colls += int(bool(r[3]))
-                print(f"[obj_idx={obj_idx}] count={len(rows)} face_counts={faces} success={succs} collision={colls}")
+                # rows = self.data_dict[f"grasp_{obj_idx}"]
+                # faces = {}
+                # colls = succs = 0
+                # for r in rows:
+                #     extras = r[7]
+                #     faces[extras["final_face_id"]] = faces.get(extras["final_face_id"], 0) + 1
+                #     succs += int(bool(r[2]))
+                #     colls += int(bool(r[3]))
+                # print(f"[obj_idx={obj_idx}] count={len(rows)} face_counts={faces} success={succs} collision={colls}")
 
         
         print("Simulation ended.")

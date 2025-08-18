@@ -16,7 +16,7 @@ from sklearn.metrics import roc_auc_score, average_precision_score, classificati
 
 
 
-def generate_experiment_predictions(corners_only: bool = True):
+def generate_experiment_predictions(predictions_file):
     """
     Generate model predictions for experiments and write predictions JSON.
 
@@ -56,7 +56,7 @@ def generate_experiment_predictions(corners_only: bool = True):
 
     # --- hardcoded paths (kept) ---
     experiment_file  = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiments.json"
-    predictions_file = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/test_data_predictions_corners_only.json"
+    predictions_file = predictions_file
 
     # --- load experiments ---
     with open(experiment_file, "r") as f:
@@ -69,9 +69,15 @@ def generate_experiment_predictions(corners_only: bool = True):
 
     # --- load model + stats ---
     from model import FinalCornersAuxModel
-    ckpt = torch.load("/home/chris/Chris/placement_ws/src/data/box_simulation/v4/data_collection/training/checkpoints/best.pt",
+    ckpt = torch.load("/home/chris/Chris/placement_ws/src/data/box_simulation/v6/data_collection/training/checkpoints/best_20250817_212957.pt",
                       map_location="cpu")
-    model = FinalCornersAuxModel().to(device)
+    model = FinalCornersAuxModel(aux_in=13,
+        corners_hidden=(128,64),
+        aux_hidden=(64,32),
+        head_hidden=128,
+        dropout_p=0.05,
+        use_film=True,
+        two_head=True,).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
 
@@ -247,15 +253,15 @@ def replace_scores_with_indices(
 
 if __name__ == '__main__':
 
-
-    # generate_experiment_predictions()
+    predictions_path = \
+        "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/test_data_recollect_corners_only.json"
+    generate_experiment_predictions(predictions_path)
      # Defaults to the paths you mentioned; adjust as needed
     experiment_results_path = \
         "/home/chris/Chris/placement_ws/src/data/box_simulation/v5/experiments/experiment_results_test_data.jsonl"
-    predictions_path = \
-        "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/test_data_predictions_corners_only.json"
+    
     output_path = \
-        "/home/chris/Chris/placement_ws/src/data/box_simulation/v5/experiments/new_corners_only.jsonl"
+        "/home/chris/Chris/placement_ws/src/data/box_simulation/v5/experiments/new_corners_only_recollect.jsonl"
 
     replace_scores_with_indices(
         experiment_results_path=experiment_results_path,

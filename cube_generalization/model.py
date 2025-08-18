@@ -367,52 +367,99 @@ def create_corners_only_fast_model(use_local_pose=False):
 class FinalCornersAuxModel(nn.Module):
     """
     Inputs:
-      corners_24 : [B, 24]  (final corners in world, z-scored)
-      aux12      : [B, 12]  (t_loc_z 3 + R_loc_6D 6 + dims_z 3)
-
+      corners_24 : [B, 24]  (z-scored)
+      aux_k      : [B, K]   (K = 12 (no arm), 13+ (arm extras like PHM))
     Output:
-      logits     : [B, 1]   (collision-at-placement logit)
+      logits     : [B, 1]   (BCEWithLogitsLoss on the sum of object+arm logits)
     """
     def __init__(self,
+                 aux_in=12,
                  corners_hidden=(128, 64),
                  aux_hidden=(64, 32),
                  head_hidden=128,
-                 dropout_p=0.05):
+                 dropout_p=0.05,
+                 use_film: bool = True,
+                 two_head: bool = True):
         super().__init__()
+        self.use_film = use_film
+        self.two_head = two_head
+        self.core_aux_dims = 12                     # first 12 are the "core" aux features
+        self.arm_alpha = 0.0                        # warm-up multiplier (set from trainer)
 
-        # Corners branch: 24 -> 128 -> 64
+        # Corners branch
         self.corners_net = nn.Sequential(
             nn.Linear(24, corners_hidden[0]),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
             nn.Dropout(dropout_p),
             nn.Linear(corners_hidden[0], corners_hidden[1]),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
         )
+        self.c_ln = nn.LayerNorm(corners_hidden[1])
 
-        # Aux branch (t_loc_z + R6 + dims_z): 12 -> 64 -> 32
-        self.aux_net = nn.Sequential(
-            nn.Linear(12, aux_hidden[0]),
-            nn.ReLU(inplace=True),
+        # Aux-core branch (only first 12 dims feed FiLM + object head context)
+        self.aux_core_net = nn.Sequential(
+            nn.Linear(self.core_aux_dims, aux_hidden[0]),
+            nn.GELU(),
             nn.Dropout(dropout_p),
             nn.Linear(aux_hidden[0], aux_hidden[1]),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
         )
+        self.a_ln = nn.LayerNorm(aux_hidden[1])
 
-        # Fusion head: (64 + 32) -> 128 -> 1
-        self.head = nn.Sequential(
+        # FiLM from aux_core -> gate corners
+        if self.use_film:
+            self.film = nn.Linear(aux_hidden[1], 2 * corners_hidden[1])
+
+        # Object/contact head (corners(+FiLM) + aux_core)
+        self.obj_head = nn.Sequential(
             nn.Linear(corners_hidden[1] + aux_hidden[1], head_hidden),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
             nn.Dropout(dropout_p),
             nn.Linear(head_hidden, 1),
         )
 
-    def forward(self, corners_24: torch.Tensor, aux12: torch.Tensor) -> torch.Tensor:
-        # sanity checks help catch shape bugs early
-        assert corners_24.dim() == 2 and corners_24.size(-1) == 24, f"corners_24 shape {corners_24.shape}"
-        assert aux12.dim() == 2 and aux12.size(-1) == 12, f"aux12 shape {aux12.shape}"
+        # Arm/environment head (uses only the "arm extras": dims > 12), small by design
+        arm_in = max(0, aux_in - self.core_aux_dims)
+        if self.two_head and arm_in > 0:
+            self.arm_head = nn.Sequential(
+                nn.Linear(arm_in, 16),
+                nn.GELU(),
+                nn.Dropout(dropout_p),
+                nn.Linear(16, 1),
+            )
+        else:
+            self.arm_head = None  # no arm extras provided
+
+    @torch.no_grad()
+    def set_arm_alpha(self, alpha: float):
+        self.arm_alpha = float(max(0.0, min(1.0, alpha)))
+
+    def forward(self, corners_24: torch.Tensor, aux_k: torch.Tensor) -> torch.Tensor:
+        assert corners_24.dim()==2 and corners_24.size(-1)==24, f"{corners_24.shape=}"
+        assert aux_k.dim()==2, f"{aux_k.shape=}"
+        B, K = aux_k.shape
+        assert K >= self.core_aux_dims, f"expected at least {self.core_aux_dims} aux dims, got {K}"
+
+        aux_core = aux_k[:, :self.core_aux_dims]
+        arm_extras = aux_k[:, self.core_aux_dims:] if K > self.core_aux_dims else None
 
         c_feat = self.corners_net(corners_24)
-        a_feat = self.aux_net(aux12)
-        fused  = torch.cat([c_feat, a_feat], dim=-1)
-        logits = self.head(fused)              # [B, 1]
+        c_feat = self.c_ln(c_feat)
+
+        a_feat = self.aux_core_net(aux_core)
+        a_feat = self.a_ln(a_feat)
+
+        if self.use_film:
+            gb = self.film(a_feat)                  # [B, 2*C]
+            gamma, beta = torch.chunk(gb, 2, dim=-1)
+            gamma = torch.tanh(gamma)               # stabilize scale
+            c_feat = c_feat * (1.0 + gamma) + beta  # FiLM
+
+        obj_logit = self.obj_head(torch.cat([c_feat, a_feat], dim=-1))  # [B,1]
+
+        if self.two_head and (self.arm_head is not None) and (arm_extras is not None) and arm_extras.shape[1] > 0:
+            arm_logit = self.arm_head(arm_extras)                        # [B,1]
+            logits = obj_logit + self.arm_alpha * arm_logit
+        else:
+            logits = obj_logit
         return logits

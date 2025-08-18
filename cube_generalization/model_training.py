@@ -183,7 +183,7 @@ def main(dir_path: str,
     epochs     = 150
     lr         = 5e-4
     weight_decay = 1e-4
-    use_balanced_sampler = True
+    use_balanced_sampler = False
     patience  = 20  # early stop on val ROC-AUC
 
     print("Loading datasets with feature normalization...")
@@ -191,11 +191,22 @@ def main(dir_path: str,
         train_path,
         normalization_stats=None,   # compute from train
         is_training=True,
+        # NEW:
+        include_phm=True,
+        hand_down_axis="z",
+        hand_down_sign=-1,
+        h_palm_down=0.018,
+        z_ped=0.1,   
     )
     val_dataset = FinalCornersHandDataset(
         val_path,
         normalization_stats=train_dataset.normalization_stats,  # reuse train stats
         is_training=False,
+        include_phm=True,
+        hand_down_axis="z",
+        hand_down_sign=-1,
+        h_palm_down=0.018,
+        z_ped=0.1,
     )
     print(f"  → {len(train_dataset)} train samples")
     print(f"  → {len(val_dataset)} val samples")
@@ -216,6 +227,10 @@ def main(dir_path: str,
         shuffle_flag = False
         print(f"Using WeightedRandomSampler (neg={n_neg}, pos={n_pos})")
     else:
+        labels_mm = train_dataset.mm_label[:, 1]  # 0/1 collision label
+        n_pos = int((labels_mm == 1).sum())
+        n_neg = int((labels_mm == 0).sum())
+        print(f"Using plain shuffling (neg={n_neg}, pos={n_pos})")
         sampler = None
         shuffle_flag = True
         print("Using plain shuffling")
@@ -242,10 +257,20 @@ def main(dir_path: str,
     )
 
     # ---- model / opt / loss ----
-    model = FinalCornersAuxModel().to(device)
+    model = FinalCornersAuxModel(
+        aux_in=13,
+        corners_hidden=(128,64),
+        aux_hidden=(64,32),
+        head_hidden=128,
+        dropout_p=0.05,
+        use_film=True,
+        two_head=True,
+    ).to(device)
+    
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     # BCE; sampler handles class balance. (If you disable sampler, consider pos_weight.)
-    criterion = nn.BCEWithLogitsLoss()
+    pos_weight = torch.tensor([n_neg / max(1, n_pos)], device=device, dtype=torch.float32)
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     scaler = GradScaler(enabled=torch.cuda.is_available())
 
     # ---- schedulers (simple cosine) ----
@@ -258,14 +283,17 @@ def main(dir_path: str,
 
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = logs_dir / f"training_{run_id}.log"
+    ckpt_name = f"best_{run_id}.pt"
     with open(log_path, "w") as logf:
         logf.write(f"run: {run_id}\n")
         logf.write(f"data: {dir_path}\n")
         logf.write(f"batch_size={batch_size} epochs={epochs} lr={lr} wd={weight_decay}\n")
         logf.write(f"use_balanced_sampler={use_balanced_sampler}\n")
         logf.flush()
-
+        ARM_WARMUP_EPOCHS = 5
         for epoch in range(epochs):
+            arm_alpha = min(1.0, (epoch + 1) / ARM_WARMUP_EPOCHS)
+            model.set_arm_alpha(arm_alpha)
             # TRAIN
             train_stats, _, _ = run_epoch(model, train_loader, optimizer, scaler, criterion, device, train=True)
             # VAL
@@ -306,7 +334,7 @@ def main(dir_path: str,
                     },
                     "model_type": "FinalCornersAuxModel",
                 }
-                torch.save(ckpt, ckpt_dir / "best.pt")
+                torch.save(ckpt, ckpt_dir / ckpt_name)
             else:
                 early_stop_counter += 1
 
@@ -316,7 +344,7 @@ def main(dir_path: str,
 
     print(f"✅ Training complete. Best ROC-AUC={best_val_auc:.4f} @ epoch {best_epoch+1}")
     print(f"📝 Log:   {str(log_path)}")
-    print(f"💾 Checkpoint saved to: {str(ckpt_dir / 'best.pt')}")
+    print(f"💾 Checkpoint saved to: {str(ckpt_dir / ckpt_name)}")
 
 
 # -------------------------------
@@ -331,6 +359,6 @@ if __name__ == "__main__":
     ap.add_argument("--corners-only", action="store_true")
     args = ap.parse_args()
     args.corners_only = True
-    args.data = "/home/chris/Chris/placement_ws/src/data/box_simulation/v4/data_collection"
+    args.data = "/home/chris/Chris/placement_ws/src/data/box_simulation/v6/data_collection"
 
     main(args.data, args.embeddings, args.corners_only)

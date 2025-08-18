@@ -55,6 +55,29 @@ def ensure_cuboid(world: World, prim_path: str, size_xyz: np.ndarray, color_rgb=
     world.scene.add(obj)
     return obj
 
+def face_id_from_R(R_obj):
+    # Map world +Z alignment of object axes to IDs: 1: +Z(top), 2:+X, 3:-Z(bottom), 4:-X, 5:-Y, 6:+Y
+    axes = {
+        1: np.array([0,0, 1.0]),  # +Z (top)
+        2: np.array([1.0,0,0 ]),  # +X
+        3: np.array([0,0,-1.0]),  # -Z (bottom)
+        4: np.array([-1.0,0,0]),  # -X
+        5: np.array([0,-1.0,0]),  # -Y
+        6: np.array([0, 1.0,0])   # +Y
+    }
+    # Take object Z/X/-Z/-X/-Y/+Y normals in world, pick which aligns most with +Z_world
+    z_world = np.array([0,0,1.0])
+    cand = {
+        1: R_obj[:,2],   # +Z_obj in world
+        2: R_obj[:,0],   # +X_obj
+        3: -R_obj[:,2],  # -Z_obj
+        4: -R_obj[:,0],  # -X_obj
+        5: -R_obj[:,1],  # -Y_obj
+        6: R_obj[:,1],   # +Y_obj
+    }
+    best_k = max(cand, key=lambda k: float(np.dot(cand[k], z_world)))
+    return int(best_k)
+
 
 def main():
     rng = np.random.default_rng(77)
@@ -96,7 +119,7 @@ def main():
                 }.get(face, (0.8, 0.8, 0.8))
                 cube_fin = ensure_cuboid(world, prim_path, dims_xyz, color_rgb=face_color)
                 cube_fin.set_world_pose(np.array(pos_f), np.array(quat_f))
-                print(f"Final pose {init_idx:02d}_{face_safe}_{spin_idx:02d} at {pos_f} {quat_f}")
+                print(f"Final pose {init_idx:02d}_{face_safe}_{spin_idx:02d} at {pos_f} {quat_f}, it's face ID is {face_id_from_R(R_fin)}")
 
     try:
         while simulation_app.is_running():

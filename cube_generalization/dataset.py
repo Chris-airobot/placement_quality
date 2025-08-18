@@ -632,10 +632,18 @@ class FinalCornersHandDataset(Dataset):
       label        : torch.float32, ()  # scalar 0/1
 
     Normalization keys it saves/loads:
-      'final_corners_mean', 'final_corners_std', 'tloc_mean', 'tloc_std'
+            'final_corners_mean', 'final_corners_std',
+                'tloc_mean', 'tloc_std',
+                'dims_mean', 'dims_std'
     """
     def __init__(self, data_path, normalization_stats=None, is_training=True, cache_dir: str = None,
-                 stats_sample_cap: int = 200_000):
+             stats_sample_cap: int = 200_000,
+             # NEW: PHM config
+             include_phm: bool = True,
+             hand_down_axis: str = "z",
+             hand_down_sign: int = -1,
+             h_palm_down: float = 0.018,
+             z_ped: float = 0.1):
         self.data_path = data_path
         # Reuse your existing memmap cache builder
         WorldFrameDataset._setup_storage(self, data_path, cache_dir)
@@ -649,12 +657,22 @@ class FinalCornersHandDataset(Dataset):
         self.mm_label = np.memmap(self._meta['label_file'], dtype=np.float32, mode='r', shape=(self.N, 2))
 
         # Stats: compute once (training) or use provided (evaluation)
-        if is_training or normalization_stats is None:
+        if is_training:
             self.normalization_stats = self._compute_stats(stats_sample_cap)
             print("✅ FinalCornersHandDataset: computed stats for final corners + t_loc")
         else:
+            assert normalization_stats is not None, (
+                "Pass train normalization_stats to val/test to avoid drift."
+            )
             self.normalization_stats = normalization_stats
             print("✅ FinalCornersHandDataset: using provided stats")
+
+        # NEW: store PHM config
+        self.include_phm = bool(include_phm)
+        self._hd_axis_idx = {"x":0, "y":1, "z":2}[hand_down_axis.lower()]
+        self._hd_sign = float(hand_down_sign)  # +1 or -1
+        self._h_palm_down = float(h_palm_down)
+        self._z_ped = float(z_ped)
 
     def __len__(self):
         return self.N
@@ -696,7 +714,7 @@ class FinalCornersHandDataset(Dataset):
 
         hand_9  = torch.cat([t_loc_z.to(torch.float32), r6_t.to(torch.float32)], dim=0)  # (9,)
 
-        # dims z-score (if stats exist), then append → aux12 (12,)
+        # dims z-score (if stats exist), then append → aux (,)
         ns = self.normalization_stats
         d_mean = ns.get('dims_mean', None)
         d_std  = ns.get('dims_std',  None)
@@ -706,9 +724,25 @@ class FinalCornersHandDataset(Dataset):
         else:
             dims_z = dims_f32
 
-        aux12 = torch.cat([hand_9, dims_z.to(torch.float32)], dim=0)  # (12,)
+        aux = torch.cat([hand_9, dims_z.to(torch.float32)], dim=0)  # (12,)
 
-        return final_corners_24.to(torch.float32), aux12, torch.tensor(float(y), dtype=torch.float32)
+        # --- NEW: PHM (Palm Height Margin) at place ---
+        if self.include_phm:
+            # Final orientation (Isaac [qw,qx,qy,qz] -> SciPy [x,y,z,w])
+            R_f = R.from_quat([final[4], final[5], final[6], final[3]]).as_matrix().astype(np.float32)
+            # Hand at place
+            R_place = (R_f @ R_loc).astype(np.float32)
+            t_place = (final[:3] + (R_f @ t_loc)).astype(np.float32)  # palm/wrist origin proxy
+            # Hand "down" in world
+            e = np.zeros(3, dtype=np.float32); e[self._hd_axis_idx] = self._hd_sign
+            a_world = R_place @ e
+            a_world = a_world / (np.linalg.norm(a_world) + 1e-9)
+            # Palm bottom point; PHM = z(bottom) - z_ped
+            palm_bottom_z = float(t_place[2] + a_world[2] * self._h_palm_down)
+            phm = palm_bottom_z - self._z_ped
+            aux = torch.cat([aux, torch.tensor([phm], dtype=torch.float32)], dim=0)  # (13,)
+
+        return final_corners_24.to(torch.float32), aux, torch.tensor(float(y), dtype=torch.float32)
 
     # ---- helpers --------------------------------------------------------------
     def _compute_stats(self, sample_cap: int = 200_000):
