@@ -495,6 +495,70 @@ def hand_object_local_features(hand_pose_wxyz, obj_pose_wxyz):
     R6 = np.concatenate([R_loc[:,0], R_loc[:,1]]).astype(float)  # 6D ortho rep
     return t_loc.astype(float), R6
 
+
+# --- helpers to classify init→final relation and bucket name ---
+def _face_id_from_Rw(Rw: np.ndarray) -> int:
+    """
+    Map which object axis points most along world +Z.
+    IDs: 1:+Z(top), 2:+X, 3:-Z(bottom), 4:-X, 5:-Y, 6:+Y   (your convention)
+    """
+    z_world = np.array([0., 0., 1.], dtype=np.float32)
+    cand = {
+        1: Rw[:, 2],        # +Z_obj
+        2: Rw[:, 0],        # +X_obj
+        3: -Rw[:, 2],       # -Z_obj
+        4: -Rw[:, 0],       # -X_obj
+        5: -Rw[:, 1],       # -Y_obj
+        6: Rw[:, 1],        # +Y_obj
+    }
+    best_k = max(cand, key=lambda k: float(np.dot(cand[k], z_world)))
+    return int(best_k)
+
+def classify_bucket(initial_q_wxyz, final_q_wxyz, small_deg=7.0, med_deg=45.0) -> str:
+    """
+    Returns one of: 'SMALL', 'MEDIUM', 'ADJACENT', 'OPPOSITE'
+    - If faces are same: angle <= small_deg -> SMALL, else -> MEDIUM
+    - Else if opposite faces -> OPPOSITE, else -> ADJACENT
+    """
+    Ri = R.from_quat([initial_q_wxyz[1], initial_q_wxyz[2], initial_q_wxyz[3], initial_q_wxyz[0]]).as_matrix()
+    Rf = R.from_quat([final_q_wxyz[1],   final_q_wxyz[2],   final_q_wxyz[3],   final_q_wxyz[0]]).as_matrix()
+    fi = _face_id_from_Rw(Ri)
+    ff = _face_id_from_Rw(Rf)
+
+    if fi == ff:
+        # relative rotation magnitude (should be yaw-only for stable faces)
+        ang_deg = np.rad2deg((R.from_matrix(Ri.T @ Rf)).magnitude())
+        return "SMALL" if ang_deg <= small_deg else "MEDIUM"
+    # opposite mapping: 1↔3, 2↔4, 5↔6
+    if (fi == 1 and ff == 3) or (fi == 3 and ff == 1) or \
+       (fi == 2 and ff == 4) or (fi == 4 and ff == 2) or \
+       (fi == 5 and ff == 6) or (fi == 6 and ff == 5):
+        return "OPPOSITE"
+    return "ADJACENT"
+
+import os
+def last_completed_index(path: str) -> int:
+    """
+    Reads the JSONL results file and returns the last 'index' seen.
+    If file doesn't exist or is empty, returns -1.
+    """
+    if not os.path.exists(path):
+        return -1
+    last = -1
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if "index" in obj:
+                    last = max(last, int(obj["index"]))
+            except Exception:
+                # ignore malformed line; you said your writer is correct
+                pass
+    return last
+
 if __name__ == "__main__":
     result = sample_dims()
     print(len(result))

@@ -66,9 +66,16 @@ class Simulator:
             self.test_data: list[dict] = json.load(f)
 
         self.current_data = None
-        self.data_index = 240
+        self.data_index = 0
         # 0, 97, 146
         self.results = []
+
+        # logging parameters
+        self.cur_bucket = None
+        self.cur_dims = None
+        self.cur_grasp_pose_fixed = None
+        self.cur_init_pose = None
+        self.cur_final_pose = None
 
 
 
@@ -94,7 +101,6 @@ class Simulator:
 
         self.current_data = self.test_data[self.data_index]
 
-        self.data_index += 1
 
         self.setup_contact_sensors()  # New method using random_collection.py style
         self.setup_collision_detection()

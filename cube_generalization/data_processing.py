@@ -1,374 +1,413 @@
-# Minimal data pipeline: regroup -> rich pairs -> combine -> split
-# Lean & deterministic. Uses your new extras if present.
-
-import os, json, glob, math, re, hashlib, random
-from collections import Counter
+import os, glob, json, math, random, hashlib
+from collections import Counter, defaultdict
+from typing import Dict, List, Tuple
 from tqdm import tqdm
 import numpy as np
-from scipy.spatial.transform import Rotation as R
 
-# ---------------------------- CONFIG (edit these) ----------------------------
-DATA_DIR          = "/home/chris/Chris/placement_ws/src/data/box_simulation/v6/data_collection"
-RAW_SUBDIR        = "raw_data"          # your raw files
-FIXED_SUBDIR      = "fixed_data"        # regrouped (grasp-first)
-PROCESSED_SUBDIR  = "processed_data"    # paired samples
-COMBINED_SUBDIR   = "combined_data"     # all_data.json + splits
-RAW_GLOB          = "object_*.json"
+# ============================ CONFIG ============================
 
-# Robust regroup rounding (5 is safe)
-REGROUP_ROUND_DECIMALS = 5
+DATA_DIR           = "/home/chris/Chris/placement_ws/src/data/box_simulation/v6/data_collection"
+RAW_SUBDIR         = "raw_data"
+PROCESSED_SUBDIR   = "processed_data"
+COMBINED_SUBDIR    = "combined_data"
 
-# Bucket quotas & prior target (robot ≈ 0.371 success / 0.629 collision)
-QUOTAS = {'SAME':0, 'SMALL':2, 'MEDIUM':3, 'ADJACENT':3, 'OPPOSITE':2}
-TARGET_SUCCESS_RATE = 0.37   # fraction of non-collision placements per bucket
-GROUP_CAP = 300              # max pairs per grasp group (per grasp key)
-SEED = 42
-# ----------------------------------------------------------------------------
+SOURCE_GLOB        = "object_*.json"
 
+SEED               = 12345
+rng_py             = random.Random(SEED)
+rng_np             = np.random.default_rng(SEED)
 
-# ========================== 1) REGROUP (robust) ==============================
-def _quat_wxyz_to_R(q):
-    w,x,y,z = [float(v) for v in q]
-    n = math.sqrt(w*w+x*x+y*y+z*z) or 1.0
-    w,x,y,z = w/n, x/n, y/n, z/n
-    xx,yy,zz = x*x, y*y, z*z
-    wx,wy,wz = w*x, w*y, w*z
-    xy,xz,yz = x*y, x*z, y*z
-    return np.array([
-        [1-2*(yy+zz), 2*(xy-wz),   2*(xz+wy)],
-        [2*(xy+wz),   1-2*(xx+zz), 2*(yz-wx)],
-        [2*(xz-wy),   2*(yz+wx),   1-2*(xx+yy)],
-    ], float)
+# Per-pick quotas (exact per bucket)
+QUOTAS = {
+    "SMALL":    2,   # same face, Δθ ≤ THRESH_SMALL_DEG
+    "MEDIUM":   3,   # same face, Δθ > THRESH_SMALL_DEG
+    "ADJACENT": 3,   # different face (not opposite)
+    "OPPOSITE": 2,   # opposite face
+}
+GROUP_CAP          = sum(QUOTAS.values())   # total per clean pick
+THRESH_SMALL_DEG   = 45.0
 
-def _local_signature_from_extras(item, nd=5):
-    """Use recorded extras when present; fall back to quat math otherwise."""
-    # item layout: [hand_pose7, obj_pose7, success, collision, ..., extras_dict?]
-    extras = item[7] if (len(item) > 7 and isinstance(item[7], dict)) else None
-    if extras and ('t_loc' in extras) and ('R_loc6' in extras):
-        t = tuple(np.round(np.asarray(extras['t_loc'], float), nd))
-        r = tuple(np.round(np.asarray(extras['R_loc6'], float).reshape(-1), nd))
-        return (t, r)
+# Target positive rate per bucket (pos = success==1 & collision==0)
+TARGET_SUCCESS_RATE = 0.37
 
-    # fallback: derive R_loc/t_loc from poses
-    hand, obj = item[0], item[1]
-    t_h = np.array(hand[:3], float)
-    R_h = _quat_wxyz_to_R(hand[3:7])
-    t_o = np.array(obj[:3], float)
-    R_o = _quat_wxyz_to_R(obj[3:7])
-    R_loc = R_o.T @ R_h
-    t_loc = R_o.T @ (t_h - t_o)
-    t_sig = tuple(np.round(t_loc, nd))
-    R_sig = tuple(np.round(R_loc.flatten(), nd))
-    return (t_sig, R_sig)
+# Split fractions
+TRAIN_FRAC, VAL_FRAC, TEST_FRAC = 0.80, 0.10, 0.10
 
-def regroup_raw_to_grasp_first(raw_path, out_path, nd=REGROUP_ROUND_DECIMALS):
-    """INPUT (raw): pose-buckets. OUTPUT: grasp-first via pose-invariant signatures."""
-    with open(raw_path, "r") as f:
-        data = json.load(f)
+# Opposite mapping (from your face-id rule)
+_OPPOSITE = {1:3, 3:1, 2:4, 4:2, 5:6, 6:5}
 
-    pose_keys = sorted([k for k in data if k.startswith("grasp_")],
-                       key=lambda k: int(k.split("_")[1]))
-    if not pose_keys:
-        with open(out_path, "w") as f:
-            json.dump({}, f)
-        return {"num_grasps": 0, "num_poses": 0, "out": out_path}
+# Signature rounding for regrouping (grasp identity)
+T_ROUND = 1e-4
+R_ROUND = 1e-4
 
-    per_pose_maps = []
-    for k in pose_keys:
-        m = {}
-        for itm in data[k]:
-            sig = _local_signature_from_extras(itm, nd=nd)
-            m[sig] = itm  # last wins if duplicates
-        per_pose_maps.append(m)
+# ============================ HELPERS ============================
 
-    common = set(per_pose_maps[0].keys())
-    for m in per_pose_maps[1:]:
-        common &= set(m.keys())
-    common = sorted(list(common))  # deterministic order
+def ensure_dir(path: str):
+    if not os.path.exists(path):
+        os.makedirs(path)
 
-    out = {f"grasp_{g}": [m[sig] for m in per_pose_maps] for g, sig in enumerate(common)}
-    with open(out_path, "w") as f:
-        json.dump(out, f)
-    return {"num_grasps": len(common), "num_poses": len(pose_keys), "out": out_path}
+def quat_normalize(qs: np.ndarray) -> np.ndarray:
+    n = np.linalg.norm(qs, axis=1, keepdims=True)
+    return qs / n
 
-def regroup_all_raw(data_dir=DATA_DIR, nd=REGROUP_ROUND_DECIMALS):
-    raw_dir = os.path.join(data_dir, RAW_SUBDIR)
-    fix_dir = os.path.join(data_dir, FIXED_SUBDIR)
-    os.makedirs(fix_dir, exist_ok=True)
-    files = sorted(glob.glob(os.path.join(raw_dir, RAW_GLOB)))
-    print(f"[regroup] {len(files)} raw files in {raw_dir}")
-    for p in tqdm(files, desc="regrouping"):
-        out = os.path.join(fix_dir, f"repacked_{os.path.basename(p)}")
-        info = regroup_raw_to_grasp_first(p, out, nd=nd)
-        print(f"  {os.path.basename(out)}: grasps={info['num_grasps']} poses={info['num_poses']}")
+def quat_angle_deg_abs(qi: np.ndarray, qs: np.ndarray) -> np.ndarray:
+    dots = np.abs(qs @ qi)              # |dot| for double-cover
+    dots = np.clip(dots, 0.0, 1.0)
+    return np.degrees(2.0 * np.arccos(dots))
 
+def grasp_signature(t_loc: List[float], R_loc6: List[float]) -> Tuple:
+    # Round to form a stable hashable key
+    return tuple([round(float(x), 4) for x in (t_loc + R_loc6)])
 
-# ====================== 2) BUILD RICH (paired) ===============================
-_ADJ = {1:{2,4,5,6}, 2:{1,3,5,6}, 3:{2,4,5,6}, 4:{1,3,5,6}, 5:{1,2,3,4}, 6:{1,2,3,4}}
+def sample_bucket_indices(idx_list: np.ndarray,
+                          succ_arr: np.ndarray,
+                          coll_arr: np.ndarray,
+                          k: int,
+                          target_pos_rate: float) -> np.ndarray:
+    if k <= 0 or idx_list.size == 0:
+        return np.empty((0,), dtype=np.int64)
 
-def _face_id_from_extras_or_q(item):
-    extras = item[7] if (len(item) > 7 and isinstance(item[7], dict)) else None
-    if extras and ('final_face_id' in extras):
-        return int(extras['final_face_id'])
-    # fallback from quaternion
-    w,x,y,z = item[1][3:7]
-    rot = R.from_quat([x,y,z,w])  # [x,y,z,w]
-    up = np.array([0,0,1], float)
-    faces = {1:[0,0,1], 2:[1,0,0], 3:[0,0,-1], 4:[-1,0,0], 5:[0,-1,0], 6:[0,1,0]}
-    return max(faces, key=lambda k: np.dot(rot.apply(faces[k]), up))
+    # Partition within idx_list
+    pos_mask = (succ_arr[idx_list] == 1) & (coll_arr[idx_list] == 0)
+    col_mask = (coll_arr[idx_list] == 1)
+    # neutrals: fail & no-collision
+    neu_mask = (~pos_mask) & (~col_mask)
 
-def _bucket(meta_i, meta_j):
-    fi, fj = meta_i['face'], meta_j['face']
-    if fi == fj:
-        dq = R.from_quat(meta_j['quat']) * R.from_quat(meta_i['quat']).inv()
-        ang = dq.magnitude() * 180.0 / math.pi
-        if ang < 1:   return 'SAME'
-        if ang <= 30: return 'SMALL'
-        if ang <= 90: return 'MEDIUM'
-        return 'MEDIUM'
-    return 'ADJACENT' if fj in _ADJ[fi] else 'OPPOSITE'
+    pos_idx = idx_list[pos_mask]
+    col_idx = idx_list[col_mask]
+    neu_idx = idx_list[neu_mask]
 
-def _sample_bucket(indices, k, cases, rng, target_success_rate=TARGET_SUCCESS_RATE):
-    if not indices or k <= 0:
-        return []
-    pos = [j for j in indices if not cases[j][3]]  # no collision at placement
-    neg = [j for j in indices if cases[j][3]]
-    k_pos = min(len(pos), int(round(k * target_success_rate)))
-    k_neg = min(len(neg), max(0, k - k_pos))
-    chosen = []
-    if pos:
-        chosen.extend(pos if len(pos) <= k_pos else rng.sample(pos, k_pos))
-    if neg:
-        chosen.extend(neg if len(neg) <= k_neg else rng.sample(neg, k_neg))
-    rem = k - len(chosen)
-    if rem > 0:
-        pool = [j for j in indices if j not in chosen]
-        if pool:
-            chosen.extend(pool if len(pool) <= rem else rng.sample(pool, rem))
-    return chosen
+    n_pos = int(round(k * target_pos_rate))
+    if n_pos > pos_idx.size:
+        n_pos = pos_idx.size
 
-def build_rich_pairs(data_dir=DATA_DIR,
-                     source_subdir=FIXED_SUBDIR,
-                     source_glob="repacked_object_*.json",
-                     out_subdir=PROCESSED_SUBDIR,
-                     quotas=QUOTAS,
-                     group_cap=GROUP_CAP,
-                     seed=SEED):
-    rng = random.Random(seed)
+    take = []
+    if n_pos > 0:
+        take.append(rng_np.choice(pos_idx, size=n_pos, replace=False))
+
+    n_neg = k - n_pos
+    if n_neg > 0:
+        use_col = min(col_idx.size, n_neg)
+        if use_col > 0:
+            take.append(rng_np.choice(col_idx, size=use_col, replace=False))
+        rem = n_neg - use_col
+        if rem > 0 and neu_idx.size > 0:
+            take.append(rng_np.choice(neu_idx, size=min(rem, neu_idx.size), replace=False))
+
+    if len(take) == 0:
+        return np.empty((0,), dtype=np.int64)
+
+    out = np.concatenate(take, axis=0)
+    if out.size < k:
+        pool = np.setdiff1d(idx_list, out, assume_unique=False)
+        if pool.size > 0:
+            fill = rng_np.choice(pool, size=min(k - out.size, pool.size), replace=False)
+            out = np.concatenate([out, fill], axis=0)
+    return out
+
+# ============================ 1) BUILD RICH PAIRS ============================
+
+def build_rich_pairs(data_dir: str = DATA_DIR,
+                     source_subdir: str = RAW_SUBDIR,
+                     source_glob: str = SOURCE_GLOB,
+                     out_subdir: str = PROCESSED_SUBDIR,
+                     quotas: Dict[str,int] = QUOTAS,
+                     group_cap: int = GROUP_CAP,
+                     small_thresh_deg: float = THRESH_SMALL_DEG,
+                     target_succ: float = TARGET_SUCCESS_RATE):
+
     src_dir = os.path.join(data_dir, source_subdir)
     out_dir = os.path.join(data_dir, out_subdir)
-    os.makedirs(out_dir, exist_ok=True)
-
-    global_counts = Counter()
-    total_pairs = 0
-    succ_pairs  = 0
+    ensure_dir(out_dir)
 
     files = sorted(glob.glob(os.path.join(src_dir, source_glob)))
-    print(f"[pairs] {len(files)} fixed files in {src_dir}")
-    for path in tqdm(files, desc="building pairs"):
-        with open(path, "r") as f:
-            grasp_first = json.load(f)
+    print(f"[pairs] {len(files)} raw files in {src_dir}")
 
-        out = {k: [] for k in ("grasp_poses","initial_object_poses",
-                               "final_object_poses","success_labels",
-                               "collision_labels")}
+    global_counts = Counter()
+    total_pairs, succ_pairs = 0, 0
 
-        for _, cases in grasp_first.items():
-            # meta per pose index for this grasp
-            meta = []
-            for c in cases:
-                qw,qx,qy,qz = c[1][3:7]
-                meta.append({'quat':[qx,qy,qz,qw], 'face': _face_id_from_extras_or_q(c)})
+    for path in tqdm(files, desc="building pairs (per-grasp)"):
+        # ---- Load & flatten raw rows ----
+        raw = json.load(open(path, "r"))
+        rows = []
+        for _, lst in raw.items():
+            rows.extend(lst)  # concat orientation batches
 
-            # clean pick (success & no collision & no extra flags if present)
-            clean_idx = []
-            for i,c in enumerate(cases):
-                ok = (bool(c[2]) and not bool(c[3]))
-                if len(c) > 6:
-                    ok = ok and (not bool(c[4])) and (not bool(c[5])) and (not bool(c[6]))
-                if ok:
-                    clean_idx.append(i)
+        N = len(rows)
+        # vector packs
+        faces = np.empty(N, dtype=np.int16)
+        quats = np.empty((N,4), dtype=np.float64)  # object orientation (wxyz)
+        succ  = np.empty(N, dtype=np.int8)
+        coll  = np.empty(N, dtype=np.int8)
+        ghit  = np.empty(N, dtype=np.int8)
+        phit  = np.empty(N, dtype=np.int8)
+        bhit  = np.empty(N, dtype=np.int8)
+        poses = [None]*N
+        dims3 = np.empty((N,3), dtype=np.float32)
+        tloc  = np.empty((N,3), dtype=np.float32)
+        rloc6 = np.empty((N,6), dtype=np.float32)
+        sigs  = [None]*N
 
-            produced = 0
-            for i in clean_idx:
-                if group_cap is not None and produced >= group_cap:
-                    break
-                # buckets
-                buckets = {b: [] for b in quotas.keys()}
-                for j in range(len(cases)):
-                    b = _bucket(meta[i], meta[j])
-                    if b in buckets:
-                        buckets[b].append(j)
-                # choose placements
-                chosen = []
-                leftovers = 0
-                for b, k in quotas.items():
-                    take = _sample_bucket(buckets.get(b, []), k, cases, rng, TARGET_SUCCESS_RATE)
-                    chosen.extend(take)
-                    leftovers += max(0, k - len(take))
-                if leftovers > 0:
-                    pool = []
-                    for b, lst in buckets.items():
-                        pool.extend([j for j in lst if j not in chosen])
-                    if pool:
-                        chosen.extend(pool if len(pool) <= leftovers else rng.sample(pool, leftovers))
-                # ensure at least one ADJACENT & OPPOSITE if available
-                for must in ("ADJACENT","OPPOSITE"):
-                    lst = buckets.get(must, [])
-                    if lst and not any(j in lst for j in chosen):
-                        pool = [j for j in lst if j not in chosen]
-                        if pool:
-                            chosen.append(rng.sample(pool, 1)[0])
-                # cap
-                if group_cap is not None and len(chosen) > (group_cap - produced):
-                    chosen = rng.sample(chosen, group_cap - produced)
+        for j, c in enumerate(rows):
+            qw,qx,qy,qz  = c[1][3:7]
+            quats[j,:]   = (qw,qx,qy,qz)
+            succ[j]      = 1 if c[2] else 0
+            coll[j]      = 1 if c[3] else 0
+            ghit[j]      = 1 if c[4] else 0
+            phit[j]      = 1 if c[5] else 0
+            bhit[j]      = 1 if c[6] else 0
+            poses[j]     = c[1]
+            ex           = c[7]
+            faces[j]     = int(ex["final_face_id"])
+            dims3[j,:]   = np.asarray(ex["dims"], dtype=np.float32)
+            tloc[j,:]    = np.asarray(ex["t_loc"], dtype=np.float32)
+            rloc6[j,:]   = np.asarray(ex["R_loc6"], dtype=np.float32)
+            sigs[j]      = grasp_signature(ex["t_loc"], ex["R_loc6"])
 
-                pick = cases[i]
-                for j in chosen:
-                    place = cases[j]
-                    out['grasp_poses'].append(pick[0])
-                    out['initial_object_poses'].append(pick[1])
-                    out['final_object_poses'].append(place[1])
-                    out['success_labels'].append(float(place[2]))
-                    out['collision_labels'].append(float(place[3]))
-                    # stats
-                    b = _bucket(meta[i], meta[j])
-                    global_counts[b] += 1
-                    total_pairs += 1
-                    if not place[3]:
-                        succ_pairs += 1
-                produced += len(chosen)
+        quats = quat_normalize(quats)
 
-        # save this file
-        fname = f"processed_{os.path.basename(path)}"
-        with open(os.path.join(out_dir, fname), "w") as f:
-            json.dump(out, f)
-        col = sum(1 for x in out['collision_labels'] if x > 0.5)
-        n = len(out['collision_labels'])
-        print(f"  {fname}: {n} pairs | collision rate {col/n:.3f}")
+        # ---- Regroup by grasp signature ----
+        groups = defaultdict(list)
+        for idx, key in enumerate(sigs):
+            groups[key].append(idx)
+
+        out = {k: [] for k in (
+            "t_loc_list", "R_loc6_list",
+            "final_object_poses", "final_face_ids",
+            "success_labels", "collision_labels",
+            "object_dimensions"
+        )}
+
+        # ---- Process each grasp-group ----
+        for _, g_idx in groups.items():
+            g_idx = np.asarray(g_idx, dtype=np.int64)
+
+            # Clean picks: success & no-collision & no hits
+            clean_mask = (succ[g_idx]==1) & (coll[g_idx]==0) & (ghit[g_idx]==0) & (phit[g_idx]==0) & (bhit[g_idx]==0)
+            clean_ids  = g_idx[clean_mask]
+            if clean_ids.size == 0:
+                continue
+
+            # Pre-pull arrays for speed
+            g_faces = faces[g_idx]
+            g_quats = quats[g_idx]
+            g_succ  = succ[g_idx]
+            g_coll  = coll[g_idx]
+            g_poses = [poses[int(k)] for k in g_idx]
+            g_dims  = dims3[g_idx]
+            g_tloc  = tloc[g_idx]
+            g_rloc6 = rloc6[g_idx]
+
+            # Map from local index to global index
+            # but we only need local arrays for masks/sampling
+            for li, gi in enumerate(clean_ids):
+                # local index of pick inside group
+                pick_local = int(np.where(g_idx == gi)[0][0])
+
+                fi = int(g_faces[pick_local])
+
+                # candidate mask (exclude self)
+                all_local = np.arange(g_idx.size, dtype=np.int64)
+                not_self  = all_local != pick_local
+
+                # relation masks
+                same_mask = (g_faces == fi)
+                opp_mask  = (g_faces == _OPPOSITE[fi])
+                adj_mask  = (~same_mask) & (~opp_mask)
+
+                # SAME split by angle around pick quaternion
+                ang_deg = quat_angle_deg_abs(g_quats[pick_local], g_quats)
+                small_mask  = same_mask & (ang_deg <= small_thresh_deg)
+                medium_mask = same_mask & (~small_mask)
+
+                bucket_lists = {
+                    "SMALL":    all_local[small_mask & not_self],
+                    "MEDIUM":   all_local[medium_mask & not_self],
+                    "ADJACENT": all_local[adj_mask   & not_self],
+                    "OPPOSITE": all_local[opp_mask   & not_self],
+                }
+
+                # base allocations = min(quota, availability)
+                alloc = {b: min(QUOTAS[b], bucket_lists[b].size) for b in QUOTAS}
+                k_sum = sum(alloc.values())
+
+                # try to fill to GROUP_CAP by redistributing shortage across non-empty buckets
+                if k_sum < group_cap:
+                    need = group_cap - k_sum
+                    # simple round-robin over buckets with spare
+                    order = ("SMALL","MEDIUM","ADJACENT","OPPOSITE")
+                    while need > 0:
+                        progressed = False
+                        for b in order:
+                            spare = bucket_lists[b].size - alloc[b]
+                            if spare > 0:
+                                alloc[b] += 1
+                                need -= 1
+                                progressed = True
+                                if need == 0:
+                                    break
+                        if not progressed:
+                            break  # no more spare anywhere
+
+                # per-bucket sampling with per-bucket success mix
+                pick_t = g_tloc[pick_local].tolist()
+                pick_R = g_rloc6[pick_local].tolist()
+
+                for b in ("SMALL","MEDIUM","ADJACENT","OPPOSITE"):
+                    k = alloc[b]
+                    if k <= 0:
+                        continue
+                    idx_bucket = bucket_lists[b]
+                    if idx_bucket.size == 0:
+                        continue
+
+                    chosen_loc = sample_bucket_indices(idx_bucket, g_succ, g_coll, k, target_succ)
+                    if chosen_loc.size == 0:
+                        continue
+
+                    for j_local in chosen_loc.tolist():
+                        pose_j = g_poses[j_local]
+                        dims_j = g_dims[j_local].tolist()
+                        face_j = int(g_faces[j_local])
+                        s_j    = float(g_succ[j_local])
+                        c_j    = float(g_coll[j_local])
+
+                        out["t_loc_list"].append(pick_t)
+                        out["R_loc6_list"].append(pick_R)
+                        out["final_object_poses"].append(pose_j)
+                        out["final_face_ids"].append(face_j)
+                        out["object_dimensions"].append(dims_j)
+                        out["success_labels"].append(s_j)
+                        out["collision_labels"].append(c_j)
+
+                        global_counts[b] += 1
+                        total_pairs += 1
+                        if (s_j > 0.5) and (c_j < 0.5):
+                            succ_pairs += 1
+
+        # ---- Save processed file ----
+        out_path = os.path.join(out_dir, f"processed_{os.path.basename(path)}")
+        json.dump(out, open(out_path, "w"))
+
+        n    = len(out["success_labels"])
+        col  = sum(1 for x in out["collision_labels"] if x > 0.5)
+        succ_rate = sum(1 for s,c in zip(out["success_labels"], out["collision_labels"]) if (s > 0.5 and c < 0.5)) / max(1,n)
+        print(f"  {os.path.basename(out_path)}: {n} pairs | success {succ_rate:.3f} | collision {col/max(1,n):.3f}")
 
     if total_pairs > 0:
         succ_rate = succ_pairs / total_pairs
         print(f"[pairs] GLOBAL: pairs={total_pairs}  success_rate={succ_rate:.3f}  (target={TARGET_SUCCESS_RATE:.3f})")
-        for k in ('SAME','SMALL','MEDIUM','ADJACENT','OPPOSITE'):
+        for k in ("SMALL","MEDIUM","ADJACENT","OPPOSITE"):
             n = global_counts[k]
             print(f"        {k:<8} {n:>8}  {n/total_pairs:6.3f}")
 
+# ============================ 2) COMBINE (streamed) ============================
 
-# ==================== 3) COMBINE (streaming writer) =========================
-def combine_processed_data(data_dir=DATA_DIR,
-                           processed_subdir=PROCESSED_SUBDIR,
-                           out_subdir=COMBINED_SUBDIR):
+def combine_processed_data(data_dir: str = DATA_DIR,
+                           processed_subdir: str = PROCESSED_SUBDIR,
+                           out_subdir: str = COMBINED_SUBDIR):
     proc_dir = os.path.join(data_dir, processed_subdir)
     out_dir  = os.path.join(data_dir, out_subdir)
-    os.makedirs(out_dir, exist_ok=True)
-    files = sorted(glob.glob(os.path.join(proc_dir, "processed_*.json")))
+    ensure_dir(out_dir)
+
+    files = sorted(glob.glob(os.path.join(proc_dir, "processed_object_*.json")))
     out_path = os.path.join(out_dir, "all_data.json")
-    total_written = 0
-    succ_total = 0
-    dims_fail = 0
 
     print(f"[combine] writing {out_path} from {len(files)} files")
+    total_written, succ_total = 0, 0
+
     with open(out_path, "w") as out_f:
         out_f.write("[\n")
         first = True
         for fp in tqdm(files, desc="combining"):
-            m = re.search(r'object_([0-9.]+)_([0-9.]+)_([0-9.]+)\.json', fp)
-            if m is None:
-                dims_fail += 1
-            dims = [float(m.group(1)), float(m.group(2)), float(m.group(3))] if m else [None,None,None]
             d = json.load(open(fp, "r"))
-            n = len(d["grasp_poses"])
+            n = len(d["t_loc_list"])
             for i in range(n):
                 obj = {
-                    "grasp_pose": d["grasp_poses"][i],
-                    "initial_object_pose": d["initial_object_poses"][i],
+                    "t_loc": d["t_loc_list"][i],
+                    "R_loc6": d["R_loc6_list"][i],
                     "final_object_pose": d["final_object_poses"][i],
+                    "final_face_id": int(d["final_face_ids"][i]),
+                    "object_dimensions": d["object_dimensions"][i],
                     "success_label": d["success_labels"][i],
-                    "collision_label": d["collision_labels"][i],
-                    "object_dimensions": dims
+                    "collision_label": d["collision_labels"][i]
                 }
-                if not first: out_f.write(",\n")
-                first = False
+                if not first:
+                    out_f.write(",\n")
+                else:
+                    first = False
                 out_f.write(json.dumps(obj))
                 total_written += 1
-                if obj["success_label"] and not obj["collision_label"]:
+                if (obj["success_label"] > 0.5) and (obj["collision_label"] < 0.5):
                     succ_total += 1
         out_f.write("\n]")
-    print("[combine] done")
+
     if total_written > 0:
-        print(f"[combine] total={total_written}  success_rate={succ_total/total_written:.3f}  dims_parse_fail={dims_fail}")
+        print(f"[combine] total={total_written}  success_rate={succ_total/total_written:.3f}")
 
+# ============================ 3) SPLIT (hash-by-dims; streamed) ============================
 
-# ====================== 4) SPLIT (no leakage) ===============================
-def _dims_key(dims, nd=6):
-    if not dims: return None
-    try:
-        return tuple(round(float(x), nd) for x in dims)
-    except Exception:
-        return None
+def _dims_key(d: List[float], nd: int = 6) -> Tuple[float,float,float]:
+    return (round(float(d[0]), nd), round(float(d[1]), nd), round(float(d[2]), nd))
 
-def _stream_array(path):
-    """Stream a JSON array of objects from disk without loading into memory."""
+def _stream_array(path: str):
     with open(path, "r") as f:
-        in_array = False
-        buf = []
-        depth = 0
+        in_arr = False
         in_str = False
         esc = False
-
+        depth = 0
+        buf = []
         while True:
-            chunk = f.read(65536)
-            if not chunk:
-                break
-            for c in chunk:
-                if not in_array:
-                    if c == '[':
-                        in_array = True
-                    continue
-                if c == ']' and not in_str and depth == 0:
-                    return
-                if c == '"' and not esc:
-                    in_str = not in_str
-                esc = (c == '\\' and in_str and not esc)
-                if in_str:
-                    if depth > 0:
-                        buf.append(c)
-                    continue
-                if c == '{':
-                    if depth == 0:
-                        buf = ['{']; depth = 1
-                    else:
-                        buf.append('{'); depth += 1
-                elif c == '}':
-                    if depth > 0:
-                        buf.append('}'); depth -= 1
-                        if depth == 0:
-                            yield json.loads(''.join(buf)); buf = []
-                else:
-                    if depth > 0:
-                        buf.append(c)
+            ch = f.read(1)
+            if not ch: break
+            if in_str:
+                buf.append(ch)
+                if esc: esc = False
+                elif ch == '\\': esc = True
+                elif ch == '"': in_str = False
+                continue
+            if ch == '"':
+                in_str = True; buf.append(ch); continue
+            if ch == '[':
+                in_arr = True; continue
+            if not in_arr: continue
+            if ch == '{':
+                buf = ['{']; depth = 1
+                while True:
+                    c = f.read(1)
+                    if not c: break
+                    buf.append(c)
+                    if c == '"':
+                        in_str = not in_str
+                    elif not in_str:
+                        if c == '{': depth += 1
+                        elif c == '}':
+                            depth -= 1
+                            if depth == 0:
+                                yield json.loads(''.join(buf))
+                                break
+                continue
+            if ch == ']':
+                return
 
-def _count_split_file(path):
+def _count_split_file(path: str):
     n = succ = coll = 0
     dims_set = set()
     for obj in _stream_array(path):
         n += 1
-        if obj.get("collision_label"):
-            coll += 1
-        if obj.get("success_label") and not obj.get("collision_label"):
-            succ += 1
-        dims_set.add(_dims_key(obj.get("object_dimensions")))
-    succ_rate = (succ / n) if n else 0.0
-    coll_rate = (coll / n) if n else 0.0
+        if obj["collision_label"] > 0.5: coll += 1
+        if (obj["success_label"] > 0.5) and (obj["collision_label"] < 0.5): succ += 1
+        dims_set.add(_dims_key(obj["object_dimensions"]))
+    succ_rate = succ / n if n else 0.0
+    coll_rate = coll / n if n else 0.0
     return {"n": n, "succ_rate": succ_rate, "coll_rate": coll_rate, "dims": dims_set}
 
-def split_all_data(data_dir=DATA_DIR,
-                   out_subdir=COMBINED_SUBDIR,
-                   train_frac=0.8, val_frac=0.1, test_frac=0.1, seed=SEED,
-                   expected_total: int | None = None,
-                   show_progress: bool = True):
-    assert abs(train_frac + val_frac + test_frac - 1.0) < 1e-6
+def split_all_data(data_dir: str = DATA_DIR,
+                   out_subdir: str = COMBINED_SUBDIR,
+                   train_frac: float = TRAIN_FRAC,
+                   val_frac: float = VAL_FRAC,
+                   test_frac: float = TEST_FRAC,
+                   seed: int = SEED):
     out_dir = os.path.join(data_dir, out_subdir)
     in_path = os.path.join(out_dir, "all_data.json")
     train_p = os.path.join(out_dir, "train.json")
@@ -378,25 +417,17 @@ def split_all_data(data_dir=DATA_DIR,
     outs = {"train.json": open(train_p, "w"),
             "val.json":   open(val_p, "w"),
             "test.json":  open(test_p, "w")}
-    for f in outs.values():
-        f.write("[\n")
+    for f in outs.values(): f.write("[\n")
     first = {k: True for k in outs}
 
     def pick_split_by_key(key_tuple):
-        if key_tuple is None:
-            r = random.Random(seed).random()
-            return "train.json" if r < train_frac else ("val.json" if r < train_frac + val_frac else "test.json")
         h = hashlib.md5((str(key_tuple) + f"|{seed}").encode("utf-8")).digest()
         u = int.from_bytes(h[:8], "big") / 2**64
         return "train.json" if u < train_frac else ("val.json" if u < train_frac + val_frac else "test.json")
 
     print(f"[split] streaming {in_path}")
-    iterator = _stream_array(in_path)
-    if show_progress and expected_total is not None:
-        iterator = tqdm(iterator, total=expected_total, unit="obj", desc="Splitting", smoothing=0.05)
-
-    for obj in iterator:
-        key = _dims_key(obj.get("object_dimensions"))
+    for obj in tqdm(_stream_array(in_path), desc="Splitting"):
+        key = _dims_key(obj["object_dimensions"])
         tgt = pick_split_by_key(key)
         if not first[tgt]:
             outs[tgt].write(",\n")
@@ -416,19 +447,46 @@ def split_all_data(data_dir=DATA_DIR,
     print(f"val.json:   n={val_stats['n']}    success_rate={val_stats['succ_rate']:.3f}    collision_rate={val_stats['coll_rate']:.3f}")
     print(f"test.json:  n={test_stats['n']}   success_rate={test_stats['succ_rate']:.3f}   collision_rate={test_stats['coll_rate']:.3f}")
 
-    leak_tv = train_stats["dims"] & val_stats["dims"] - {None}
-    leak_tt = train_stats["dims"] & test_stats["dims"] - {None}
-    leak_vt = val_stats["dims"]   & test_stats["dims"]  - {None}
-    print(f"leaky buckets (train∩val): {len(leak_tv)}")
-    print(f"leaky buckets (train∩test): {len(leak_tt)}")
-    print(f"leaky buckets (val∩test): {len(leak_vt)}")
+    leak_tv = len((train_stats["dims"] & val_stats["dims"]))
+    leak_tt = len((train_stats["dims"] & test_stats["dims"]))
+    leak_vt = len((val_stats["dims"]   & test_stats["dims"]))
+    print(f"leaky buckets (train∩val): {leak_tv}")
+    print(f"leaky buckets (train∩test): {leak_tt}")
+    print(f"leaky buckets (val∩test): {leak_vt}")
 
-# =============================== PIPELINE ===================================
-def run_pipeline():
-    regroup_all_raw()
-    build_rich_pairs()
-    combine_processed_data()
-    split_all_data()  # no expected_total needed for your 243-file pilot
+# ============================ 4) SANITY (light) ============================
+
+def run_sanity_checks(data_dir: str = DATA_DIR,
+                      processed_subdir: str = PROCESSED_SUBDIR,
+                      combined_subdir: str = COMBINED_SUBDIR,
+                      sample_files: int = 3,
+                      sample_rows: int = 200):
+    proc_dir = os.path.join(data_dir, processed_subdir)
+    files = sorted(glob.glob(os.path.join(proc_dir, "processed_object_*.json")))[:sample_files]
+    print(f"[sanity] checking {len(files)} processed files")
+    for fp in files:
+        d = json.load(open(fp, "r"))
+        n = len(d["t_loc_list"])
+        assert n == len(d["R_loc6_list"]) == len(d["final_object_poses"]) == len(d["final_face_ids"]) == len(d["object_dimensions"]) == len(d["success_labels"]) == len(d["collision_labels"])
+        print(f"  {os.path.basename(fp)}: n={n}")
+
+    comb_dir = os.path.join(data_dir, combined_subdir)
+    all_path = os.path.join(comb_dir, "all_data.json")
+    print(f"[sanity] sampling {sample_rows} rows from {all_path}")
+
+    pos = 0; n = 0; col = 0
+    for obj in _stream_array(all_path):
+        if obj["collision_label"] > 0.5: col += 1
+        if (obj["success_label"] > 0.5) and (obj["collision_label"] < 0.5): pos += 1
+        n += 1
+        if n >= sample_rows: break
+    print(f"[sanity] first {n} rows → success {pos/n:.3f} | collision {col/n:.3f}")
+    print("[sanity] OK")
+
+# ============================ main ============================
 
 if __name__ == "__main__":
-    run_pipeline()
+    build_rich_pairs()
+    combine_processed_data()
+    split_all_data()
+    run_sanity_checks()
