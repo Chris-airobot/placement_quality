@@ -52,6 +52,8 @@ simulation_app.update()
 base_dir = "/home/chris/Chris/placement_ws/src/data/box_simulation/v6"
 time_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 DIR_PATH = os.path.join(base_dir, f"experiments")
+# Sidecar resume pointer (crash-safe)
+RESUME_FILE = os.path.join(DIR_PATH, "resume.txt")
 # Define color codes
 GREEN = '\033[92m'  # Green text
 RED = '\033[91m'    # Red text
@@ -168,6 +170,7 @@ def robot_action(env: Simulator, grasp_pose, current_state, next_state):
                         "outcome":           "collision_limit",
                         "had_collision":     True,
                         "collision_counter": int(env.collision_counter),
+                        "collision_stage":   current_state,
 
                         "bucket":            env.cur_bucket,
 
@@ -206,7 +209,7 @@ def robot_action(env: Simulator, grasp_pose, current_state, next_state):
         env.state = "FAIL"
         env.results.append({
             "index":             int(env.data_index),
-            "outcome":           "ik_fail",
+            "outcome":           f"motion_ik_fail_{current_state.lower()}",
             "had_collision":     bool(env.collision_counter > 0),
             "collision_counter": int(env.collision_counter),
 
@@ -229,13 +232,42 @@ def write_results_to_file(results, file_path, mode='a'):
         for r in results:
             f.write(json.dumps(r) + "\n")
 
+def read_resume_index(path: str):
+    """Read resume index from text file, return int or None if missing/invalid."""
+    try:
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                data = f.read().strip()
+                if data:
+                    return int(data)
+    except Exception:
+        pass
+    return None
+
+def write_resume_index(path: str, next_index: int):
+    """Atomically write next index to resume file."""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w") as f:
+            f.write(str(int(next_index)))
+        os.replace(tmp_path, path)
+    except Exception:
+        # Best-effort; do not crash the experiment on resume write issues
+        pass
+
 def main(use_physics):
     env = Simulator(use_physics=use_physics)
 
     results_file = os.path.join(DIR_PATH, "experiment_results.jsonl")
-    # Compute resume point once
-    start_idx = last_completed_index(results_file) + 1
-    env.data_index = int(max(0, start_idx))
+    # STRICT: require resume.txt; do not fall back
+    resume_idx = read_resume_index(RESUME_FILE)
+    if resume_idx is None or resume_idx < 0:
+        raise SystemExit(f"[Experiment] ERROR: Cannot read a valid index from {RESUME_FILE}. "
+                         "Ensure resume.txt exists and contains a non-negative integer.")
+    env.data_index = int(resume_idx)
+
+    print(f"[Experiment] Starting run at index {env.data_index} (from {RESUME_FILE})")
 
     env.start()
         
@@ -253,6 +285,10 @@ def main(use_physics):
             continue
         
         if env.state == "SETUP":
+            # Trace which sample is being processed
+            print(f"[Experiment] SETUP for index {env.data_index}")
+            # Crash-safe: as soon as we begin processing index i, set resume to i+1
+            write_resume_index(RESUME_FILE, int(env.data_index) + 1)
             pose_key = tuple(env.current_data["initial_object_pose"].tolist()) if isinstance(env.current_data["initial_object_pose"], np.ndarray) else tuple(env.current_data["initial_object_pose"])
             object_position = env.current_data["initial_object_pose"][:3]
             object_orientation = env.current_data["initial_object_pose"][3:]
@@ -272,7 +308,7 @@ def main(use_physics):
                 # Record a reachable-pregrasp IK failure and move to next case (no 'skip' wording)
                 env.results.append({
                     "index":             int(env.data_index),
-                    "outcome":           "ik_fail_pregrasp",
+                    "outcome":           "pregrasp_ik_fail",
                     "had_collision":     False,
                     "collision_counter": int(env.collision_counter),
                     "bucket":            classify_bucket(env.current_data["initial_object_pose"][3:], 
@@ -389,6 +425,7 @@ def main(use_physics):
                             "outcome":           "collision_limit",
                             "had_collision":     bool(env.collision_counter > 0),
                             "collision_counter": int(env.collision_counter),
+                            "collision_stage":   "END",
                             "bucket":            env.cur_bucket,
                             "dims":              list(map(float, env.cur_dims)),
                             "grasp_pose":        list(map(float, env.cur_grasp_pose_fixed)),
@@ -429,7 +466,7 @@ def main(use_physics):
                 env.state = "FAIL"
                 env.results.append({
                     "index":             int(env.data_index),
-                    "outcome":           "ik_fail",
+                    "outcome":           "motion_ik_fail_end",
                     "had_collision":     bool(env.collision_counter > 0),
                     "collision_counter": int(env.collision_counter),
                     "bucket":            env.cur_bucket,
@@ -479,7 +516,7 @@ def main(use_physics):
                         # reset state & counter for a retry, this is the failure case
                         env.results.append({
                             "index":             int(env.data_index),
-                            "outcome":           "ik_fail",
+                            "outcome":           "grasp_fail",
                             "had_collision":     bool(env.collision_counter > 0),
                             "collision_counter": int(env.collision_counter),
 

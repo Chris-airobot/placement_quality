@@ -13,7 +13,7 @@ class FinalCornersAuxModel(nn.Module):
       logits     : [B, 1]   (BCEWithLogitsLoss against collision label y∈{0,1})
     """
     def __init__(self,
-                 aux_in=18,
+                 aux_in=12,
                  corners_hidden=(128, 64),
                  aux_hidden=(64, 32),
                  head_hidden=128,
@@ -115,6 +115,6 @@ if __name__ == "__main__":
     train_ds = FinalCornersHandDataset(mem_dir, normalization_stats=stats, is_training=True)
     val_ds   = FinalCornersHandDataset(mem_dir, normalization_stats=stats, is_training=False)
 
-    model = FinalCornersAuxModel(aux_in=18, use_film=True, two_head=False)
+    model = FinalCornersAuxModel(aux_in=12, use_film=True, two_head=False)
     print(model)
 # loss: BCEWithLogitsLoss (positive = collision)

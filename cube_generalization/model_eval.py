@@ -16,21 +16,21 @@ from sklearn.metrics import roc_auc_score, average_precision_score, classificati
 
 
 
-def generate_experiment_predictions(predictions_file):
+def predict_and_analyze(trials: list[dict], ckpt_path: str, device: str | torch.device = "auto", threshold: float | None = None) -> dict:
     """
-    Generate model predictions for experiments and write predictions JSON.
+    Minimal evaluation:
+      - Assume each trial dict is valid and contains keys: 'dims', 'grasp_pose', 'init_pose', 'final_pose', and 'had_collision'.
+      - Build features exactly as in training (final corners in world; t_loc, R6 from init/grasp; dims).
+      - Normalize with saved stats; run FinalCornersAuxModel; record predictions.
+      - Compute a single analysis: accuracy and confusion counts at threshold.
 
-    New model signature: FinalCornersAuxModel(corners_24, aux_12)
-      - corners_24: final corners in world frame, flattened (24,)
-      - aux_12: [t_loc(3), R_loc6D(6), dims(3)]
-        t_loc, R_loc computed from (grasp_pose, initial_object_pose)
+    Returns a dict with per-trial predictions and a simple summary.
     """
-    import json
+
     import numpy as np
     import torch
-    from tqdm import tqdm
 
-    # --- tiny helpers (self-contained) ---
+    # Small helpers (kept local for simplicity)
     def quat_wxyz_to_R(q):
         w, x, y, z = float(q[0]), float(q[1]), float(q[2]), float(q[3])
         n = (w*w + x*x + y*y + z*z) ** 0.5 or 1.0
@@ -45,227 +45,321 @@ def generate_experiment_predictions(predictions_file):
         ], dtype=np.float32)
 
     def rot6d_from_R(R):
-        # Zhou et al. CVPR'19: take first two columns
         a1 = R[:, 0]; a2 = R[:, 1]
         return np.concatenate([a1, a2], axis=0).astype(np.float32)
 
     def zscore(x, mean, std, eps=1e-8):
-        if isinstance(mean, torch.Tensor): mean = mean.detach().cpu().numpy()
-        if isinstance(std, torch.Tensor):  std  = std.detach().cpu().numpy()
         return (x - mean) / (std + eps)
 
-    # --- hardcoded paths (kept) ---
-    experiment_file  = "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiments.json"
-    predictions_file = predictions_file
+    # Device
+    if device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    elif isinstance(device, str):
+        device = torch.device(device)
 
-    # --- load experiments ---
-    with open(experiment_file, "r") as f:
-        experiments = json.load(f)
-    print(f"✅ Loaded {len(experiments)} experiments")
-
-    # --- device ---
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-
-    # --- load model + stats ---
-    from model import FinalCornersAuxModel
-    ckpt = torch.load("/home/chris/Chris/placement_ws/src/data/box_simulation/v6/data_collection/training/checkpoints/best_20250817_212957.pt",
-                      map_location="cpu")
-    model = FinalCornersAuxModel(aux_in=13,
-        corners_hidden=(128,64),
-        aux_hidden=(64,32),
-        head_hidden=128,
-        dropout_p=0.05,
-        use_film=True,
-        two_head=True,).to(device)
+    # Load model and stats
+    ckpt = torch.load(ckpt_path, map_location="cpu")
+    model = FinalCornersAuxModel(aux_in=12, use_film=True, two_head=False).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
 
     stats = ckpt.get("normalization_stats", None)
-    assert stats is not None, "Checkpoint missing normalization_stats"
+    final_corners_mean = np.asarray(stats["corners_mean"], dtype=np.float32)
+    final_corners_std  = np.asarray(stats["corners_std"],  dtype=np.float32)
+    tloc_mean          = np.asarray(stats["tloc_mean"],          dtype=np.float32)
+    tloc_std           = np.asarray(stats["tloc_std"],           dtype=np.float32)
+    dims_mean          = np.asarray(stats["dims_mean"],          dtype=np.float32)
+    dims_std           = np.asarray(stats["dims_std"],           dtype=np.float32)
 
-    # expected keys: final_corners_mean/std, tloc_mean/std, dims_mean/std
-    for k in ("final_corners_mean", "final_corners_std", "tloc_mean", "tloc_std", "dims_mean", "dims_std"):
-        assert k in stats, f"Missing {k} in normalization_stats"
+    SIGNS_8x3 = np.array([
+        [-1,-1,-1],
+        [-1,-1, 1],
+        [-1, 1,-1],
+        [-1, 1, 1],
+        [ 1,-1,-1],
+        [ 1,-1, 1],
+        [ 1, 1,-1],
+        [ 1, 1, 1],
+    ], dtype=np.float32)
 
-    # --- use your dataset helpers for corners ---
-    from dataset import cuboid_corners_local_ordered, transform_points_to_world
+    predictions: list[dict] = []
+    y_true_list: list[int] = []
+    p_coll_list: list[float] = []
+    group_list: list[str | None] = []
 
-    results = []
-    print(f"\n🔮 Generating predictions for {len(experiments)} experiments...")
-    for i, data in enumerate(tqdm(experiments, desc="Predicting")):
-        dx, dy, dz = data["object_dimensions"]
-        init_pose  = np.asarray(data["initial_object_pose"], dtype=np.float32)  # [tx,ty,tz, qw,qx,qy,qz]
-        final_pose = np.asarray(data["final_object_pose"],   dtype=np.float32)
-        grasp_pose = np.asarray(data["grasp_pose"],          dtype=np.float32)
+    with torch.no_grad():
+        for trial in trials:
+            dx, dy, dz = trial["dims"]
+            init_pose  = np.asarray(trial["init_pose"],  dtype=np.float32)
+            final_pose = np.asarray(trial["final_pose"], dtype=np.float32)
+            grasp_pose = np.asarray(trial["grasp_pose"], dtype=np.float32)
 
-        # --- final corners in world (flatten to 24) ---
-        corners_local = cuboid_corners_local_ordered(dx, dy, dz).astype(np.float32)  # [8,3]
-        final_world   = transform_points_to_world(corners_local, final_pose)         # [8,3]
-        corners_24    = final_world.reshape(-1)                                      # (24,)
+            # Final corners in world → (24,)
+            T = final_pose[:3].astype(np.float32)
+            q = final_pose[3:7].astype(np.float32)
+            R = quat_wxyz_to_R(q)
+            half = 0.5 * np.array([dx, dy, dz], dtype=np.float32)
+            corners_local = SIGNS_8x3 * half
+            final_world = (R @ corners_local.T).T + T[None, :]
+            corners_24 = final_world.reshape(-1)
 
-        # --- hand-relative block computed wrt INIT object pose (constant per grasp) ---
-        t_o  = init_pose[:3];      q_o  = init_pose[3:7]
-        t_h  = grasp_pose[:3];     q_h  = grasp_pose[3:7]
-        R_o  = quat_wxyz_to_R(q_o)                 # 3x3
-        R_h  = quat_wxyz_to_R(q_h)                 # 3x3
-        R_loc = R_o.T @ R_h                        # 3x3
-        t_loc = R_o.T @ (t_h - t_o)                # (3,)
-        R6    = rot6d_from_R(R_loc)                # (6,)
-        dims  = np.array([dx, dy, dz], np.float32) # (3,)
+            # Aux from init(object) and grasp(hand)
+            t_o, q_o = init_pose[:3], init_pose[3:7]
+            t_h, q_h = grasp_pose[:3], grasp_pose[3:7]
+            R_o = quat_wxyz_to_R(q_o)
+            R_h = quat_wxyz_to_R(q_h)
+            R_loc = R_o.T @ R_h
+            t_loc = R_o.T @ (t_h - t_o)
+            R6    = rot6d_from_R(R_loc)
+            dims  = np.array([dx, dy, dz], dtype=np.float32)
 
-        aux_12 = np.concatenate([t_loc.astype(np.float32), R6, dims], axis=0)  # (12,)
+            # Normalize (R6 left as raw)
+            corners_24_n = zscore(corners_24, final_corners_mean, final_corners_std).astype(np.float32)
+            tloc_n       = zscore(t_loc,       tloc_mean,          tloc_std).astype(np.float32)
+            dims_n       = zscore(dims,        dims_mean,          dims_std).astype(np.float32)
+            aux_12_n     = np.concatenate([tloc_n, R6, dims_n], axis=0).astype(np.float32)
 
-        # --- z-score normalize with training stats ---
-        corners_24_n = zscore(corners_24, stats["final_corners_mean"], stats["final_corners_std"]).astype(np.float32)
-        tloc_n       = zscore(t_loc,       stats["tloc_mean"],          stats["tloc_std"]).astype(np.float32)
-        dims_n       = zscore(dims,        stats["dims_mean"],          stats["dims_std"]).astype(np.float32)
+            # Tensors
+            c_t = torch.from_numpy(corners_24_n).unsqueeze(0).to(device)
+            a_t = torch.from_numpy(aux_12_n).unsqueeze(0).to(device)
 
-        aux_12_n = np.concatenate([tloc_n, R6, dims_n], axis=0).astype(np.float32)
-
-        # --- tensors & forward ---
-        c_t  = torch.from_numpy(corners_24_n).unsqueeze(0).to(device)  # [1,24]
-        a_t  = torch.from_numpy(aux_12_n).unsqueeze(0).to(device)      # [1,12]
-        with torch.no_grad():
-            logits = model(c_t, a_t)                                   # [1,1]
+            logits = model(c_t, a_t)
             p_collision = torch.sigmoid(logits).item()
-            p_nocoll    = 1.0 - p_collision
+            p_no_collision = 1.0 - p_collision
+            y_true_coll = int(trial.get("had_collision", 0))
+            y_true_list.append(y_true_coll)
+            p_coll_list.append(float(p_collision))
+            group_list.append(trial.get("bucket"))
 
-        # --- write both directions (avoid the earlier confusion) ---
-        results.append({
-            "object_dimensions": data["object_dimensions"],
-            "pred_collision": float(p_collision),
-            "pred_no_collision": float(p_nocoll),
-            "pred_no_collision_label": int(p_nocoll > 0.9)
-        })
+            predictions.append({
+                "index": trial.get("index"),
+                "bucket": trial.get("bucket"),
+                "dims": [float(dx), float(dy), float(dz)],
+                "had_collision": bool(y_true_coll),
+                "p_collision": float(p_collision),
+                "p_no_collision": float(p_no_collision),
+                # will fill pred after threshold selection
+            })
 
-        if (i+1) % 200 == 0:
-            print(f"Processed {i+1}/{len(experiments)}")
+    # Convert to arrays for metrics
+    import numpy as _np
+    y = _np.asarray(y_true_list, dtype=_np.int32)
+    p = _np.asarray(p_coll_list, dtype=_np.float32)
 
-    # --- save line-delimited JSON ---
-    with open(predictions_file, "w") as f:
-        for r in results:
-            f.write(json.dumps(r) + "\n")
-    print(f"✅ Wrote {len(results)} predictions to {predictions_file}")
+    # AUC metrics
+    auc_roc = float(roc_auc_score(y, p)) if len(_np.unique(y)) > 1 else float("nan")
+    auc_pr  = float(average_precision_score(y, p)) if len(_np.unique(y)) > 1 else float("nan")
 
-    preds = [r["pred_no_collision"] for r in results]
-    print("\n📊 PREDICTION STATS")
-    print(f"  mean={np.mean(preds):.4f}  min={np.min(preds):.4f}  max={np.max(preds):.4f}")
-    print("🔍 first 5:")
-    for r in results[:5]:
-        print(f"  dims={r['object_dimensions']}  p_no_coll={r['pred_no_collision']:.4f}  p_coll={r['pred_collision']:.4f}")
+    # Threshold selection: maximize F1 over unique probabilities
+    def _f1_at_thresh(t: float) -> tuple[float, int, int, int, int]:
+        pred = (p >= t).astype(_np.int32)
+        tp = int(_np.sum((pred == 1) & (y == 1)))
+        fp = int(_np.sum((pred == 1) & (y == 0)))
+        fn = int(_np.sum((pred == 0) & (y == 1)))
+        tn = int(_np.sum((pred == 0) & (y == 0)))
+        denom = (2*tp + fp + fn)
+        f1 = (2*tp / denom) if denom > 0 else 0.0
+        return f1, tp, tn, fp, fn
 
+    if threshold is None:
+        cands = _np.unique(p)
+        # add endpoints for stability
+        cands = _np.concatenate(([0.0], cands, [1.0]))
+        best = (0.0, 0.0, 0, 0, 0, 0)  # f1, tau, tp, tn, fp, fn
+        for t in cands:
+            f1, tp, tn, fp, fn = _f1_at_thresh(float(t))
+            if f1 > best[0]:
+                best = (f1, float(t), tp, tn, fp, fn)
+        best_tau = best[1]
+        tp, tn, fp, fn = best[2], best[3], best[4], best[5]
+        threshold_used = best_tau
+    else:
+        threshold_used = float(threshold)
+        f1, tp, tn, fp, fn = _f1_at_thresh(threshold_used)
 
+    # Fill predictions' discrete label with selected threshold
+    pred_bin = (p >= threshold_used).astype(_np.int32)
+    for j in range(len(predictions)):
+        predictions[j]["pred_collision"] = int(pred_bin[j])
 
-def replace_scores_with_indices(
-    experiment_results_path: str,
-    predictions_path: str,
-    output_path: str | None = None,
-    one_based: bool = True,
-):
-    """
-    Replace each record's 'prediction_score' in experiment results JSONL with the
-    value looked up by index from the predictions file.
+    total = int(len(trials))
+    accuracy = float((tp + tn) / total) if total > 0 else 0.0
 
-    Index semantics:
-    - If an experiment record has field 'index' == k, we use the k-th value from
-      the predictions file (1-based if one_based=True) and set it as prediction_score.
-    - If 'index' is missing, we fall back to the record's line order.
+    # Per-group error analysis by 'bucket' if available
+    group_metrics: dict[str, dict] = {}
+    if any(g is not None for g in group_list):
+        unique_groups = sorted({g for g in group_list if g is not None})
+        for g in unique_groups:
+            idx = _np.array([i for i, gg in enumerate(group_list) if gg == g], dtype=_np.int32)
+            yy = y[idx]
+            pp = pred_bin[idx]
+            tp_g = int(_np.sum((pp == 1) & (yy == 1)))
+            tn_g = int(_np.sum((pp == 0) & (yy == 0)))
+            fp_g = int(_np.sum((pp == 1) & (yy == 0)))
+            fn_g = int(_np.sum((pp == 0) & (yy == 1)))
+            denom_f1 = (2*tp_g + fp_g + fn_g)
+            f1_g = (2*tp_g / denom_f1) if denom_f1 > 0 else 0.0
+            acc_g = float((tp_g + tn_g) / max(1, len(idx)))
+            prec_g = float(tp_g / max(1, (tp_g + fp_g)))
+            rec_g  = float(tp_g / max(1, (tp_g + fn_g)))
+            base_rate = float(_np.mean(yy)) if len(idx) > 0 else 0.0
+            group_metrics[str(g)] = {
+                "count": int(len(idx)),
+                "base_rate": base_rate,
+                "accuracy": acc_g,
+                "precision": prec_g,
+                "recall": rec_g,
+                "f1": f1_g,
+                "tp": tp_g, "tn": tn_g, "fp": fp_g, "fn": fn_g,
+            }
 
-    - experiment_results_path: JSONL with one JSON object per line, containing 'prediction_score'.
-    - predictions_path: JSON or JSONL with one JSON object per line, each holding a score (key: 'pred_no_collision' preferred).
-    - output_path: path to write the modified JSONL. If None, writes alongside input with suffix '.indexed.jsonl'.
-    - one_based: if True, indices start at 1; else 0.
-    """
+    # Hardest examples (top FP/FN)
+    # FP: y=0, pred=1, sort by p desc; FN: y=1, pred=0, sort by p asc
+    fp_idx = [i for i in range(total) if y[i] == 0 and pred_bin[i] == 1]
+    fn_idx = [i for i in range(total) if y[i] == 1 and pred_bin[i] == 0]
+    fp_idx = sorted(fp_idx, key=lambda i: -p[i])[:10]
+    fn_idx = sorted(fn_idx, key=lambda i: p[i])[:10]
 
-    if output_path is None:
-        root, ext = os.path.splitext(experiment_results_path)
-        output_path = f"{root}.indexed.jsonl"
+    top_fp = [{
+        "index": predictions[i].get("index"),
+        "bucket": predictions[i].get("bucket"),
+        "dims": predictions[i].get("dims"),
+        "p_collision": float(p[i]),
+    } for i in fp_idx]
+    top_fn = [{
+        "index": predictions[i].get("index"),
+        "bucket": predictions[i].get("bucket"),
+        "dims": predictions[i].get("dims"),
+        "p_collision": float(p[i]),
+    } for i in fn_idx]
 
-    # Load prediction scores into a list for O(1) index lookup
-    pred_scores: list[float] = []
-    with open(predictions_path, "r") as f:
-        for raw in f:
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                obj = json.loads(raw)
-            except json.JSONDecodeError:
-                # Stop if predictions file is a single large JSON array; attempt to load once
-                f.seek(0)
+    # Data distribution (labels)
+    num_collisions = int(_np.sum(y))
+    num_non = int(total - num_collisions)
+    base_rate_overall = float(num_collisions / total) if total > 0 else 0.0
+
+    # Additional field distributions (if present)
+    field_distributions: dict[str, dict] = {}
+    candidate_keys = [
+        "bucket",
+        "surface_id",
+        "surface",
+        "target_surface",
+        "placement_surface",
+        "contact_surface",
+    ]
+    for key in candidate_keys:
+        counts_dict: dict = {}
+        present = False
+        for tr in trials:
+            if key in tr:
+                present = True
+                v = tr.get(key)
                 try:
-                    arr = json.load(f)
-                    for it in arr:
-                        v = (
-                            it.get("pred_no_collision")
-                            if isinstance(it, dict)
-                            else None
-                        )
-                        if v is not None:
-                            pred_scores.append(float(v))
-                except Exception:
-                    pass
-                break
-            else:
-                # Typical JSONL line
-                v = obj.get("pred_no_collision")
-                if v is None:
-                    v = obj.get("prediction_score")
-                if v is None:
-                    v = obj.get("score")
-                if v is not None:
-                    pred_scores.append(float(v))
+                    counts_dict[v] = counts_dict.get(v, 0) + 1
+                except TypeError:
+                    # skip unhashable values
+                    continue
+        if present and len(counts_dict) > 0:
+            # sort by count desc
+            sorted_items = sorted(counts_dict.items(), key=lambda kv: -kv[1])
+            field_distributions[key] = {str(k): int(c) for k, c in sorted_items}
 
-    total = len(pred_scores)
-    print(f"Loaded {total} prediction scores from {predictions_path}")
+    summary = {
+        "threshold": float(threshold_used),
+        "auc_roc": auc_roc,
+        "auc_pr": auc_pr,
+        "accuracy": accuracy,
+        "counts": {"tp": int(tp), "tn": int(tn), "fp": int(fp), "fn": int(fn), "total": int(total)},
+        "label_distribution": {
+            "collision": num_collisions,
+            "no_collision": num_non,
+            "base_rate": base_rate_overall,
+        },
+        "field_distributions": field_distributions,
+        "per_group": group_metrics,
+        "top_fp": top_fp,
+        "top_fn": top_fn,
+    }
 
-    # Process experiment results line by line
-    replaced = 0
-    with open(experiment_results_path, "r") as fin, open(output_path, "w") as fout:
-        for i, line in enumerate(tqdm(fin, desc="Replacing scores")):
-            if not line.strip():
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                # Write through unmodified if malformed
-                fout.write(line)
-                continue
+    return {"predictions": predictions, "summary": summary}
 
-            # Determine index for lookup: prefer explicit 'index' field
-            if "index" in rec and isinstance(rec["index"], int):
-                k = rec["index"]
-                idx = (k - 1) if one_based else k
-            else:
-                # Fallback to file order
-                idx = (i if one_based else i - 1)
-
-            # Replace if within range
-            if 0 <= idx < total and "prediction_score" in rec:
-                rec["prediction_score"] = pred_scores[idx]
-                replaced += 1
-
-            # Write updated record
-            fout.write(json.dumps(rec) + "\n")
-
-    print(f"Updated 'prediction_score' in {replaced} records → {output_path}")
 
 if __name__ == '__main__':
 
-    predictions_path = \
-        "/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/test_data_recollect_corners_only.json"
-    generate_experiment_predictions(predictions_path)
-     # Defaults to the paths you mentioned; adjust as needed
-    experiment_results_path = \
-        "/home/chris/Chris/placement_ws/src/data/box_simulation/v5/experiments/experiment_results_test_data.jsonl"
-    
-    output_path = \
-        "/home/chris/Chris/placement_ws/src/data/box_simulation/v5/experiments/new_corners_only_recollect.jsonl"
+    experiment_file = "/home/chris/Chris/placement_ws/src/data/box_simulation/v6/experiments/experiment_results.jsonl"
 
-    replace_scores_with_indices(
-        experiment_results_path=experiment_results_path,
-        predictions_path=predictions_path,
-        output_path=output_path,
-        one_based=True,
-    )
+    model_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v6/data_collection/training/bigger_data/best_roc.pt"
+
+    # Load trials (assumed JSONL with one dict per line)
+    trials = []
+    with open(experiment_file, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            trials.append(json.loads(line))
+
+    # Run predictions and analysis (auto-select threshold)
+    result = predict_and_analyze(trials, ckpt_path=model_path, device="auto", threshold=0.7)
+
+    # Pretty, readable output
+    summary = result["summary"]
+    counts = summary.get("counts", {})
+    per_group = summary.get("per_group", {})
+    top_fp = summary.get("top_fp", [])
+    top_fn = summary.get("top_fn", [])
+    ld = summary.get("label_distribution", {})
+    fd = summary.get("field_distributions", {})
+
+    print("\n======================== Model Evaluation Summary ========================")
+    print(f"Threshold (tau): {summary.get('threshold'):.4f}")
+    print(f"ROC-AUC        : {summary.get('auc_roc')}  |  PR-AUC: {summary.get('auc_pr')}")
+    print(f"Accuracy       : {summary.get('accuracy'):.4f}")
+    print("Counts         : TP={tp}  TN={tn}  FP={fp}  FN={fn}  Total={tot}".format(
+        tp=counts.get('tp',0), tn=counts.get('tn',0), fp=counts.get('fp',0), fn=counts.get('fn',0), tot=counts.get('total',0)))
+
+    # Label distribution
+    if ld:
+        print("\n------------------------------ Label Distribution ------------------------------")
+        print(f"collision: {ld.get('collision',0)}  |  no_collision: {ld.get('no_collision',0)}  |  base_rate: {ld.get('base_rate',0.0):.3f}")
+
+    # Field distributions
+    if fd:
+        print("\n----------------------------- Field Distributions ------------------------------")
+        for key, counts_map in fd.items():
+            print(f"{key}:")
+            # show top up to 10 entries
+            shown = 0
+            for val, c in counts_map.items():
+                print(f"  - {val}: {c}")
+                shown += 1
+                if shown >= 10:
+                    break
+
+    # Per-group breakdown
+    if per_group:
+        print("\n--------------------------- Per-Group (bucket) ---------------------------")
+        header = f"{'group':<12}{'n':>6}{'base':>8}{'acc':>8}{'prec':>8}{'rec':>8}{'f1':>8}{'tp':>6}{'tn':>6}{'fp':>6}{'fn':>6}"
+        print(header)
+        print("-" * len(header))
+        for g, m in per_group.items():
+            print(f"{g:<12}{m.get('count',0):>6}{m.get('base_rate',0.0):>8.3f}{m.get('accuracy',0.0):>8.3f}{m.get('precision',0.0):>8.3f}{m.get('recall',0.0):>8.3f}{m.get('f1',0.0):>8.3f}{m.get('tp',0):>6}{m.get('tn',0):>6}{m.get('fp',0):>6}{m.get('fn',0):>6}")
+
+    # Hardest errors
+    if top_fp:
+        print("\n------------------------------ Top False Positives ------------------------------")
+        for r in top_fp:
+            print(f"idx={r.get('index')}  bucket={r.get('bucket')}  dims={r.get('dims')}  p_coll={r.get('p_collision'):.4f}")
+    if top_fn:
+        print("\n------------------------------ Top False Negatives ------------------------------")
+        for r in top_fn:
+            print(f"idx={r.get('index')}  bucket={r.get('bucket')}  dims={r.get('dims')}  p_coll={r.get('p_collision'):.4f}")
+    print("========================================================================\n")
+
+    # Save per-trial predictions next to the input file
+    pred_out = f"{experiment_file}.predictions.jsonl"
+    with open(pred_out, "w") as f:
+        for r in result["predictions"]:
+            f.write(json.dumps(r) + "\n")
+    print("Wrote predictions to:", pred_out)

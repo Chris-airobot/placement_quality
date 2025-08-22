@@ -36,7 +36,7 @@ VAL_MEMMAP_DIR    = f"{DATA_ROOT}/memmaps_val"     # (train stats must be saved 
 OUTPUT_ROOT       = f"{DATA_ROOT}/training"
 
 # Per-run directory (configurable). Change RUN_NAME or set env RUN_NAME.
-RUN_NAME          = "R_final6"
+RUN_NAME          = "bigger_data"
 RUN_DIR           = os.path.join(OUTPUT_ROOT, RUN_NAME)
 
 SEED              = 42
@@ -293,7 +293,7 @@ def main():
 
     # ---- model / opt / loss / sched ----
     model = FinalCornersAuxModel(
-        aux_in=18,
+        aux_in=12,
         corners_hidden=(128,64),
         aux_hidden=(64,32),
         head_hidden=128,

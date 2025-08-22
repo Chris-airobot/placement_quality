@@ -14,8 +14,8 @@ from torch.utils.data import Dataset
 # ----------------------------- Paths -----------------------------
 
 DATA_ROOT   = "/home/chris/Chris/placement_ws/src/data/box_simulation/v6/data_collection"
-COMBINED    = os.path.join(DATA_ROOT, "combined_data", "train.json")
-MEMMAP_DIR  = os.path.join(DATA_ROOT, "memmaps_train")  # you can change this
+COMBINED    = os.path.join(DATA_ROOT, "combined_data", "val.json")
+MEMMAP_DIR  = os.path.join(DATA_ROOT, "memmaps_val")  # you can change this
 
 # --------------------------- Utilities ---------------------------
 
@@ -312,16 +312,16 @@ class FinalCornersHandDataset(Dataset):
         t   = torch.from_numpy(self.mm_tloc[i].copy()) # (3,)
         r6  = torch.from_numpy(self.mm_rloc6[i].copy())# (6,)
         d3  = torch.from_numpy(self.mm_dims[i].copy()) # (3,)
-        f7  = self.mm_final[i]                            # (7,) [tx,ty,tz,qw,qx,qy,qz]
+        # f7  = self.mm_final[i]                            # (7,) [tx,ty,tz,qw,qx,qy,qz]
         y   = torch.tensor(float(self.mm_y[i,0]), dtype=torch.float32)
 
         c24 = (c24 - self.ns["c_mu"]) / (self.ns["c_sd"] + 1e-8)
         t_z = (t   - self.ns["t_mu"]) / (self.ns["t_sd"] + 1e-8)
         d_z = (d3  - self.ns["d_mu"]) / (self.ns["d_sd"] + 1e-8)
 
-        qw, qx, qy, qz = float(f7[3]), float(f7[4]), float(f7[5]), float(f7[6])
-        rf6 = _quat_wxyz_to_r6(qw, qx, qy, qz)            # (6,)
-        aux18 = torch.cat([t_z, r6, d_z, rf6], dim=0)  # (12,)
+        # qw, qx, qy, qz = float(f7[3]), float(f7[4]), float(f7[5]), float(f7[6])
+        # rf6 = _quat_wxyz_to_r6(qw, qx, qy, qz)            # (6,)
+        aux18 = torch.cat([t_z, r6, d_z], dim=0)  # (12,)
         return c24, aux18, y
 
 # -------------------------- Sanity Check --------------------------
