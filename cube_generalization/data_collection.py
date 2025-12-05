@@ -83,7 +83,7 @@ class DataCollection:
         self.grasps = None
         self.object_poses = None
         self.data_dict = defaultdict(list)
-        self.data_folder = "/home/chris/Chris/placement_ws/src/data/box_simulation/v6/data_collection/raw_data/"
+        self.data_folder = "/home/chris/Chris/placement_ws/src/data/cube_generalization/v1/data_collection/raw_data/"
 
 
 

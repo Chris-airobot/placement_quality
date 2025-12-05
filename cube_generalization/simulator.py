@@ -61,12 +61,30 @@ class Simulator:
         self.contact_force = 0.0
         self.forced_completion = False
 
-        # Test data
-        with open("/home/chris/Chris/placement_ws/src/placement_quality/cube_generalization/experiments.json", "r") as f:
-            self.test_data: list[dict] = json.load(f)
+        # Test data (JSONL subset generated from test memmaps)
+        self.subset_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v6/data_collection/memmaps_test/sim.jsonl"
+        if not os.path.exists(self.subset_path):
+            raise FileNotFoundError(f"Subset file not found: {self.subset_path}")
+        self.test_data: list[dict] = []
+        with open(self.subset_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                # minimal schema check
+                if not all(k in obj for k in ("object_dimensions","initial_object_pose","final_object_pose","grasp_pose")):
+                    continue
+                self.test_data.append(obj)
+        if len(self.test_data) == 0:
+            raise RuntimeError(f"No valid rows loaded from {self.subset_path}")
+        print(f"[subset] loaded {len(self.test_data)} rows from {self.subset_path}")
 
         self.current_data = None
-        self.data_index = 1
+        self.data_index = 92
         # 0, 97, 146
         self.results = []
 
@@ -76,6 +94,12 @@ class Simulator:
         self.cur_grasp_pose_fixed = None
         self.cur_init_pose = None
         self.cur_final_pose = None
+
+        # Overhead travel waypoints (set by Experiment during SETUP)
+        self.lift1_position = None
+        self.lift1_orientation = None
+        self.lift2_position = None
+        self.lift2_orientation = None
 
 
 

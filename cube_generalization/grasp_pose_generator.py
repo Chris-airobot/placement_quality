@@ -83,52 +83,85 @@ def pose_from_R_t(R_wo: np.ndarray, t_wo: np.ndarray) -> Tuple[List[float], List
 def generate_contact_metadata(
     dims_xyz: np.ndarray,
     approach_offset: float = 0.01,
+    u_fracs_long: Tuple[float, ...] = (0.20, 0.35, 0.50, 0.65, 0.80),
+    v_fracs_short: Tuple[float, ...] = (0.35, 0.50, 0.65),
+    include_faces: Optional[Tuple[str, ...]] = None,
 ) -> List[Dict]:
     """
-    Generate local contact points and per-face axes for a cuboid.
+    Generate a 2-D lattice of local contact points per face of a cuboid.
 
-    - Returns entries with keys: 'face', 'fraction', 'p_local', 'approach', 'binormal', 'normal', 'axis'
-    - The closing axis 'axis' is the shorter in-plane edge; 'approach' is -normal; 'binormal' = Z × X.
+    - For each face, define in-plane axes ej (index j) and ek (index k).
+    - 'u' moves along the *longer* in-plane side; 'v' moves along the *shorter* side.
+    - Closing axis 'axis' is the unit vector along the shorter in-plane side.
+    - Approach is -normal (into the object), so Z_tool aligns with approach later.
+
+    Returns a list of dicts with keys:
+      'face', 'u_frac', 'v_frac', 'fraction' (alias of the long-side frac for backward-compat),
+      'p_local' (3,), 'approach' (3,), 'binormal' (3,), 'normal' (3,), 'axis' (3,)
     """
     metadata: List[Dict] = []
+
+    # Face index mapping: (i, j, k) => normal axis index, two in-plane axis indices
     face_axes = {
         '+X': (0, 1, 2), '-X': (0, 1, 2),
         '+Y': (1, 0, 2), '-Y': (1, 0, 2),
         '+Z': (2, 0, 1), '-Z': (2, 0, 1),
     }
-    fractions = [0.25, 0.50, 0.75]
-    half = 0.5 * np.asarray(dims_xyz, dtype=float)
+
+    dims_xyz = np.asarray(dims_xyz, dtype=float)
+    half = 0.5 * dims_xyz
+    I = np.eye(3)
 
     for face, (i, j, k) in face_axes.items():
-        sign = 1 if face[0] == '+' else -1
-        normal = sign * np.eye(3)[i]
-        approach = -normal
+        if include_faces is not None and face not in include_faces:
+            continue
 
-        ej = np.eye(3)[j]
-        ek = np.eye(3)[k]
-        du, dv = float(dims_xyz[j]), float(dims_xyz[k])
-        long_vec, long_len = (ej, du) if du >= dv else (ek, dv)
-        axis_vec = ek if du >= dv else ej  # shorter edge as closing axis
-        axis = axis_vec / np.linalg.norm(axis_vec)
+        sign = 1.0 if face[0] == '+' else -1.0
+        normal = sign * I[i]                  # outward face normal
+        approach = -normal                    # tool approaches into the face
 
+        ej, ek = I[j], I[k]                   # in-plane unit axes (object frame)
+        dj, dk = float(dims_xyz[j]), float(dims_xyz[k])
+
+        # Decide which in-plane side is long vs short
+        long_axis, long_len, short_axis, short_len = (ej, dj, ek, dk) if dj >= dk else (ek, dk, ej, dj)
+
+        # Closing axis is along the *shorter* in-plane side
+        axis = short_axis / (np.linalg.norm(short_axis) + 1e-12)
+
+        # Binormal completes the orthogonal set in the face plane
         binormal = np.cross(approach, axis)
         binormal /= (np.linalg.norm(binormal) + 1e-12)
 
+        # Base point: slightly outside the surface along the face normal
         base = normal * (half[i] + float(approach_offset))
-        for frac in fractions:
-            offset = (float(frac) - 0.5) * long_len
-            p_local = base + long_vec * offset
-            metadata.append({
-                'face': face,
-                'fraction': float(frac),
-                'p_local': p_local,
-                'approach': approach,
-                'binormal': binormal,
-                'normal': normal,
-                'axis': axis,
-            })
-    return metadata
 
+        # 2-D lattice over the face (u along long side, v along short side)
+        for u in u_fracs_long:
+            for v in v_fracs_short:
+                # Convert center-biased fractions to offsets in meters
+                offset_u = (float(u) - 0.5) * long_len
+                offset_v = (float(v) - 0.5) * short_len
+
+                # Build contact point in the object frame
+                p_local = base + long_axis * offset_u + short_axis * offset_v
+
+                # Back-compat 'fraction' = frac along the long side (old code used 1-D along long)
+                frac_alias = float(u)
+
+                metadata.append({
+                    'face': face,
+                    'u_frac': float(u),
+                    'v_frac': float(v),
+                    'fraction': frac_alias,          # backward compatibility
+                    'p_local': p_local.astype(float),
+                    'approach': approach.astype(float),
+                    'binormal': binormal.astype(float),
+                    'normal': normal.astype(float),
+                    'axis': axis.astype(float),      # closing axis (short side)
+                })
+
+    return metadata
 def sample_dims(n: int, min_s: float = 0.05, max_s: float = 0.20, seed: int = 0) -> List[Tuple[float, float, float]]:
     """
     Generate exactly n box dimension triplets (x, y, z) in metres with simple shape bias
@@ -455,6 +488,139 @@ def generate_grasp_poses_including_bottom(
 
         results.append(result)
     return results
+
+
+from typing import List, Dict, Tuple, Optional
+import numpy as np
+from scipy.spatial.transform import Rotation as R
+
+# assumes you already have these helpers defined above:
+# - generate_contact_metadata(...)
+# - build_tool_orientation_from_meta(...)
+# - _apply_local_rotations(...)
+# - _quat_wxyz_from_R(...)
+# - face_surface_frame(...)
+
+def generate_grasp_poses_including_bottom_updated(
+    dims_xyz: np.ndarray,
+    R_obj_to_world: np.ndarray,
+    t_obj_world: np.ndarray,
+    *,
+    # --- orientation policy knobs (safe defaults) ---
+    # yaw about Z_tool (approach): face-aware & center/edge-aware
+    yaw_set: Tuple[float, ...]  = (-15.0, 0.0, 15.0),         # about Z_tool (approach)
+    tilt_set: Tuple[float, ...] = (-10.0, 0.0, 10.0),         # about X_tool (closing)
+    roll_set: Tuple[float, ...] = (-5.0, 0.0, 5.0),           # about Y_tool (binormal)
+
+    # --- contact lattice knobs pass-through (optional) ---
+    approach_offset: float = 0.01,
+    include_faces: Optional[Tuple[str, ...]] = None,          # e.g., ('+X','-X','+Y','-Y')
+    u_fracs_long: Optional[Tuple[float, ...]] = None,         # override long-side fractions
+    v_fracs_short: Optional[Tuple[float, ...]] = None,        # override short-side fractions
+
+    # --- filters/offsets (unchanged semantics) ---
+    filter_by_gripper_open: bool = False,   # keep False during training; simple span check underestimates span when yaw≠0
+    gripper_open_max: float = 0.08,
+    apply_hand_to_tcp: bool = True,
+    hand_to_tcp_z: float = 0.1034,
+    extra_insert: float = -0.0334,
+) -> List[Dict]:
+
+    dims_xyz = np.asarray(dims_xyz, dtype=float)
+    R_obj_to_world = np.asarray(R_obj_to_world, dtype=float)
+    t_obj_world = np.asarray(t_obj_world, dtype=float)
+
+    # Build kwargs for your (possibly updated) contact lattice function
+    contact_kwargs = {'approach_offset': float(approach_offset)}
+    if include_faces is not None:
+        contact_kwargs['include_faces'] = include_faces
+    if u_fracs_long is not None:
+        contact_kwargs['u_fracs_long'] = u_fracs_long
+    if v_fracs_short is not None:
+        contact_kwargs['v_fracs_short'] = v_fracs_short
+
+
+    contacts = generate_contact_metadata(dims_xyz, include_faces=('+X', '-X', '+Y', '-Y'),)
+
+    results: List[Dict] = []
+    for meta in contacts:
+        face_label: str = str(meta['face'])  # e.g., '+X'
+
+        # Uniform orientation sets for all faces/rows
+        yaw_candidates  = yaw_set
+        tilt_candidates = tilt_set
+
+        # Optional check (kept from your code; conservative and ignores yaw effect)
+        if filter_by_gripper_open:
+            half_extents = 0.5 * dims_xyz
+            axis_obj = np.asarray(meta['axis'], dtype=float)  # short in-plane axis in *object* frame
+            jaw_span = float(2.0 * np.sum(np.abs(axis_obj) * half_extents))
+            if jaw_span > float(gripper_open_max):
+                continue
+
+        # World contact position
+        p_local = np.asarray(meta['p_local'], dtype=float)
+        p_world = R_obj_to_world @ p_local + t_obj_world
+
+        # Base tool frame at contact (no local rotations yet)
+        R_tool = build_tool_orientation_from_meta(meta, R_obj_to_world)
+
+        # Face normal in world (for hand offset calc)
+        n_face_world = R_obj_to_world @ face_surface_frame(face_label)[2]
+
+        # Enumerate orientation variants for this contact
+        for yaw_deg in yaw_candidates:
+            for tilt in tilt_candidates:
+                for roll_deg in roll_set:
+                    # Uniform sets; same conversion for tilt (90° = no-tilt baseline)
+                    tilt_deg = 90.0 + float(tilt)
+
+                    R_tool_var = _apply_local_rotations(
+                        R_tool,
+                        enable_tilt=True, tilt_deg=tilt_deg,
+                        enable_yaw=True,  yaw_deg=float(yaw_deg),
+                        enable_roll=True, roll_deg=float(roll_deg),
+                    )
+                    q_wxyz = _quat_wxyz_from_R(R_tool_var)
+
+                    out: Dict = {
+                        'face': face_label,
+                        # propagate lattice ids if present
+                        'u_frac': float(meta.get('u_frac', np.nan)),
+                        'v_frac': float(meta.get('v_frac', np.nan)),
+                        'contact_position_world': p_world.astype(float),
+                        'tool_quaternion_wxyz': q_wxyz.astype(float),
+                        'tool_rotation': R_tool_var.astype(float),
+                        'face_normal_world': n_face_world.astype(float),
+
+                        'axis_obj': np.asarray(meta.get('axis', [0.0, 0.0, 0.0]), dtype=float),
+                        'p_local': p_local.astype(float),
+
+                        # record the applied local angles for traceability
+                        'angles_deg': {
+                            'yaw_about_Ztool': float(yaw_deg),
+                            'tilt_about_Xtool': float(tilt),
+                            'roll_about_Ytool': float(roll_deg),
+                            'tilt_param_passed': float(tilt_deg),  # the value actually passed to your helper
+                        },
+                    }
+
+                    if apply_hand_to_tcp:
+                        # Offset wrist along tool Z, accounting for approach angle vs face normal
+                        z_tool_w = R_tool_var[:, 2]
+                        cos_theta = max(1e-3, -float(np.dot(z_tool_w, n_face_world)))
+                        z_local = -(float(hand_to_tcp_z) + float(extra_insert)) / cos_theta
+                        hand_position_world = p_world + R_tool_var @ np.array([0.0, 0.0, z_local], dtype=float)
+
+                        out['hand_position_world'] = hand_position_world.astype(float)
+                        out['hand_quaternion_wxyz'] = q_wxyz.astype(float)
+                        out['axis_obj'] = np.asarray(meta.get('axis', [0.0, 0.0, 0.0]), dtype=float)
+                        out['p_local']  = p_local.astype(float)
+
+                    results.append(out)
+
+    return results
+
 
 
 def passes_clearance(

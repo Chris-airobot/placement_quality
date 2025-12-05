@@ -32,11 +32,12 @@ from model import FinalCornersAuxModel          # K=12, FiLM on, single head
 DATA_ROOT         = "/home/chris/Chris/placement_ws/src/data/box_simulation/v6/data_collection"
 TRAIN_MEMMAP_DIR  = f"{DATA_ROOT}/memmaps_train"   # build these once with your dataset builder
 VAL_MEMMAP_DIR    = f"{DATA_ROOT}/memmaps_val"     # (train stats must be saved in TRAIN_MEMMAP_DIR/stats.json)
-
 OUTPUT_ROOT       = f"{DATA_ROOT}/training"
 
+AUX_OPTION        = 1    # 0=base, 1=+R_of6, 2=+tloc_f_inplane(2), 3=+R_hf6
+
 # Per-run directory (configurable). Change RUN_NAME or set env RUN_NAME.
-RUN_NAME          = "bigger_data"
+RUN_NAME          = "R_of6"
 RUN_DIR           = os.path.join(OUTPUT_ROOT, RUN_NAME)
 
 SEED              = 42
@@ -259,12 +260,14 @@ def main():
     train_ds = FinalCornersHandDataset(
         mem_dir=TRAIN_MEMMAP_DIR,
         normalization_stats=train_stats,
-        is_training=True
+        is_training=True,
+        feature_option=AUX_OPTION + 1
     )
     val_ds   = FinalCornersHandDataset(
         mem_dir=VAL_MEMMAP_DIR,
         normalization_stats=train_stats,
-        is_training=False
+        is_training=False,
+        feature_option=AUX_OPTION + 1
     )
     print(f"  → {len(train_ds)} train samples")
     print(f"  → {len(val_ds)} val samples")
@@ -291,9 +294,18 @@ def main():
     pos_w = float(n_neg / max(1, n_pos))
     print(f"Class balance (train): pos={n_pos}  neg={n_neg}  → pos_weight={pos_w:.3f}")
 
+    # map option → aux dims
+    _aux_in = 12
+    if AUX_OPTION == 1:   # +R_of6
+        _aux_in = 18
+    elif AUX_OPTION == 2: # +tloc_f_inplane(2)
+        _aux_in = 14
+    elif AUX_OPTION == 3: # +R_hf6
+        _aux_in = 18
+
     # ---- model / opt / loss / sched ----
     model = FinalCornersAuxModel(
-        aux_in=12,
+        aux_in=_aux_in,
         corners_hidden=(128,64),
         aux_hidden=(64,32),
         head_hidden=128,

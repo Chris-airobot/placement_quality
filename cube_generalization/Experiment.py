@@ -156,7 +156,7 @@ def robot_action(env: Simulator, grasp_pose, current_state, next_state):
 
         if env.check_for_collisions():
             # Only count collisions after grasping (post-grasp stages)
-            post_grasp_stages = ["PREPLACE_ONE", "PREPLACE_TWO", "PLACE", "END"]
+            post_grasp_stages = ["LIFT_1", "LIFT_2", "PLACE", "END"]
             if current_state in post_grasp_stages:
                 env.collision_counter += 1
                 print(f"⚠️ Collision during {current_state} (strike {env.collision_counter}/3)")
@@ -338,13 +338,22 @@ def main(use_physics):
             env.cur_final_pose        = list(map(float, env.current_data["final_object_pose"]))
 
             
-            pre_placement_position, pre_placement_orientation = get_reachable_prepose(grasp_position, grasp_orientation, env, max_offset=0.10)
-            r_grasp = R.from_quat([grasp_orientation[1], grasp_orientation[2], grasp_orientation[3], grasp_orientation[0]])
-            r_place = R.from_quat([placement_orientation[1], placement_orientation[2], placement_orientation[3], placement_orientation[0]])
-            r_diff = r_grasp.inv() * r_place
-            angle_diff_rad = r_diff.magnitude()
-            angle_diff_deg = np.rad2deg(angle_diff_rad)
-            skip_preplace_two = angle_diff_deg < 10.0  # skip PREPLACE_TWO if very similar
+            # Define overhead waypoints for two-stage aerial travel
+            lift1_height = 0.2
+            env.lift1_position = [
+                float(grasp_position[0]),
+                float(grasp_position[1]),
+                float(grasp_position[2] + lift1_height),
+            ]
+            env.lift1_orientation = grasp_orientation
+
+            air_clearance = 0.2
+            env.lift2_position = [
+                float(placement_position[0]),
+                float(placement_position[1]),
+                float(placement_position[2] + air_clearance),
+            ]
+            env.lift2_orientation = placement_orientation
 
             # This one is object's placement preview
             final_object_position = env.current_data["final_object_pose"][:3]
@@ -385,14 +394,13 @@ def main(use_physics):
             if robot_action(env, [grasp_position, grasp_orientation], "GRASP", "GRIPPER"):
                 env.open = False
 
-        elif env.state == "PREPLACE_ONE":
-            preplace_one_pose = [pre_placement_position, grasp_orientation]
-            next_state = "PLACE" if skip_preplace_two else "PREPLACE_TWO"
-            robot_action(env, preplace_one_pose, "PREPLACE_ONE", next_state)
-        
-        elif env.state == "PREPLACE_TWO":
-            preplace_two_pose = [pre_placement_position, placement_orientation]
-            robot_action(env, preplace_two_pose, "PREPLACE_TWO", "PLACE")
+        elif env.state == "LIFT_1":
+            lift1_pose = [env.lift1_position, env.lift1_orientation]
+            robot_action(env, lift1_pose, "LIFT_1", "LIFT_2")
+
+        elif env.state == "LIFT_2":
+            lift2_pose = [env.lift2_position, env.lift2_orientation]
+            robot_action(env, lift2_pose, "LIFT_2", "PLACE")
             
         elif env.state == "PLACE":
             place_pose = [placement_position, placement_orientation]
@@ -402,9 +410,9 @@ def main(use_physics):
         elif env.state == "END":
             _, gripper_current_orientation = env.gripper.get_world_pose()
    
-            env.task._frame.set_world_pose(np.array(pre_placement_position), np.array(gripper_current_orientation))
+            env.task._frame.set_world_pose(np.array(env.lift2_position), np.array(gripper_current_orientation))
             actions = env.controller.forward(
-                target_end_effector_position=np.array(pre_placement_position),
+                target_end_effector_position=np.array(env.lift2_position),
                 target_end_effector_orientation=np.array(gripper_current_orientation),
             )
             
@@ -504,7 +512,7 @@ def main(use_physics):
                         print("Successfully grasped the object")
                         # Reset collision counter for post-grasp stages
                         env.collision_counter = 0
-                        env.state = "PREPLACE_ONE"
+                        env.state = "LIFT_1"
                         env.controller.reset()
                         env.task.preview_box.set_world_pose(final_object_position, final_object_orientation)
                     else:

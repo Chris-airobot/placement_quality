@@ -20,6 +20,8 @@ class GroundCollisionDetector:
         self.ground_path = "/World/defaultGroundPlane/GroundPlane/CollisionPlane"
         self.obstacle = "/World/CollisionGround"
         self.pedestal = "/World/Pedestal_view"
+        self.place_pedestal = "/World/PlacePedestal"
+        self.pick_pedestal = "/World/PickPedestal"
         self.box_path = "/World/Ycb_object"
         self.excluded_paths = {
             non_colliding_part,
@@ -29,6 +31,8 @@ class GroundCollisionDetector:
             "/World/Pedestal_view",
             "/World/PreviewBox",
             "/World/Pedestal",
+            "/World/PlacePedestal",
+            "/World/PickPedestal",
         }
         # Note: Box path is NOT excluded - we want to detect collisions with the box
         
@@ -58,15 +62,73 @@ class GroundCollisionDetector:
 
 
     def create_virtual_pedestal(self, path="/World/Pedestal_view", 
-                                radius=0.08, height=0.10,
+                                size_x=0.27, size_y=0.22, size_z=0.10,
                                 position=Gf.Vec3f(0.2, -0.3, 0.05),
                                 color=Gf.Vec3f(0.6, 0.6, 0.6)):
-        pedestal_geom = UsdGeom.Cylinder.Define(self.stage, path)
-        pedestal_geom.CreateRadiusAttr(radius)
-        pedestal_geom.CreateHeightAttr(height)
-        pedestal_geom.AddTranslateOp().Set(position)
+        """Create or update a cuboid pedestal visual at the given path."""
+        pedestal_geom = UsdGeom.Cube.Define(self.stage, path)
+        pedestal_geom.CreateSizeAttr(1.0)
+        # Use XformCommonAPI to avoid op-order issues and treat position as cuboid center
+        prim = self.stage.GetPrimAtPath(path)
+        api = UsdGeom.XformCommonAPI(prim)
+        api.SetScale(Gf.Vec3f(float(size_x), float(size_y), float(size_z)))
+        api.SetTranslate(Gf.Vec3d(float(position[0]), float(position[1]), float(position[2])))
         pedestal_geom.CreateDisplayColorAttr().Set([color])
         return self.stage.GetPrimAtPath(path)
+    
+    def create_virtual_place_pedestal(self, path="/World/Place_Pedestal_view",
+                                size_x=0.27, size_y=0.22, size_z=0.10,
+                                position=Gf.Vec3f(0.3, 0.0, 0.05),
+                                color=Gf.Vec3f(0.6, 0.6, 0.6)):
+        """Create or update a cuboid pedestal visual at the given path."""
+        pedestal_geom = UsdGeom.Cube.Define(self.stage, path)
+        pedestal_geom.CreateSizeAttr(1.0)
+        # Use XformCommonAPI to avoid op-order issues and treat position as cuboid center
+        prim = self.stage.GetPrimAtPath(path)
+        api = UsdGeom.XformCommonAPI(prim)
+        api.SetScale(Gf.Vec3f(float(size_x), float(size_y), float(size_z)))
+        api.SetTranslate(Gf.Vec3d(float(position[0]), float(position[1]), float(position[2])))
+        pedestal_geom.CreateDisplayColorAttr().Set([color])
+        return self.stage.GetPrimAtPath(path)
+
+    def update_pedestal_position(self, pedestal_path, new_position):
+        """
+        Update the position of an existing pedestal prim.
+
+        Args:
+            pedestal_path: USD path to the pedestal prim
+            new_position: New position as Gf.Vec3f or tuple/list [x, y, z]
+        """
+        prim = self.stage.GetPrimAtPath(pedestal_path)
+        if not prim.IsValid():
+            print(f"Warning: Pedestal prim {pedestal_path} not found for position update")
+            return False
+
+        # Convert position to Gf.Vec3d if needed
+        if isinstance(new_position, (list, tuple)):
+            position = Gf.Vec3d(float(new_position[0]), float(new_position[1]), float(new_position[2]))
+        elif isinstance(new_position, Gf.Vec3f):
+            position = Gf.Vec3d(float(new_position[0]), float(new_position[1]), float(new_position[2]))
+        else:
+            position = new_position
+
+        # Use XformCommonAPI to update position
+        api = UsdGeom.XformCommonAPI(prim)
+        api.SetTranslate(position)
+
+        return True
+
+    def update_pick_pedestal_position(self, new_position):
+        """
+        Update the pick pedestal position.
+        """
+        return self.update_pedestal_position("/World/Pedestal_view", new_position)
+
+    def update_place_pedestal_position(self, new_position):
+        """
+        Update the place pedestal position.
+        """
+        return self.update_pedestal_position("/World/Place_Pedestal_view", new_position)
     
     def is_colliding_with_ground(self, robot_part_path):
         """
@@ -160,13 +222,13 @@ class GroundCollisionDetector:
                 hit_path_str = str(hit.rigid_body)
                 # Exclude the pedestal itself, and (optionally) other exclusions
                 if hit_path_str not in self.excluded_paths:
-                    print(f"hitted part: {hit_path_str}")
+                    print(f"hitted part with pedestal: {hit_path_str}")
                     collision_detected[0] = True
                     self.colliding_parts.add(hit_path_str)
                     # Optional: change pedestal color if you want visual feedback
                     try:
                         from pxr import UsdGeom, Gf
-                        pedestal_geom = UsdGeom.Cylinder(self.stage.GetPrimAtPath(self.pedestal))
+                        pedestal_geom = UsdGeom.Cube(self.stage.GetPrimAtPath(self.pedestal))
                         if pedestal_geom:
                             pedestal_geom.CreateDisplayColorAttr().Set([Gf.Vec3f(1.0, 0.0, 0.0)])  # Red
                     except Exception as e:
@@ -184,7 +246,7 @@ class GroundCollisionDetector:
             if not collision_detected[0]:
                 try:
                     from pxr import UsdGeom, Gf
-                    pedestal_geom = UsdGeom.Cylinder(self.stage.GetPrimAtPath(self.pedestal))
+                    pedestal_geom = UsdGeom.Cube(self.stage.GetPrimAtPath(self.pedestal))
                     if pedestal_geom:
                         pedestal_geom.CreateDisplayColorAttr().Set([Gf.Vec3f(0.6, 0.6, 0.6)])  # Default gray
                 except Exception as e:
@@ -260,7 +322,7 @@ class GroundCollisionDetector:
                     # Optional: change pedestal color for visual feedback
                     try:
                         from pxr import UsdGeom, Gf
-                        pedestal_geom = UsdGeom.Cylinder(self.stage.GetPrimAtPath(self.pedestal))
+                        pedestal_geom = UsdGeom.Cube(self.stage.GetPrimAtPath(self.pedestal))
                         if pedestal_geom:
                             pedestal_geom.CreateDisplayColorAttr().Set([Gf.Vec3f(1.0, 0.0, 0.0)])  # Red
                     except Exception as e:
@@ -278,7 +340,7 @@ class GroundCollisionDetector:
             if not collision_detected[0]:
                 try:
                     from pxr import UsdGeom, Gf
-                    pedestal_geom = UsdGeom.Cylinder(self.stage.GetPrimAtPath(self.pedestal))
+                    pedestal_geom = UsdGeom.Cube(self.stage.GetPrimAtPath(self.pedestal))
                     if pedestal_geom:
                         pedestal_geom.CreateDisplayColorAttr().Set([Gf.Vec3f(0.6, 0.6, 0.6)])  # Default gray
                 except Exception as e:
@@ -288,6 +350,62 @@ class GroundCollisionDetector:
 
         except Exception as e:
             print(f"Error in object-pedestal collision detection: {e}")
+            return False
+        
+    def is_colliding_with_place_pedestal(self, robot_part_path):
+        """
+        Check if the object is colliding with the place pedestal using mesh overlap.
+        This is specifically for detecting when the grasped object hits the place pedestal.
+        Returns True if collision detected, False otherwise.
+        """
+        if not robot_part_path or not self.place_pedestal:
+            print("Box path or place pedestal not specified.")
+            return False
+        
+        scene_query = get_physx_scene_query_interface()
+        
+        try:
+            path_tuple = PhysicsSchemaTools.encodeSdfPath(Sdf.Path(self.place_pedestal))
+            collision_detected = [False]
+            
+            def report_hit(hit):
+                hit_path_str = str(hit.rigid_body)
+                # Check if the object is colliding with the place pedestal
+                if hit_path_str == robot_part_path:
+                    collision_detected[0] = True
+                    print(f"hit path: {hit_path_str}")
+                    print(f"⚠️ Object collision with place pedestal detected!")
+                    # Optional: change place pedestal color for visual feedback
+                    try:
+                        from pxr import UsdGeom, Gf
+                        place_pedestal_geom = UsdGeom.Cube(self.stage.GetPrimAtPath(self.place_pedestal))
+                        if place_pedestal_geom:
+                            place_pedestal_geom.CreateDisplayColorAttr().Set([Gf.Vec3f(1.0, 0.0, 0.0)])  # Red
+                    except Exception as e:
+                        print(f"Error changing place pedestal color: {e}")
+                return True
+
+            num_hits = scene_query.overlap_shape(
+                path_tuple[0],
+                path_tuple[1],
+                report_hit,
+                False
+            )
+
+            # Reset place pedestal color if no collision
+            if not collision_detected[0]:
+                try:
+                    from pxr import UsdGeom, Gf
+                    place_pedestal_geom = UsdGeom.Cube(self.stage.GetPrimAtPath(self.place_pedestal))
+                    if place_pedestal_geom:
+                        place_pedestal_geom.CreateDisplayColorAttr().Set([Gf.Vec3f(0.6, 0.6, 0.6)])  # Default gray
+                except Exception as e:
+                    print(f"Error resetting place pedestal color: {e}")
+
+            return collision_detected[0]
+
+        except Exception as e:
+            print(f"Error in object-place pedestal collision detection: {e}")
             return False
 
     def is_any_part_colliding(self, robot_parts_paths):

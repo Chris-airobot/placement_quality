@@ -23,14 +23,12 @@ class RRTController(BaseController):
             name: str,
             robot_articulation: Articulation,
             ground_plane: omni.isaac.core.objects,
-            pedestal_planner_box: omni.isaac.core.objects,
             physics_dt: float = 1 / 60.0,
             rrt_interpolation_max_dist: float = 0.01,
         ):
         BaseController.__init__(self, name)
 
         self.ground_plane = ground_plane
-        self.pedestal_planner_box = pedestal_planner_box
         # Load default RRT config files stored in the omni.isaac.motion_generation extension
         rrt_config = interface_config_loader.load_supported_path_planner_config("Franka", "RRT")
         rrt_config["end_effector_frame_name"] = "panda_hand"

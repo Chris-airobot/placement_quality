@@ -152,15 +152,24 @@ class PoseVisualization:
 
 def main():
     # Create 6 objects instead of just 1
-    env = PoseVisualization(num_poses=432, num_simultaneous=6)
+    num_poses = 120
+    num_simultaneous = 6
+    env = PoseVisualization(num_poses=num_poses, num_simultaneous=num_simultaneous)
     env.start(ycb=False)
 
     # Load the pose file
-    poses = json.load(open("/home/chris/Chris/placement_ws/src/object_poses_box.json"))
+    poses_all = json.load(open("/home/chris/Chris/placement_ws/src/object_poses_box.json"))
+    
+    # Use the last 216 poses to match a single run (36 per face × 6 faces)
+    if len(poses_all) >= num_poses:
+        poses = poses_all[-num_poses:]
+    else:
+        poses = poses_all
+    
     total_poses = len(poses)
     
-    # Number of poses per object
-    poses_per_object = total_poses // 6  # Should be 72
+    # Number of poses per object (expect 36 when total_poses == 216)
+    poses_per_object = total_poses // 6
     
     # Main simulation loop
     step = 0

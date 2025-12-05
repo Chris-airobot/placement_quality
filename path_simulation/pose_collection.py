@@ -53,7 +53,7 @@ class PoseCollection:
                  mode="ycb"):
         
         self.mode = mode
-        self.box_dims = np.array([0.031, 0.096, 0.190])
+        self.box_dims = np.array([0.143, 0.0915, 0.051])
         # Basic variables
         self.world = None
         self.scene = None
@@ -317,64 +317,40 @@ class PoseCollection:
         # Clear the buffer after saving
         self.save_buffer = []
 
-    def sample_uniform_orientations(self, max_step_deg=10, min_step_deg=1):
+    def sample_uniform_orientations(self):
         """
         Returns a dict mapping each surface name to a list of quaternions
-        sampled with dynamic intervals (between min_step_deg and max_step_deg) around the "free" axis.
+        using per-surface equal-angle bins over [0, 360) and sampling one
+        angle uniformly within each bin around the free axis.
+
+        Mirrors the orientation sampling logic from
+        `cube_generalization/utils.py::sample_object_poses` (orientation part),
+        without encoding positional offsets, since poses are dropped via physics.
         """
-        # baseline Euler angles (deg) for each surface, and which index to vary:
+        # Baseline Euler angles (deg) for each surface, and which index to vary:
         # roll (0), pitch (1), yaw (2)
         configs = {
-            "top_surface":    (np.array([   0.0,   0.0,   0.0]), 2), # 0.01475
-            "bottom_surface": (np.array([-180.0,   0.0,   0.0]), 2), # 0.01415
-            "left_surface":   (np.array([  90.0,   0.0,   0.0]), 1), # 0.03586
-            "right_surface":  (np.array([ -90.0,   0.0,   0.0]), 1), # 0.03644
-            "front_surface":  (np.array([  90.0,   0.0,  90.0]), 1), # 0.04427
-            "back_surface":   (np.array([  90.0,   0.0, -90.0]), 1), # 0.04447
+            "top_surface":    (np.array([   0.0,   0.0,   0.0]), 2),
+            "bottom_surface": (np.array([-180.0,   0.0,   0.0]), 2),
+            "left_surface":   (np.array([  90.0,   0.0,   0.0]), 1),
+            "right_surface":  (np.array([ -90.0,   0.0,   0.0]), 1),
+            "front_surface":  (np.array([  90.0,   0.0,  90.0]), 1),
+            "back_surface":   (np.array([  90.0,   0.0, -90.0]), 1),
         }
 
-        # Generate angles with dynamic intervals from -180° to near 180°
-        angles = []
-        # Total range to cover is 360 degrees (-180 to 180)
-        # Number of orientations is 72, so we need 71 steps
-        num_orientations = 72
-        
-        # For exact number of points, we'll pre-generate all steps
-        # Average step size needed for 72 points covering 360 degrees
-        avg_step = 360.0 / (num_orientations - 1)
-        
-        # Generate random steps that will sum to exactly the range we need
-        steps = []
-        remaining_steps = num_orientations - 1
-        remaining_angle = 360.0
-        
-        for i in range(remaining_steps - 1):
-            # Calculate bounds to ensure we can reach exactly 180 with the remaining steps
-            max_step = min(max_step_deg, remaining_angle - (remaining_steps - 1) * min_step_deg)
-            min_step = max(min_step_deg, remaining_angle - (remaining_steps - 1) * max_step_deg)
-            
-            # Generate a random step size
-            step = random.uniform(min_step, max_step)
-            steps.append(step)
-            
-            remaining_angle -= step
-            remaining_steps -= 1
-        
-        # Add the final step
-        steps.append(remaining_angle)
-        
-        # Generate the angles
-        angles = [-180.0]
-        for step in steps:
-            angles.append(angles[-1] + step)
-        
+        # Decide number of samples per surface; match total desired poses across 6 faces
+        num_samples_per_surface = max(1, int(self.num_poses // 6))
+
+        # Evenly spaced angles over [0, 360) at bin edges (e.g., 0,10,...,350 for 36 samples)
+        angles = np.linspace(0.0, 360.0, num_samples_per_surface, endpoint=False).tolist()
+
         all_orients = {}
         for name, (base_euler, var_idx) in configs.items():
             quats = []
             for a in angles:
                 e = base_euler.copy()
                 e[var_idx] = a
-                # convert to radians and then quaternion
+                # convert to radians and then quaternion (w, x, y, z)
                 q = euler2quat(*np.deg2rad(e), axes='rxyz')
                 quats.append(q)
             all_orients[name] = quats
@@ -385,8 +361,8 @@ class PoseCollection:
 
 def main(save_path, mode="ycb"):
     # Adjust these parameters as needed
-    simultaneous_objects = 72  # You can increase this based on your system's capabilities
-    env = PoseCollection(num_poses=432, num_simultaneous=simultaneous_objects, output_file=save_path, mode=mode)
+    simultaneous_objects = 20  # You can increase this based on your system's capabilities
+    env = PoseCollection(num_poses=120, num_simultaneous=simultaneous_objects, output_file=save_path, mode=mode)
     env.start()
     
     poses_collected = 0
@@ -441,7 +417,7 @@ def main(save_path, mode="ycb"):
     simulation_app.close()
     
 if __name__ == "__main__":
-    tmp_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/experiments/test_different_dimensions/object_poses_box.json"
-    # output_path = "/home/chris/Chris/placement_ws/src/object_poses_box.json"
+    # tmp_path = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/experiments/test_different_dimensions/object_poses_box.json"
+    output_path = "/home/chris/Chris/placement_ws/src/object_poses_box.json"
     mode = "box"
-    main(tmp_path, mode)
+    main(output_path, mode)

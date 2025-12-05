@@ -5,7 +5,7 @@ One-object visualization of ALL 18 grasp contact positions (3 per face × 6 face
 """
 
 import numpy as np
-from typing import List
+from typing import List, Dict, Optional, Tuple
 from isaacsim import SimulationApp
 
 CONFIG = {
@@ -25,60 +25,94 @@ from omni.isaac.core.utils.nucleus import get_assets_root_path
 from omni.isaac.core.utils.stage import add_reference_to_stage
 
 # Import ONLY from grasp_generator for pose/contacts/orientations
-from placement_quality.cube_generalization.grasp_generator import (
-    sample_dims,
+from placement_quality.cube_generalization.grasp_pose_generator import (
     six_face_up_orientations,
-    sample_contacts_on_faces,
     pose_from_R_t,
 )
 
-def generate_contact_metadata(dims, approach_offset=0.01, G_max=0.08):
+def generate_contact_metadata(
+    dims_xyz: np.ndarray,
+    approach_offset: float = 0.01,
+    u_fracs_long: Tuple[float, ...] = (0.20, 0.35, 0.50, 0.65, 0.80),
+    v_fracs_short: Tuple[float, ...] = (0.35, 0.50, 0.65),
+    include_faces: Optional[Tuple[str, ...]] = None,
+) -> List[Dict]:
     """
-    Computes up to 18 local contact points on a cuboid's 6 faces (3 per face),
-    with metadata for approach, binormal, psi_max, and outward normal.
+    Generate a 2-D lattice of local contact points per face of a cuboid.
+
+    - For each face, define in-plane axes ej (index j) and ek (index k).
+    - 'u' moves along the *longer* in-plane side; 'v' moves along the *shorter* side.
+    - Closing axis 'axis' is the unit vector along the shorter in-plane side.
+    - Approach is -normal (into the object), so Z_tool aligns with approach later.
+
+    Returns a list of dicts with keys:
+      'face', 'u_frac', 'v_frac', 'fraction' (alias of the long-side frac for backward-compat),
+      'p_local' (3,), 'approach' (3,), 'binormal' (3,), 'normal' (3,), 'axis' (3,)
     """
-    metadata = []
+    metadata: List[Dict] = []
+
+    # Face index mapping: (i, j, k) => normal axis index, two in-plane axis indices
     face_axes = {
-        '+X': (0,1,2), '-X': (0,1,2),
-        '+Y': (1,0,2), '-Y': (1,0,2),
-        '+Z': (2,0,1), '-Z': (2,0,1),
+        '+X': (0, 1, 2), '-X': (0, 1, 2),
+        '+Y': (1, 0, 2), '-Y': (1, 0, 2),
+        '+Z': (2, 0, 1), '-Z': (2, 0, 1),
     }
-    fractions = [0.25, 0.50, 0.75]
-    half = dims * 0.5
+
+    dims_xyz = np.asarray(dims_xyz, dtype=float)
+    half = 0.5 * dims_xyz
+    I = np.eye(3)
 
     for face, (i, j, k) in face_axes.items():
-        sign = 1 if face[0] == '+' else -1
-        normal   = sign * np.eye(3)[i]      # outward face normal
-        approach = -normal                  # gripper approach direction
+        if include_faces is not None and face not in include_faces:
+            continue
 
-        ej = np.eye(3)[j]
-        ek = np.eye(3)[k]
-        du, dv = dims[j], dims[k]
-        long_vec, long_len = (ej, du) if du >= dv else (ek, dv)
-         # —— NEW: pick the shorter edge as our X‐axis “axis” ——
-        axis_vec = ek if du >= dv else ej
-        axis     = axis_vec / np.linalg.norm(axis_vec)
+        sign = 1.0 if face[0] == '+' else -1.0
+        normal = sign * I[i]                  # outward face normal
+        approach = -normal                    # tool approaches into the face
 
-        # —— NEW: binormal = approach × axis ——
-        binormal = np.cross(axis, approach)
-        binormal /= np.linalg.norm(binormal)
+        ej, ek = I[j], I[k]                   # in-plane unit axes (object frame)
+        dj, dk = float(dims_xyz[j]), float(dims_xyz[k])
 
-       
+        # Decide which in-plane side is long vs short
+        long_axis, long_len, short_axis, short_len = (ej, dj, ek, dk) if dj >= dk else (ek, dk, ej, dj)
 
-        base = normal * (half[i] + approach_offset)
-        for frac in fractions:
-            offset = (frac - 0.5) * long_len
-            p_local = base + long_vec * offset
-            metadata.append({
-                'face':     face,
-                'fraction': frac,
-                'p_local':  p_local,
-                'approach': approach,
-                'binormal': binormal,
-                'normal':   normal,
-                'axis':     axis
-            })
+        # Closing axis is along the *shorter* in-plane side
+        axis = short_axis / (np.linalg.norm(short_axis) + 1e-12)
+
+        # Binormal completes the orthogonal set in the face plane
+        binormal = np.cross(approach, axis)
+        binormal /= (np.linalg.norm(binormal) + 1e-12)
+
+        # Base point: slightly outside the surface along the face normal
+        base = normal * (half[i] + float(approach_offset))
+
+        # 2-D lattice over the face (u along long side, v along short side)
+        for u in u_fracs_long:
+            for v in v_fracs_short:
+                # Convert center-biased fractions to offsets in meters
+                offset_u = (float(u) - 0.5) * long_len
+                offset_v = (float(v) - 0.5) * short_len
+
+                # Build contact point in the object frame
+                p_local = base + long_axis * offset_u + short_axis * offset_v
+
+                # Back-compat 'fraction' = frac along the long side (old code used 1-D along long)
+                frac_alias = float(u)
+
+                metadata.append({
+                    'face': face,
+                    'u_frac': float(u),
+                    'v_frac': float(v),
+                    'fraction': frac_alias,          # backward compatibility
+                    'p_local': p_local.astype(float),
+                    'approach': approach.astype(float),
+                    'binormal': binormal.astype(float),
+                    'normal': normal.astype(float),
+                    'axis': axis.astype(float),      # closing axis (short side)
+                })
+
     return metadata
+
 # -----------------------------
 # Tunables
 # -----------------------------
@@ -165,7 +199,7 @@ def main():
     world.reset()  # clean stage before we place anything
 
     # Object dims (slightly larger for visibility if you want)
-    dims_xyz = np.array(sample_dims(1, seed=77)[0], float) * 1.3
+    dims_xyz = np.array([0.143, 0.0915, 0.051], float)
 
     # Base pose: +Z face up, on top of the (lifted) pedestal
     pedestal_center = PEDESTAL_CENTER.copy()
@@ -195,7 +229,10 @@ def main():
     cube.set_world_pose(pos_base, quat_base)
 
     # Make sure dims_xyz is a numpy array of [X, Y, Z] (meters), matching your function.
-    meta = generate_contact_metadata(dims_xyz, approach_offset=0.0, G_max=0.08)
+    meta = generate_contact_metadata(
+        dims_xyz=np.array([0.143, 0.0915, 0.051], dtype=float),
+        include_faces=('+X', '-X', '+Y', '-Y'),
+    )
 
     # For each local contact: p_world = R_init @ p_local + t_base
     spheres = []

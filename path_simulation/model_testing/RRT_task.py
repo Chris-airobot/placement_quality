@@ -17,7 +17,7 @@ from omni.isaac.core.objects import VisualCylinder
 
 from pxr import UsdPhysics, Usd, UsdGeom, Gf
 
-PEDESTAL_SIZE = np.array([0.08, 0.10])   # radius, height in meters
+PEDESTAL_SIZE = np.array([0.27, 0.22, 0.10])   # X, Y, Z in meters (v7)
 
 class RRTTask(BaseTask):
     def __init__(
@@ -38,7 +38,7 @@ class RRTTask(BaseTask):
         self._ycb_prim_path = None
         self._frame = None
         # self.box_dims = np.array([0.031, 0.096, 0.190])
-        self.box_dims = np.array([0.0915, 0.051,  0.143])
+        self.box_dims = np.array([0.143, 0.0915,  0.051])
         self._ycb_initial_position = initial_position
         self._ycb_initial_orientation = initial_orientation
         self._ycb_target_position = target_position
@@ -80,6 +80,16 @@ class RRTTask(BaseTask):
         self._ycb = self.set_ycb(name="ycb_object", 
                                  prim_path="/World/Ycb_object", 
                                  use_physics=True)
+        # self._ycb = DynamicCuboid(
+        #     prim_path="/World/Ycb_object",
+        #     name="Ycb_object",
+        #     position=np.array([0, 0, 0], dtype=float),
+        #     orientation=np.array([0, 0, 0, 1], dtype=float),
+        #     scale=self.box_dims.tolist(),
+        #     color=np.array([0.8, 0.8, 0.8], dtype=float)
+        # )
+        
+        
         scene.add(self._ycb)
 
         
@@ -103,43 +113,6 @@ class RRTTask(BaseTask):
         )
         scene.add(self.preview_box)
 
-        self.pedestal = FixedCylinder(
-            prim_path="/World/Pedestal",
-            name="pedestal",
-            position=np.array([0.2, -0.3, 0.05]),
-            radius=0.08,
-            height=0.10,
-            color=np.array([0.6, 0.6, 0.6])
-        )
-
-        scene.add(self.pedestal)
-
-
-
-
-        # # ---- Invisible box for path planning ----
-        # self.pedestal_planner_box = FixedCuboid(
-        #     prim_path="/World/PedestalPlanningObstacle",
-        #     name="pedestal_planning_obstacle",
-        #     position=np.array([0.2, -0.3, 0.05]),    # same center as cylinder
-        #     scale=np.array([0.1, 0.1, 0.10]),      # box size: X=Y=diameter, Z=height
-        #     color=np.array([0, 0, 0])                # black (but we will make it invisible below)
-        # )
-        # scene.add(self.pedestal_planner_box)
-
-        # # REMOVE PHYSICS/COLLISION so it's invisible for physics
-        # stage = omni.usd.get_context().get_stage()
-        # prim = stage.GetPrimAtPath("/World/PedestalPlanningObstacle")
-        # if prim.IsValid():
-        #     UsdPhysics.CollisionAPI(prim).GetPrim().RemoveAPI(UsdPhysics.CollisionAPI)
-        #     UsdPhysics.RigidBodyAPI(prim).GetPrim().RemoveAPI(UsdPhysics.RigidBodyAPI)
-
-        # # Make the box invisible (if not already)
-        # self.set_prim_color("/World/PedestalPlanningObstacle", color=[0,0,0], alpha=0.0)
-
-
-
-
 
         add_reference_to_stage(get_assets_root_path() + "/Isaac/Props/UIElements/frame_prim.usd", "/World/target")
         self._frame = XFormPrim("/World/target", scale=[.04,.04,.04], name="target")
@@ -147,6 +120,24 @@ class RRTTask(BaseTask):
                                 np.array([0, 0, 0, 1]))
         
         scene.add(self._frame)
+
+        # Visual pedestals for pick/place (keep visible; collision handled in simulator)
+        self.pick_pedestal = FixedCuboid(
+            prim_path="/World/PickPedestal",
+            name="PickPedestalVis",
+            position=np.array([0.2, -0.3, 0.05]),
+            scale=PEDESTAL_SIZE,
+            color=np.array([0.6, 0.6, 0.6])
+        )
+        self.place_pedestal = FixedCuboid(
+            prim_path="/World/PlacePedestal",
+            name="PlacePedestalVis",
+            position=np.array([0.3, 0.0, 0.05]),
+            scale=PEDESTAL_SIZE,
+            color=np.array([0.5, 0.5, 0.5])
+        )
+        scene.add(self.pick_pedestal)
+        scene.add(self.place_pedestal)
 
         # Set the object parameters
         self.set_params(
@@ -259,15 +250,20 @@ class RRTTask(BaseTask):
         object_orientation: Optional[np.ndarray] = None,
         preview_box_position: Optional[np.ndarray] = None,
         preview_box_orientation: Optional[np.ndarray] = None,
+        pick_pedestal_position: Optional[np.ndarray] = None,
+        place_pedestal_position: Optional[np.ndarray] = None,
         # object_target_position: Optional[np.ndarray] = None,
         # object_target_orientation: Optional[np.ndarray] = None,
     ) -> None:
         """Set the object parameters."""
-        if object_position is not None or object_orientation is not None:
-            print(f"object_orientation in set up: {object_orientation}")
+        if object_position is not None or object_orientation is not None:            
             self._ycb.set_world_pose(position=object_position, orientation=object_orientation)
         if preview_box_position is not None or preview_box_orientation is not None:
             self.preview_box.set_world_pose(position=preview_box_position, orientation=preview_box_orientation)
+        if pick_pedestal_position is not None:
+            self.pick_pedestal.set_world_pose(position=pick_pedestal_position)
+        if place_pedestal_position is not None:
+            self.place_pedestal.set_world_pose(position=place_pedestal_position)
         # if object_target_position is not None or object_target_orientation is not None:
         #     self._target.set_world_pose(position=object_target_position, orientation=object_target_orientation)
         return

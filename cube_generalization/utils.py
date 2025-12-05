@@ -68,7 +68,7 @@ def sample_object_poses(num_samples_per_surface, object_dims):
             e = base_euler.copy()
             e[var_idx] = a
             # convert to radians and then quaternion
-            q = euler2quat(*np.deg2rad(e), axes='rxyz').tolist()
+            q = euler2quat(*np.deg2rad(e), axes='rxyz', scalar_first=True).tolist()
             surface = surface_detection(q)
             if surface == 1 or surface == 3:
                 z = object_dims[2]/2

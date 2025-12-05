@@ -1,435 +1,378 @@
-import torch
-from torch.utils.data import DataLoader
-from dataset import KinematicFeasibilityDataset
-from model import GraspObjectFeasibilityNet
-import torch.nn as nn
-import torch.optim as optim
-import json
-import os
-import sys
-import glob
+# file: train_pickplace.py
+import os, json, math, time, random
 import numpy as np
-import open3d as o3d
-from tqdm import tqdm
-from pointnet2.pointnet2_utils import farthest_point_sample, index_points
-from torch.amp import autocast, GradScaler
-from torch.utils.data import DataLoader, WeightedRandomSampler
-from model import PointNetEncoder
-import matplotlib.pyplot as plt
-import time
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.utils.data import Sampler
-torch.backends.cudnn.benchmark = True
 import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+import matplotlib.pyplot as plt
+from placement_quality.path_simulation.model_training.precompute import precompute_split
 
-# Enable TF32 tensor‐core acceleration on supported hardware:
-torch.set_float32_matmul_precision('high')
+# ---- paths & toggles (edit these) ----
+RAW_ROOT         = "/home/chris/Chris/placement_ws/src/data/box_simulation/v7/data_collection/raw_data"
+GRASPS_META_PATH = "/home/chris/Chris/placement_ws/src/grasps_meta_data.json"
+PAIRS_DIR        = "/home/chris/Chris/placement_ws/src/data/box_simulation/v7/pairs"
+PAIRS_TRAIN      = os.path.join(PAIRS_DIR, "pairs_train.jsonl")
+PAIRS_VAL        = os.path.join(PAIRS_DIR, "pairs_val.jsonl")
+PAIRS_TEST       = os.path.join(PAIRS_DIR, "pairs_test.jsonl")
 
-class NumpyWeightedSampler(Sampler):
-    def __init__(self, weights, num_samples=None, seed=None):
-        self.weights = np.array(weights, dtype=np.float64)
-        self.probs = self.weights / self.weights.sum()
-        self.num_samples = num_samples or len(self.probs)
-        self.rs = np.random.RandomState(seed)
 
-    def __iter__(self):
-        idx = self.rs.choice(
-            len(self.probs),
-            size=self.num_samples,
-            replace=True,
-            p=self.probs
+USE_CORNERS = True     # match what you want to use
+USE_META    = True
+USE_DELTA   = True
+USE_PRECOMPUTED = True  # set True after running precompute.py
+
+# New ablation toggle
+USE_TRANSPORT = False    # express grasp in transport frame
+
+# Optional automation
+AUTO_PRECOMPUTE = True   # run precompute for train/val/test before training
+AUTO_EVAL_DECK = True    # run deck evaluation after training
+
+def _compose_precomp_root():
+    base = "/home/chris/Chris/placement_ws/src/data/box_simulation/v7/precomputed"
+    # Mirror precompute.py: create a subfolder per case
+    sub = []
+    sub.append("meta" if USE_META else "nometa")
+    sub.append("delta" if USE_DELTA else "abs")
+    sub.append("corners" if USE_CORNERS else "nocorners")
+    sub.append("transport" if USE_TRANSPORT else "world")
+    return os.path.join(base, "-".join(sub))
+
+PRECOMP_ROOT = _compose_precomp_root()
+# ---- training hyperparams ----
+EPOCHS      = 150
+PATIENCE    = 10  # allow more time for calibration
+BATCH_SIZE  = 4096
+LR          = 1e-3
+WD          = 3e-4
+DROPOUT     = 0.10
+HIDDEN      = 64
+NUM_WORKERS = 16
+CLIP_NORM   = 2.0
+OUT_DIR     = "/home/chris/Chris/placement_ws/src/data/box_simulation/v7/training_out"
+os.makedirs(OUT_DIR, exist_ok=True)
+
+# Reproducibility
+SEED = 42
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+# ---- class weights (from your counts) ----
+# IK: pos=3,016,709  neg=358,892
+IK_POS, IK_NEG = 3016709, 358892
+IK_POS_W = 0.5 * (IK_POS + IK_NEG) / IK_POS   # ~0.56
+IK_NEG_W = 0.5 * (IK_POS + IK_NEG) / IK_NEG   # ~4.70
+
+# Collision: pos=1,594,739  neg=1,780,862  (near-balanced)
+COL_POS, COL_NEG = 1594739, 1780862
+COL_POS_W = 0.5 * (COL_POS + COL_NEG) / COL_POS
+COL_NEG_W = 0.5 * (COL_POS + COL_NEG) / COL_NEG
+
+# ---- import your dataset & model ----
+from placement_quality.path_simulation.model_training.model import PickPlaceDataset, PickPlaceFeasibilityNet
+
+def bce_with_class_weights(logits, targets, pos_w, neg_w, eps=0.05):
+    """Per-sample weighted BCE (keeps it simple & explicit)."""
+    # logits, targets: [B,1]
+    t = targets * (1.0 - eps) + 0.5 * eps
+    bce = nn.functional.binary_cross_entropy_with_logits(logits, t, reduction='none')
+    w = targets * pos_w + (1.0 - targets) * neg_w
+    return (bce * w).mean()
+
+def batch_to_device(batch, device):
+    out = {}
+    for k, v in batch.items():
+        out[k] = v.to(device) if isinstance(v, torch.Tensor) else v
+    return out
+
+@torch.no_grad()
+def evaluate(model, loader, device, use_meta, use_corners, ik_w=(1.0,1.0), col_w=(1.0,1.0), weighted=False):
+    model.eval()
+    n, loss_ik_sum, loss_col_sum = 0, 0.0, 0.0
+    corr_ik = corr_col = 0
+    for batch in loader:
+        batch = batch_to_device(batch, device)
+        li, lc = model(
+            batch["grasp_Oi"].float(),
+            batch["objW_pick"].float(),
+            batch["objW_place"].float(),
+            meta=batch.get("meta", None).float() if use_meta and "meta" in batch else None,
+            corners_f=batch.get("corners_f", None).float() if use_corners and "corners_f" in batch else None,
         )
-        return iter(idx.tolist())
+        yik  = batch["y_ik"]
+        ycol = batch["y_col"]
 
-    def __len__(self):
-        return self.num_samples
-    
+        if weighted:
+            loss_ik  = bce_with_class_weights(li, yik,  pos_w=ik_w[0],  neg_w=ik_w[1])
+            loss_col = bce_with_class_weights(lc, ycol, pos_w=col_w[0], neg_w=col_w[1])
+        else:
+            loss_ik  = nn.functional.binary_cross_entropy_with_logits(li, yik)
+            loss_col = nn.functional.binary_cross_entropy_with_logits(lc, ycol)
 
-class Tee:
-    """Duplicate stdout/stderr to console and a log file."""
-    def __init__(self, *streams):
-        self.streams = streams
+        # accuracies at 0.5
+        pred_ik  = (li.sigmoid()  >= 0.5).float()
+        pred_col = (lc.sigmoid()  >= 0.5).float()
+        corr_ik  += (pred_ik  == yik).sum().item()
+        corr_col += (pred_col == ycol).sum().item()
 
-    def write(self, data):
-        for s in self.streams:
-            s.write(data)
-            s.flush()
+        bsz = yik.shape[0]
+        n += bsz
+        loss_ik_sum  += loss_ik.item()  * bsz
+        loss_col_sum += loss_col.item() * bsz
 
-    def flush(self):
-        for s in self.streams:
-            s.flush()
+    return {
+        "loss_ik":  loss_ik_sum / n,
+        "loss_col": loss_col_sum / n,
+        "acc_ik":   corr_ik  / n,
+        "acc_col":  corr_col / n,
+    }
 
-    def isatty(self):
-        # Pretend we are never a TTY, so Dynamo skips color logic
-        return False
+def main():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
+    set_seed(SEED)
+    dl_gen = torch.Generator(device="cpu")
+    dl_gen.manual_seed(SEED)
 
+    # Optionally precompute memmaps to match current toggles
+    if USE_PRECOMPUTED and AUTO_PRECOMPUTE:
+        os.makedirs(PRECOMP_ROOT, exist_ok=True)
+        print(f"[precompute] Writing precomputed features to {PRECOMP_ROOT} …")
+        precompute_split("train", PAIRS_TRAIN, PRECOMP_ROOT, RAW_ROOT, GRASPS_META_PATH, USE_META, USE_CORNERS, USE_DELTA)
+        precompute_split("val",   PAIRS_VAL,   PRECOMP_ROOT, RAW_ROOT, GRASPS_META_PATH, USE_META, USE_CORNERS, USE_DELTA)
+        precompute_split("test",  PAIRS_TEST,  PRECOMP_ROOT, RAW_ROOT, GRASPS_META_PATH, USE_META, USE_CORNERS, USE_DELTA)
 
-# Load point cloud
-def load_pointcloud(pcd_path, target_points=1024):
-    if type(pcd_path) == str:
-        pcd = o3d.io.read_point_cloud(pcd_path)
-        points = np.asarray(pcd.points)
-    else:
-        points = pcd_path
-    
-    # Convert to torch tensor for FPS
-    points_tensor = torch.from_numpy(points).float().unsqueeze(0)  # [1, N, 3]
-    
-    # Apply farthest point sampling to downsample
-    if len(points) > target_points:
-        fps_idx = farthest_point_sample(points_tensor, target_points)
-        points_downsampled = index_points(points_tensor, fps_idx).squeeze(0).numpy()
-        print(f"Downsampled point cloud from {len(points)} to {len(points_downsampled)} points")
-        return points_downsampled
-    
-    return points
+    # datasets / loaders
+    ds_train = PickPlaceDataset(PAIRS_TRAIN, RAW_ROOT, GRASPS_META_PATH,
+                                use_corners=USE_CORNERS, use_meta=USE_META, use_delta=USE_DELTA,
+                                precomp_dir=os.path.join(PRECOMP_ROOT, "train") if USE_PRECOMPUTED else None)
+    ds_val   = PickPlaceDataset(PAIRS_VAL,   RAW_ROOT, GRASPS_META_PATH,
+                                use_corners=USE_CORNERS, use_meta=USE_META, use_delta=USE_DELTA,
+                                precomp_dir=os.path.join(PRECOMP_ROOT, "val") if USE_PRECOMPUTED else None)
+    ds_test  = PickPlaceDataset(PAIRS_TEST,  RAW_ROOT, GRASPS_META_PATH,
+                                use_corners=USE_CORNERS, use_meta=USE_META, use_delta=USE_DELTA,
+                                precomp_dir=os.path.join(PRECOMP_ROOT, "test") if USE_PRECOMPUTED else None)
 
-def save_plots(history, log_dir):
-    epochs = list(range(1, len(history['train_success_loss']) + 1))
-    # Loss plot
-    plt.figure()
-    plt.plot(epochs, history['train_success_loss'], label='Train Success Loss')
-    plt.plot(epochs, history['val_success_loss'],   label='Val Success Loss')
-    plt.plot(epochs, history['train_collision_loss'], label='Train Collision Loss')
-    plt.plot(epochs, history['val_collision_loss'],   label='Val Collision Loss')
-    plt.xlabel('Epoch'); plt.ylabel('Loss'); plt.legend(); plt.tight_layout()
-    plt.savefig(os.path.join(log_dir, 'loss_curves.png'))
-    plt.close()
-    # Accuracy / Precision / Recall / F1 plot for success
-    plt.figure()
-    plt.plot(epochs, history['train_success_accuracy'], label='Train Success Acc')
-    plt.plot(epochs, history['val_success_accuracy'],   label='Val Success Acc')
-    plt.plot(epochs, history['train_success_precision'], label='Train Success Prec')
-    plt.plot(epochs, history['val_success_precision'],   label='Val Success Prec')
-    plt.plot(epochs, history['train_success_recall'],    label='Train Success Recall')
-    plt.plot(epochs, history['val_success_recall'],      label='Val Success Recall')
-    plt.plot(epochs, history['train_success_f1'],        label='Train Success F1')
-    plt.plot(epochs, history['val_success_f1'],          label='Val Success F1')
-    plt.xlabel('Epoch'); plt.ylabel('Metric'); plt.legend(); plt.tight_layout()
-    plt.savefig(os.path.join(log_dir, 'success_metrics.png'))
-    plt.close()
-    # Accuracy / Precision / Recall / F1 plot for collision
-    plt.figure()
-    plt.plot(epochs, history['train_collision_accuracy'], label='Train Collision Acc')
-    plt.plot(epochs, history['val_collision_accuracy'],   label='Val Collision Acc')
-    plt.plot(epochs, history['train_collision_precision'], label='Train Collision Prec')
-    plt.plot(epochs, history['val_collision_precision'],   label='Val Collision Prec')
-    plt.plot(epochs, history['train_collision_recall'],    label='Train Collision Recall')
-    plt.plot(epochs, history['val_collision_recall'],      label='Val Collision Recall')
-    plt.plot(epochs, history['train_collision_f1'],        label='Train Collision F1')
-    plt.plot(epochs, history['val_collision_f1'],          label='Val Collision F1')
-    plt.xlabel('Epoch'); plt.ylabel('Metric'); plt.legend(); plt.tight_layout()
-    plt.savefig(os.path.join(log_dir, 'collision_metrics.png'))
-    plt.close()
+    PERSIST = NUM_WORKERS > 0
+    dl_train = DataLoader(ds_train, batch_size=BATCH_SIZE, shuffle=True,
+                          num_workers=NUM_WORKERS, pin_memory=True, drop_last=False,
+                          generator=dl_gen, persistent_workers=PERSIST)
+    dl_val   = DataLoader(ds_val,   batch_size=BATCH_SIZE, shuffle=False,
+                          num_workers=NUM_WORKERS, pin_memory=True, drop_last=False,
+                          persistent_workers=PERSIST)
+    dl_test  = DataLoader(ds_test,  batch_size=BATCH_SIZE, shuffle=False,
+                          num_workers=NUM_WORKERS, pin_memory=True, drop_last=False,
+                          persistent_workers=PERSIST)
 
-def main(dir_path):
+    # model / opt — make flags match actual dataset features to avoid shape mismatch
+    USE_META_MODEL = USE_META and hasattr(ds_train, "view") and ("meta" in ds_train.view)
+    USE_CORNERS_MODEL = USE_CORNERS and hasattr(ds_train, "view") and ("corners_f" in ds_train.view)
 
-    # ——— 1) Logging setup —————————————————————————————————————
-    orig_stdout = sys.stdout
-    orig_stderr = sys.stderr
+    model = PickPlaceFeasibilityNet(use_meta=USE_META_MODEL, use_corners=USE_CORNERS_MODEL,
+                                    hidden=HIDDEN, dropout=DROPOUT).to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WD)
+    # Warmup + cosine decay
+    WARMUP_EPOCHS = 5
+    def lr_lambda(epoch):
+        # epoch is 0-indexed here
+        if epoch < WARMUP_EPOCHS:
+            return max(1e-3, float(epoch + 1) / float(WARMUP_EPOCHS))
+        t = epoch - WARMUP_EPOCHS
+        tmax = max(1, EPOCHS - WARMUP_EPOCHS)
+        return 0.5 * (1.0 + math.cos(math.pi * t / tmax))
+    sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lr_lambda)
 
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    log_dir = os.path.join(dir_path, 'logs', f'training_{timestamp}')
-    model_dir = os.path.join(dir_path, 'models', f'model_{timestamp}')
-    os.makedirs(log_dir, exist_ok=True)
-    os.makedirs(model_dir, exist_ok=True)
-    log_file = open(os.path.join(log_dir, 'training.log'), 'a')
+    # logs for plotting
+    hist = {"tr_loss_ik":[], "tr_loss_col":[], "tr_acc_ik":[], "tr_acc_col":[],
+            "va_loss_ik":[], "va_loss_col":[], "va_acc_ik":[], "va_acc_col":[]}
 
-    sys.stdout = Tee(orig_stdout, log_file)
-    sys.stderr = Tee(orig_stderr, log_file)
-
-    # ——— 2) Device & data splits —————————————————————————————
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"=== Training started on {device} ===")
-    train_data_json = os.path.join(dir_path, 'combined_data/train.json')
-    val_data_json = os.path.join(dir_path, 'combined_data/val.json')
-    print(f"Loading train dataset from {train_data_json}...")
-    train_dataset = KinematicFeasibilityDataset(train_data_json)
-
-    print(f"Loading val dataset from {val_data_json}...")
-    val_dataset = KinematicFeasibilityDataset(val_data_json)
-    N_train = len(train_dataset); print(f"  → {N_train} train samples")
-    N_val = len(val_dataset); print(f"  → {N_val}   val samples\n")
-
-   # ——— 3) Weighted sampler (train only) ————————————————————————
-    print("Preparing sampler weights...")
-    # Prepare or load sampler weights for success & collision
-    weights_path = os.path.join(dir_path, 'sample_weights.npy')
-    if os.path.exists(weights_path):
-        sample_weights = np.load(weights_path)
-        print(f"Loaded sample_weights from {weights_path}")
-    else:
-        # Compute once and save
-        labels_s = np.array([int(train_dataset[i][3].item()) for i in range(N_train)])
-        labels_c = np.array([int(train_dataset[i][4].item()) for i in range(N_train)])
-        counts_s = np.bincount(labels_s, minlength=2)
-        counts_c = np.bincount(labels_c, minlength=2)
-        w_s = {c: N_train/(2*counts_s[c]) for c in (0,1)}
-        w_c = {c: N_train/(2*counts_c[c]) for c in (0,1)}
-        sample_weights = np.array([w_s[labels_s[i]] + w_c[labels_c[i]] for i in range(N_train)], dtype=np.float32)
-        np.save(weights_path, sample_weights)
-        print(f"Saved sample_weights to {weights_path}")
-
-    sampler = NumpyWeightedSampler(sample_weights, num_samples=N_train, seed=42)
-    print("Done preparing sampler weights...")
-    epochs = 300
-
-    # ——— 4) DataLoaders —————————————————————————————————————rs
-    train_loader = DataLoader(
-        train_dataset, batch_size=512, sampler=sampler,
-        num_workers=24, pin_memory=False,        # ← flip this to False
-        persistent_workers=False, prefetch_factor=4
-    )
-    val_loader = DataLoader(
-        val_dataset, batch_size=128, shuffle=False,
-        num_workers=24, pin_memory=False,
-        persistent_workers=False, prefetch_factor=4
-    )
-
-    # ——— 5) Static point‐cloud embedding ———————————————————————
-    print("Computing static point-cloud embedding …")
-    pcd_path      = '/home/chris/Chris/placement_ws/src/placement_quality/docker_files/ros_ws/perfect_cube.pcd'
-    object_pcd_np = load_pointcloud(pcd_path)
-    object_pcd = torch.tensor(object_pcd_np, dtype=torch.float32).to(device)
-    print(f"Loaded point cloud with {object_pcd.shape[0]} points...")
-
-    # forward once through PointNetEncoder
-    with torch.no_grad():
-        pn = PointNetEncoder(global_feat_dim=256).to(device)
-        static_obj_feat = pn(object_pcd.unsqueeze(0)).detach()   # [1,256]
-    print("Done.\n")
-
-    # ——— 6) Model, optimizer, scaler, scheduler —————————————————————
-    model = GraspObjectFeasibilityNet(use_static_obj=True).to(device)
-    model.register_buffer('static_obj_feat', static_obj_feat)  # now model.static_obj_feat is available
-    model = torch.compile(model)
-    scaler = GradScaler(init_scale=2**16, growth_interval=2000, device=device)
-    criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
-
-    from torch.optim.lr_scheduler import OneCycleLR
-    scheduler = OneCycleLR(
-        optimizer,
-        max_lr=1e-3,
-        total_steps=epochs * len(train_loader),
-        pct_start=0.3,
-        anneal_strategy='cos',
-        div_factor=25,
-        final_div_factor=10000
-    )
-
-    # ——— 7) History buckets & training loop —————————————————————
-    history = {k: [] for k in [
-        'train_success_loss','train_collision_loss',
-        'train_success_accuracy','train_collision_accuracy',
-        'train_success_precision','train_collision_precision',
-        'train_success_recall','train_collision_recall',
-        'train_success_f1','train_collision_f1',
-        'val_success_loss','val_collision_loss',
-        'val_success_accuracy','val_collision_accuracy',
-        'val_success_precision','val_collision_precision',
-        'val_success_recall','val_collision_recall',
-        'val_success_f1','val_collision_f1'
-    ]}
-
-    best_val_loss = float("inf")
-    patience = 30
+    best_val_total = math.inf
+    best_val_ik = math.inf
+    best_val_col = math.inf
     no_improve = 0
+    ckpt_path = os.path.join(OUT_DIR, "best.pt")  # keep legacy name for best-total
+    ckpt_path_total = ckpt_path
+    ckpt_path_ik = os.path.join(OUT_DIR, "best_ik.pt")
+    ckpt_path_col = os.path.join(OUT_DIR, "best_col.pt")
 
-    print("Start training...")
-
-    for epoch in range(1, epochs+1):
-        # Training
+    print("Start training…")
+    for epoch in range(1, EPOCHS+1):
         model.train()
-        sums = { 'loss_s':0., 'loss_c':0., 'n':0 }
-        conf = { 'tp_s':0,'fp_s':0,'fn_s':0,'tn_s':0,
-                 'tp_c':0,'fp_c':0,'fn_c':0,'tn_c':0 }
-        
-        train_bar = tqdm(train_loader, desc=f"Epoch {epoch}/{epochs} [Train]", 
-                         file=orig_stderr, leave=False)
-        for grasp, init, final, sl, cl in train_bar:
-            grasp, init, final = [t.to(device, non_blocking=True)
-                                  for t in (grasp, init, final)]
-            sl = sl.to(device).unsqueeze(1)
-            cl = cl.to(device).unsqueeze(1)
+        pbar = tqdm(dl_train, desc=f"[epoch {epoch}/{EPOCHS}] train", leave=False)
+        loss_ik_sum = loss_col_sum = 0.0
+        corr_ik = corr_col = 0
+        seen = 0
 
-            optimizer.zero_grad()
-            with autocast(device_type='cuda'):
-                log_s, log_c = model(None, grasp, init, final)
-                loss_s = criterion(log_s, sl)
-                loss_c = criterion(log_c, cl)
-                alpha = 0.5  # You can adjust this weight based on your preference
-                beta = 0.5  # You can adjust this weight based on your preference
-                loss = alpha * loss_s + beta * loss_c
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)  
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler.step(optimizer)
-            scaler.update()
-            # — step the LR scheduler on every batch —  
-            scheduler.step()
+        for batch in pbar:
+            batch = batch_to_device(batch, device)
+            opt.zero_grad(set_to_none=True)
 
-            # accumulate loss
-            bs = sl.size(0)
-            sums['loss_s'] += loss_s.item() * bs
-            sums['loss_c'] += loss_c.item() * bs
-            sums['n']      += bs
+            li, lc = model(
+                batch["grasp_Oi"].float(),
+                batch["objW_pick"].float(),
+                batch["objW_place"].float(),
+                meta=batch.get("meta", None).float() if USE_META and "meta" in batch else None,
+                corners_f=batch.get("corners_f", None).float() if USE_CORNERS and "corners_f" in batch else None,
+            )
+            yik  = batch["y_ik"]
+            ycol = batch["y_col"]
 
-            # predictions
-            pred_s = (torch.sigmoid(log_s) > 0.5).long()
-            pred_c = (torch.sigmoid(log_c) > 0.5).long()
-            # update confusion for success
-            conf['tp_s'] += ((pred_s==1)&(sl==1)).sum().item()
-            conf['fp_s'] += ((pred_s==1)&(sl==0)).sum().item()
-            conf['fn_s'] += ((pred_s==0)&(sl==1)).sum().item()
-            conf['tn_s'] += ((pred_s==0)&(sl==0)).sum().item()
-            conf['tp_c'] += ((pred_c==1)&(cl==1)).sum().item()
-            conf['fp_c'] += ((pred_c==1)&(cl==0)).sum().item()
-            conf['fn_c'] += ((pred_c==0)&(cl==1)).sum().item()
-            conf['tn_c'] += ((pred_c==0)&(cl==0)).sum().item()
+            loss_ik  = bce_with_class_weights(li, yik,  pos_w=IK_POS_W,  neg_w=IK_NEG_W)
+            loss_col = bce_with_class_weights(lc, ycol, pos_w=COL_POS_W, neg_w=COL_NEG_W)
+            loss = loss_ik + loss_col
+            loss.backward()
+            if CLIP_NORM is not None:
+                nn.utils.clip_grad_norm_(model.parameters(), CLIP_NORM)
+            opt.step()
 
-        # compute train metrics
-        n = sums['n']
-        train_loss_s = sums['loss_s']/n
-        train_loss_c = sums['loss_c']/n
-        train_acc_s  = (conf['tp_s']+conf['tn_s'])/n
-        train_acc_c  = (conf['tp_c']+conf['tn_c'])/n
-        train_prec_s = conf['tp_s']/(conf['tp_s']+conf['fp_s']+1e-8)
-        train_prec_c = conf['tp_c']/(conf['tp_c']+conf['fp_c']+1e-8)
-        train_rec_s  = conf['tp_s']/(conf['tp_s']+conf['fn_s']+1e-8)
-        train_rec_c  = conf['tp_c']/(conf['tp_c']+conf['fn_c']+1e-8)
-        train_f1_s   = 2*train_prec_s*train_rec_s/(train_prec_s+train_rec_s+1e-8)
-        train_f1_c   = 2*train_prec_c*train_rec_c/(train_prec_c+train_rec_c+1e-8)
+            # running stats
+            with torch.no_grad():
+                pred_ik  = (li.sigmoid()  >= 0.5).float()
+                pred_col = (lc.sigmoid()  >= 0.5).float()
+                corr_ik  += (pred_ik  == yik).sum().item()
+                corr_col += (pred_col == ycol).sum().item()
+                bsz = yik.shape[0]
+                seen += bsz
+                loss_ik_sum  += loss_ik.item()  * bsz
+                loss_col_sum += loss_col.item() * bsz
 
-        # record train
-        history['train_success_loss'].append(train_loss_s)
-        history['train_collision_loss'].append(train_loss_c)
-        history['train_success_accuracy'].append(train_acc_s)
-        history['train_collision_accuracy'].append(train_acc_c)
-        history['train_success_precision'].append(train_prec_s)
-        history['train_collision_precision'].append(train_prec_c)
-        history['train_success_recall'].append(train_rec_s)
-        history['train_collision_recall'].append(train_rec_c)
-        history['train_success_f1'].append(train_f1_s)
-        history['train_collision_f1'].append(train_f1_c)
+            pbar.set_postfix({
+                "L_ik": f"{loss_ik.item():.4f}",
+                "L_col": f"{loss_col.item():.4f}",
+                "acc_ik": f"{(corr_ik/seen):.3f}",
+                "acc_col": f"{(corr_col/seen):.3f}",
+                "lr": f"{sched.get_last_lr()[0]:.2e}",
+            })
 
+        sched.step()
 
+        # epoch train summary
+        tr_loss_ik  = loss_ik_sum / seen
+        tr_loss_col = loss_col_sum / seen
+        tr_acc_ik   = corr_ik / seen
+        tr_acc_col  = corr_col / seen
 
-        # Validation
-        model.eval()
-        sums = {'loss_s':0., 'loss_c':0., 'n':0}
-        conf = {'tp_s':0,'fp_s':0,'fn_s':0,'tn_s':0,
-                'tp_c':0,'fp_c':0,'fn_c':0,'tn_c':0}
+        # val
+        # Use UNWEIGHTED validation losses for selection/checkpointing
+        valm = evaluate(model, dl_val, device, USE_META, USE_CORNERS,
+                        ik_w=(IK_POS_W, IK_NEG_W), col_w=(COL_POS_W, COL_NEG_W), weighted=False)
 
-        val_bar = tqdm(val_loader, desc=f"Epoch {epoch}/{epochs} [Val]  ", 
-                       file=orig_stderr, leave=False)
-        
-        with torch.no_grad():
-            for grasp, init, final, sl, cl in val_bar:
-                grasp, init, final = [t.to(device, non_blocking=True)
-                                      for t in (grasp, init, final)]
-                sl    = sl.to(device).unsqueeze(1)
-                cl    = cl.to(device).unsqueeze(1)
+        # print summary
+        print(f"Epoch {epoch:02d} | "
+              f"train L_ik {tr_loss_ik:.4f} acc_ik {tr_acc_ik:.3f} | "
+              f"L_col {tr_loss_col:.4f} acc_col {tr_acc_col:.3f}  ||  "
+              f"val L_ik {valm['loss_ik']:.4f} acc_ik {valm['acc_ik']:.3f} | "
+              f"L_col {valm['loss_col']:.4f} acc_col {valm['acc_col']:.3f}")
 
-                log_s, log_c = model(None, grasp, init, final)
-                loss_s = criterion(log_s, sl)
-                loss_c = criterion(log_c, cl)
+        # log
+        hist["tr_loss_ik"].append(tr_loss_ik)
+        hist["tr_loss_col"].append(tr_loss_col)
+        hist["tr_acc_ik"].append(tr_acc_ik)
+        hist["tr_acc_col"].append(tr_acc_col)
+        hist["va_loss_ik"].append(valm["loss_ik"])
+        hist["va_loss_col"].append(valm["loss_col"])
+        hist["va_acc_ik"].append(valm["acc_ik"])
+        hist["va_acc_col"].append(valm["acc_col"])
 
-                bs = sl.size(0)
-                sums['loss_s'] += loss_s.item() * bs
-                sums['loss_c'] += loss_c.item() * bs
-                sums['n']      += bs
-
-                pred_s = (torch.sigmoid(log_s) > 0.5).long()
-                pred_c = (torch.sigmoid(log_c) > 0.5).long()
-                conf['tp_s'] += ((pred_s==1)&(sl==1)).sum().item()
-                conf['fp_s'] += ((pred_s==1)&(sl==0)).sum().item()
-                conf['fn_s'] += ((pred_s==0)&(sl==1)).sum().item()
-                conf['tn_s'] += ((pred_s==0)&(sl==0)).sum().item()
-                conf['tp_c'] += ((pred_c==1)&(cl==1)).sum().item()
-                conf['fp_c'] += ((pred_c==1)&(cl==0)).sum().item()
-                conf['fn_c'] += ((pred_c==0)&(cl==1)).sum().item()
-                conf['tn_c'] += ((pred_c==0)&(cl==0)).sum().item()
-
-
-        # compute val metrics
-        n = sums['n']
-        val_loss_s = sums['loss_s']/n
-        val_loss_c = sums['loss_c']/n
-        val_acc_s  = (conf['tp_s']+conf['tn_s'])/n
-        val_acc_c  = (conf['tp_c']+conf['tn_c'])/n
-        val_prec_s = conf['tp_s']/(conf['tp_s']+conf['fp_s']+1e-8)
-        val_prec_c = conf['tp_c']/(conf['tp_c']+conf['fp_c']+1e-8)
-        val_rec_s  = conf['tp_s']/(conf['tp_s']+conf['fn_s']+1e-8)
-        val_rec_c  = conf['tp_c']/(conf['tp_c']+conf['fn_c']+1e-8)
-        val_f1_s   = 2*val_prec_s*val_rec_s/(val_prec_s+val_rec_s+1e-8)
-        val_f1_c   = 2*val_prec_c*val_rec_c/(val_prec_c+val_rec_c+1e-8)
-
-
-        # record val
-        history['val_success_loss'].append(val_loss_s)
-        history['val_collision_loss'].append(val_loss_c)
-        history['val_success_accuracy'].append(val_acc_s)
-        history['val_collision_accuracy'].append(val_acc_c)
-        history['val_success_precision'].append(val_prec_s)
-        history['val_collision_precision'].append(val_prec_c)
-        history['val_success_recall'].append(val_rec_s)
-        history['val_collision_recall'].append(val_rec_c)
-        history['val_success_f1'].append(val_f1_s)
-        history['val_collision_f1'].append(val_f1_c)
-
-        # — Checkpoint & logging ————————————————————————
-        val_total_loss = val_loss_s + val_loss_c
-        print(f"\nEpoch {epoch}: Val Total Loss={val_total_loss:.4f}\n")
-        
-        # Reduce LR on plateau
-        # log current LR (optional)
-        current_lr = optimizer.param_groups[0]['lr']
-        print(f"Learning rate now: {current_lr:.6e}\n")
-
-        # save this epoch's metrics
-        csv_path = os.path.join(log_dir, 'epoch_metrics.csv')
-        write_header = not os.path.exists(csv_path)
-        with open(csv_path, 'a') as csvf:
-            if write_header:
-                csvf.write(','.join(history.keys()) + '\n')
-            row = ','.join(f"{history[k][-1]:.4f}" for k in history) + '\n'
-            csvf.write(row)
-
-        # save best-model only
-        if val_total_loss < best_val_loss:
-            best_val_loss = val_total_loss
-            no_improve = 0
-            ckpt = os.path.join(model_dir, f"best_model_{best_val_loss:.4f}.pth".replace('.', '_'))
-            torch.save(model.state_dict(), ckpt)
-            print(f"→ Saved new best model: {os.path.basename(ckpt)}\n")
+        # checkpoint on total val loss
+        val_total = valm["loss_ik"] + valm["loss_col"]
+        if val_total < best_val_total:
+            best_val_total = val_total
+            torch.save({"model": model.state_dict(),
+                        "epoch": epoch,
+                        "hist": hist,
+                        "cfg": {
+                            "USE_CORNERS": USE_CORNERS, "USE_META": USE_META, "USE_DELTA": USE_DELTA,
+                            "HIDDEN": HIDDEN, "DROPOUT": DROPOUT
+                        }},
+                       ckpt_path_total)
+            print(f"  ↳ saved best-total checkpoint: {ckpt_path_total}")
+            no_improve = 0  # reset counter when total improves
         else:
             no_improve += 1
-        
-        if no_improve >= patience:
-            print(f"Early stopping at epoch {epoch}")
-            break
+            if no_improve >= PATIENCE:
+                print(f"Early stopping at epoch {epoch} (no improvement {no_improve}/{PATIENCE}).")
+                break
 
-    print("Training completed!")
-    log_file.close()
+        # also save per-head bests (independent of early stopping)
+        if valm["loss_ik"] < best_val_ik:
+            best_val_ik = valm["loss_ik"]
+            torch.save({"model": model.state_dict(),
+                        "epoch": epoch,
+                        "hist": hist,
+                        "cfg": {
+                            "USE_CORNERS": USE_CORNERS, "USE_META": USE_META, "USE_DELTA": USE_DELTA,
+                            "HIDDEN": HIDDEN, "DROPOUT": DROPOUT
+                        }},
+                       ckpt_path_ik)
+            print(f"  ↳ saved best-ik checkpoint: {ckpt_path_ik}")
 
-     # ——— 8) Post-training plots —————————————————————————————
-    save_plots(history, log_dir)
+        if valm["loss_col"] < best_val_col:
+            best_val_col = valm["loss_col"]
+            torch.save({"model": model.state_dict(),
+                        "epoch": epoch,
+                        "hist": hist,
+                        "cfg": {
+                            "USE_CORNERS": USE_CORNERS, "USE_META": USE_META, "USE_DELTA": USE_DELTA,
+                            "HIDDEN": HIDDEN, "DROPOUT": DROPOUT
+                        }},
+                       ckpt_path_col)
+            print(f"  ↳ saved best-col checkpoint: {ckpt_path_col}")
 
-    # Find optimal threshold on validation set
-    thresholds = np.arange(0.1, 0.9, 0.05)
-    best_f1 = 0
-    best_threshold = 0.5
-    for thresh in thresholds:
-        # evaluate with threshold
-        if val_f1_s > best_f1:
-            best_f1 = val_f1_s
-            best_threshold = thresh
+    # final test eval (best or last — we’ll use best)
+    ckpt = torch.load(ckpt_path, map_location=device)
+    model.load_state_dict(ckpt["model"])
+    # Report unweighted test losses for comparability with selection
+    testm = evaluate(model, dl_test, device, USE_META, USE_CORNERS,
+                     ik_w=(IK_POS_W, IK_NEG_W), col_w=(COL_POS_W, COL_NEG_W), weighted=False)
+    print(f"[TEST] L_ik {testm['loss_ik']:.4f} acc_ik {testm['acc_ik']:.3f} | "
+          f"L_col {testm['loss_col']:.4f} acc_col {testm['acc_col']:.3f}")
 
+    # plot curves
+    fig = plt.figure(figsize=(10,6))
+    xs = np.arange(1, len(hist["tr_loss_ik"]) + 1)
+    # losses
+    plt.subplot(2,2,1); plt.plot(xs, hist["tr_loss_ik"]);  plt.title("Train IK Loss")
+    plt.subplot(2,2,2); plt.plot(xs, hist["tr_loss_col"]); plt.title("Train Collision Loss")
+    plt.subplot(2,2,3); plt.plot(xs, hist["va_loss_ik"]);  plt.title("Val IK Loss")
+    plt.subplot(2,2,4); plt.plot(xs, hist["va_loss_col"]); plt.title("Val Collision Loss")
+    plt.tight_layout(); plt.savefig(os.path.join(OUT_DIR, "loss_curves.png")); plt.close(fig)
 
+    fig = plt.figure(figsize=(10,6))
+    plt.subplot(2,2,1); plt.plot(xs, hist["tr_acc_ik"]);  plt.title("Train IK Acc")
+    plt.subplot(2,2,2); plt.plot(xs, hist["tr_acc_col"]); plt.title("Train Collision Acc")
+    plt.subplot(2,2,3); plt.plot(xs, hist["va_acc_ik"]);  plt.title("Val IK Acc")
+    plt.subplot(2,2,4); plt.plot(xs, hist["va_acc_col"]); plt.title("Val Collision Acc")
+    plt.tight_layout(); plt.savefig(os.path.join(OUT_DIR, "acc_curves.png")); plt.close(fig)
 
+    # log dump
+    with open(os.path.join(OUT_DIR, "history.json"), "w") as f:
+        json.dump(hist, f, indent=2)
+    print(f"Saved plots & logs to: {OUT_DIR}")
+
+    # Optional: evaluate SIM deck using the newly saved checkpoint
+    if AUTO_EVAL_DECK:
+        try:
+            import importlib
+            evalmod = importlib.import_module("placement_quality.path_simulation.model_training.evaluate")
+            evalmod.USE_CORNERS = USE_CORNERS
+            evalmod.USE_META = USE_META
+            evalmod.USE_DELTA = USE_DELTA
+            evalmod.USE_TRANSPORT = USE_TRANSPORT
+            evalmod.DEFAULT_CHECKPOINT = ckpt_path
+            # Ensure evaluation reads from the same precompute directory used for this run
+            evalmod.PRECOMP_ROOT = PRECOMP_ROOT
+            print("[Eval] Running deck evaluation with current toggles…")
+            evalmod.main()
+        except Exception as e:
+            print(f"[Eval] Skipped deck evaluation due to error: {e}")
 
 if __name__ == "__main__":
-    # Paths
-    my_dir = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2"
-    main(my_dir)
+    main()

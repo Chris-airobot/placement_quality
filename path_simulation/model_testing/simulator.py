@@ -28,8 +28,12 @@ from RRT_task import RRTTask
 from functools import partial
 from typing import List
 
-PEDESTAL_SIZE = np.array([0.09, 0.11, 0.1])   # X, Y, Z in meters
-        
+PEDESTAL_SIZE = np.array([0.27, 0.22, 0.10])   # X, Y, Z in meters
+
+# ---- data sources (no argparse) ----
+SIM_PATH = "/home/chris/Chris/placement_ws/src/data/box_simulation/v7/test_deck_sim_10k.jsonl"  # or *_sample.jsonl/json
+PEDESTAL_POSES_PATH = "/home/chris/Chris/placement_ws/src/pedestal_poses.json"
+
 
 class Simulator:
     def __init__(self, use_physics=False):
@@ -62,12 +66,9 @@ class Simulator:
         self.contact_force = 0.0
         self.forced_completion = False
 
-        # Test data
-        with open("/home/chris/Chris/placement_ws/src/placement_quality/path_simulation/model_testing/actual_box_experiment_test.json", "r") as f:
-            self.test_data: list[dict] = json.load(f)
-
+        self.test_data: list[dict] = None
         self.current_data = None
-        self.data_index = 7
+        self.data_index = 0
         self.results = []
 
 
@@ -86,7 +87,6 @@ class Simulator:
             name="RRT_controller",
             robot_articulation=self.robot,
             ground_plane=self.task.ground_plane,
-            pedestal_planner_box=self.task.pedestal,
         )
         print(f"RRT Controller created")
 
@@ -101,14 +101,20 @@ class Simulator:
 
         self.setup_kinematics()
         self._add_light_to_stage()
-        
+
 
         self.task.set_params(
-            object_position=np.array([0.2, -0.3, self.current_data["initial_object_pose"][0]]),
-            object_orientation=np.array(self.current_data["initial_object_pose"][1:]),
-            preview_box_position=np.array([0.2, -0.3, self.current_data["final_object_pose"][0]]),
-            preview_box_orientation=np.array(self.current_data["final_object_pose"][1:]),
+            object_position=np.array(self.current_data["initial_object_pose"][:3]),
+            object_orientation=np.array(self.current_data["initial_object_pose"][3:]),
+            preview_box_position=np.array(self.current_data["final_object_pose"][:3]),
+            preview_box_orientation=np.array(self.current_data["final_object_pose"][3:]),
         )
+
+        # Initialize pedestals for the first case
+        ped = self.current_data.get("pedestal", {})
+        pick_pose = ped.get("pick", {"position": [0.2, -0.3, 0.05]})
+        place_pose = ped.get("place", {"position": [0.3, 0.0, 0.05]})
+        self.update_pedestals(pick_pose, place_pose)
 
 
     def setup_contact_sensors(self):
@@ -166,15 +172,21 @@ class Simulator:
         self.step_counter = 0
         self.collision_counter = 0
         self.forced_completion = False
-        # self.task.object_init(False)
-        
-        # Reset state flags
+        # Reset object preview to current case (sim-driven)
         self.task.set_params(
-            object_position=np.array([0.2, -0.3, self.current_data["initial_object_pose"][0]]),
-            object_orientation=np.array(self.current_data["initial_object_pose"][1:]),
-            preview_box_position=np.array([0.2, -0.3, self.current_data["final_object_pose"][0]]),
-            preview_box_orientation=np.array(self.current_data["final_object_pose"][1:]),
+            object_position=np.array(self.current_data["initial_object_pose"][:3]),
+            object_orientation=np.array(self.current_data["initial_object_pose"][3:]),
+            preview_box_position=np.array(self.current_data["final_object_pose"][:3]),
+            preview_box_orientation=np.array(self.current_data["final_object_pose"][3:]),
         )
+        # Also reset pedestal positions to avoid duplicates/drift across attempts
+        ped = self.current_data.get("pedestal", {})
+        pick_pose = ped.get("pick", {"position": [0.2, -0.3, 0.05]})
+        place_pose = ped.get("place", {"position": [0.3, 0.0, 0.05]})
+        try:
+            self.update_pedestals(pick_pose, place_pose)
+        except Exception:
+            pass
 
 
     def slow_close_gripper_panda(self, step_size=0.001, min_pos=0.0, max_pos=0.04, n_steps=60):
@@ -204,23 +216,22 @@ class Simulator:
             return
 
     def calculate_placement_pose(self, grasp_pose, object_initial_pose, object_final_pose):
-        # print(f"Calculating placement pose")
-        # print(f"grasp_pose: {grasp_pose}")
-        # print(f"object_initial_pose: {object_initial_pose}")
-        # print(f"object_final_pose: {object_final_pose}")
-        grasp_position_initial             = np.array(grasp_pose[0:3])
-        grasp_orientation_wxyz_initial     = grasp_pose[3:]
+        """
+        Given a grasp pose defined in the object's local frame at the initial pose,
+        compute the corresponding grasp pose in world for the final object pose.
+        Object poses are [x, y, z, qw, qx, qy, qz].
+        Returns [final_grasp_position, final_grasp_quat_wxyz].
+        """
+        grasp_position_initial         = np.array(grasp_pose[0])
+        grasp_orientation_wxyz_initial = np.array(grasp_pose[1])
 
-        # Initial object pose in world: [z, qw, qx, qy, qz]
-        object_height_initial              = object_initial_pose[0] 
-        object_orientation_wxyz_initial    = object_initial_pose[1:]
-        # assume x=0.35, y=0.0
-        object_position_initial            = np.array([0.2, -0.3, object_height_initial])
+        # Initial object pose in world: [x, y, z, qw, qx, qy, qz]
+        object_position_initial         = np.array(object_initial_pose[:3])
+        object_orientation_wxyz_initial = np.array(object_initial_pose[3:])
 
-        # Final object pose in world: [z, qw, qx, qy, qz]
-        object_height_final                = object_final_pose[0] 
-        object_orientation_wxyz_final      = object_final_pose[1:]
-        object_position_final              = np.array([0.2, -0.3, object_height_final])
+        # Final object pose in world: [x, y, z, qw, qx, qy, qz]
+        object_position_final           = np.array(object_final_pose[:3])
+        object_orientation_wxyz_final   = np.array(object_final_pose[3:])
     
 
 
@@ -288,11 +299,6 @@ class Simulator:
 
         # --- 6) Stack into your final grasp pose ------------------------
 
-        # final_grasp_pose = np.concatenate([
-        #     final_grasp_position,
-        #     quaternion_final_grasp_wxyz
-        # ])
-
         return [final_grasp_position, quaternion_final_grasp_wxyz]
 
     def _add_light_to_stage(self):
@@ -306,16 +312,29 @@ class Simulator:
     def setup_collision_detection(self):
         """Set up the ground collision detector"""
         stage = omni.usd.get_context().get_stage()
-        self.collision_detector = GroundCollisionDetector(stage)
-        
+        self.collision_detector = GroundCollisionDetector(stage, non_colliding_part=f"{self.base_path}/panda_link0")
+
         # Create a virtual ground plane at z=-0.05 (lowered to avoid false positives)
         self.collision_detector.create_virtual_ground(
-            size_x=20.0, 
-            size_y=20.0, 
+            size_x=20.0,
+            size_y=20.0,
             position=Gf.Vec3f(0, 0, -0.001/2)  # Lower the ground to avoid false positives
         )
-        self.collision_detector.create_virtual_pedestal()
-        
+
+        # Create initial pedestals for collision detection
+        self.collision_detector.create_virtual_pedestal(
+            position=Gf.Vec3f(0.2, -0.3, 0.05),
+            size_x=float(PEDESTAL_SIZE[0]),
+            size_y=float(PEDESTAL_SIZE[1]),
+            size_z=float(PEDESTAL_SIZE[2])
+        )
+        self.collision_detector.create_virtual_place_pedestal(
+            position=Gf.Vec3f(0.3, 0.0, 0.05),
+            size_x=float(PEDESTAL_SIZE[0]),
+            size_y=float(PEDESTAL_SIZE[1]),
+            size_z=float(PEDESTAL_SIZE[2])
+        )
+
         # Define robot parts to check for collisions (explicitly excluding the base link0)
         self.robot_parts_to_check = [
             f"{self.base_path}/panda_link1",
@@ -340,16 +359,44 @@ class Simulator:
             self.collision_detector.is_colliding_with_pedestal(part_path)
             for part_path in self.robot_parts_to_check
         )
+
+        place_pedestal_hit = any(
+            self.collision_detector.is_colliding_with_place_pedestal(part_path)
+            for part_path in self.robot_parts_to_check
+        )
+
+
+
         # box_hit = any(
         #     self.collision_detector.is_colliding_with_box(part_path)
         #     for part_path in self.robot_parts_to_check
         # )
-        self.collision_detected = ground_hit or pedestal_hit 
+        self.collision_detected = ground_hit or pedestal_hit or place_pedestal_hit
         return self.collision_detected
 
     def check_object_pedestal_collision(self):
         """Check if the grasped object is colliding with the pedestal."""
         return self.collision_detector.is_object_colliding_with_pedestal()
+
+    def check_object_place_pedestal_collision(self):
+        """Check if the grasped object is colliding with the place pedestal."""
+        return self.collision_detector.is_colliding_with_place_pedestal()
+
+    def update_pedestals(self, pick_pose, place_pose):
+        """Update both visual pedestals and collision detector pedestal positions"""
+        # Update visual pedestals in the task
+        pick_pos = pick_pose["position"]
+        place_pos = place_pose["position"]
+
+        self.task.set_params(
+            pick_pedestal_position=pick_pos,
+            place_pedestal_position=place_pos
+        )
+
+        # Update pick pedestal position
+        self.collision_detector.update_pick_pedestal_position(pick_pos)
+        # Update place pedestal position
+        self.collision_detector.update_place_pedestal_position(place_pos)
 
     def setup_kinematics(self):
         """Set up the kinematics solver for the Franka robot"""
@@ -357,15 +404,15 @@ class Simulator:
         # print("Supported Robots with a Lula Kinematics Config:", interface_config_loader.get_supported_robots_with_lula_kinematics())
         kinematics_config = interface_config_loader.load_supported_lula_kinematics_solver_config("Franka")
         self._kinematics_solver = LulaKinematicsSolver(**kinematics_config)
-        
+
         # Print valid frame names for debugging
         # print("Valid frame names at which to compute kinematics:", self._kinematics_solver.get_all_frame_names())
-        
+
         # Configure the articulation kinematics solver with the end effector
         end_effector_name = "panda_hand"
         self._articulation_kinematics_solver = ArticulationKinematicsSolver(
-            self.robot, 
-            self._kinematics_solver, 
+            self.robot,
+            self._kinematics_solver,
             end_effector_name
         )
 
@@ -403,3 +450,10 @@ class Simulator:
             return False
             
         return True
+    
+    def check_ik(self, position, orientation):
+        """Check if the IK is successful"""
+        return self.controller._make_new_plan(
+            np.array(position), 
+            np.array(orientation)
+        )

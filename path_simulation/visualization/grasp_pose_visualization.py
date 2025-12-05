@@ -93,7 +93,7 @@ class GraspVisualizer(Node):
 
         # --- Load the PCD file ---
         # NOTE: Update the file path to your actual PCD file!
-        grasps_file = "/home/chris/Chris/placement_ws/src/placement_quality/path_simulation/model_testing/actual_box_grasp_test.json"
+        grasps_file = "/home/chris/Chris/placement_ws/src/grasps.json"
         # object_poses_file = "/home/chris/Chris/placement_ws/src/data/box_simulation/v2/experiments/test_different_dimensions/object_poses_box.json"
         object_poses_file = "/home/chris/Chris/placement_ws/src/object_poses_box.json"
         
@@ -191,8 +191,9 @@ class GraspVisualizer(Node):
                                                         self.object_pose["orientation_quat"])
         
 
+        tmp_pose = self.world_grasp_pose[0]+self.world_grasp_pose[1]
 
-        self.transformed_grasp_pose = local_transform(self.world_grasp_pose, [0,0,-0.1033])
+        self.transformed_grasp_pose = local_transform(tmp_pose, [0,0,-0.065])
         draw_frame(self.transformed_grasp_pose[0], self.transformed_grasp_pose[1])
 
         pregrasp_pos, pregrasp_quat = self.get_pregrasp(self.transformed_grasp_pose[0], self.transformed_grasp_pose[1], offset=0.15)
@@ -299,8 +300,10 @@ class GraspVisualizer(Node):
         robot_base_translation, robot_base_orientation = self._articulation.get_world_pose()
         self._kinematics_solver.set_robot_base_pose(robot_base_translation, robot_base_orientation)
         # Compute IK to move end effector to target
+        grasp_position = np.array([ 0.165, -0.55,   0.225]) 
+        grasp_orientation = np.array([1.0, 0.0, 0.0, 0.0])
         action, success = self._articulation_kinematics_solver.compute_inverse_kinematics(
-            target_position, target_orientation
+            grasp_position, grasp_orientation
         )
         if success:
             self._articulation.apply_action(action)

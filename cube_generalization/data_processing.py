@@ -24,11 +24,27 @@ QUOTAS = {
     "ADJACENT": 3,   # different face (not opposite)
     "OPPOSITE": 2,   # opposite face
 }
+
+BUCKET_TARGET = {
+    "ADJACENT": 0.667,
+    "OPPOSITE": 0.167,
+    "MEDIUM":   0.130,
+    "SMALL":    0.036,
+}
+
+TARGET_SUCCESS_RATE_BY_BUCKET = {
+    # Chosen so sum(BUCKET_TARGET[b] * p_b) ~= 0.478
+    "ADJACENT": 0.408,
+    "OPPOSITE": 0.558,
+    "MEDIUM":   0.658,
+    "SMALL":    0.758,
+}
+
 GROUP_CAP          = sum(QUOTAS.values())   # total per clean pick
 THRESH_SMALL_DEG   = 45.0
 
 # Target positive rate per bucket (pos = success==1 & collision==0)
-TARGET_SUCCESS_RATE = 0.37
+TARGET_SUCCESS_RATE = 0.478
 
 # Split fractions
 TRAIN_FRAC, VAL_FRAC, TEST_FRAC = 0.80, 0.10, 0.10
@@ -105,6 +121,38 @@ def sample_bucket_indices(idx_list: np.ndarray,
             out = np.concatenate([out, fill], axis=0)
     return out
 
+# Target-driven allocator (largest-remainder) with availability constraints
+def _compute_target_alloc(bucket_lists: Dict[str, np.ndarray],
+                          group_cap: int) -> Dict[str, int]:
+    order = ("ADJACENT","OPPOSITE","MEDIUM","SMALL")
+    desired = {b: group_cap * BUCKET_TARGET[b] for b in order}
+    floors  = {b: int(math.floor(desired[b])) for b in order}
+    avail   = {b: bucket_lists[b].size for b in order}
+
+    # clip base by availability
+    alloc = {b: min(floors[b], avail[b]) for b in order}
+    used = sum(alloc.values())
+    max_total = min(group_cap, sum(avail.values()))
+
+    # fractional parts for largest remainder distribution
+    frac = {b: desired[b] - floors[b] for b in order}
+    remainder_order = sorted(order, key=lambda x: (-frac[x], order.index(x)))
+
+    # Distribute leftover deterministically by remainder order, respecting availability
+    while used < max_total:
+        changed = False
+        for b in remainder_order:
+            if used >= max_total:
+                break
+            if alloc[b] < avail[b]:
+                alloc[b] += 1
+                used += 1
+                changed = True
+        if not changed:
+            break
+
+    return alloc
+
 # ============================ 1) BUILD RICH PAIRS ============================
 
 def build_rich_pairs(data_dir: str = DATA_DIR,
@@ -173,6 +221,7 @@ def build_rich_pairs(data_dir: str = DATA_DIR,
 
         out = {k: [] for k in (
             "t_loc_list", "R_loc6_list",
+            "init_object_poses",            # NEW
             "final_object_poses", "final_face_ids",
             "success_labels", "collision_labels",
             "object_dimensions"
@@ -227,27 +276,8 @@ def build_rich_pairs(data_dir: str = DATA_DIR,
                     "OPPOSITE": all_local[opp_mask   & not_self],
                 }
 
-                # base allocations = min(quota, availability)
-                alloc = {b: min(QUOTAS[b], bucket_lists[b].size) for b in QUOTAS}
-                k_sum = sum(alloc.values())
-
-                # try to fill to GROUP_CAP by redistributing shortage across non-empty buckets
-                if k_sum < group_cap:
-                    need = group_cap - k_sum
-                    # simple round-robin over buckets with spare
-                    order = ("SMALL","MEDIUM","ADJACENT","OPPOSITE")
-                    while need > 0:
-                        progressed = False
-                        for b in order:
-                            spare = bucket_lists[b].size - alloc[b]
-                            if spare > 0:
-                                alloc[b] += 1
-                                need -= 1
-                                progressed = True
-                                if need == 0:
-                                    break
-                        if not progressed:
-                            break  # no more spare anywhere
+                # target-driven allocation by BUCKET_TARGET (no binding caps)
+                alloc = _compute_target_alloc(bucket_lists, group_cap)
 
                 # per-bucket sampling with per-bucket success mix
                 pick_t = g_tloc[pick_local].tolist()
@@ -261,12 +291,16 @@ def build_rich_pairs(data_dir: str = DATA_DIR,
                     if idx_bucket.size == 0:
                         continue
 
-                    chosen_loc = sample_bucket_indices(idx_bucket, g_succ, g_coll, k, target_succ)
+                    # steer class mix inside each bucket with your existing success-aware sampler
+                    target_succ_b = TARGET_SUCCESS_RATE_BY_BUCKET[b]
+                    chosen_loc = sample_bucket_indices(idx_bucket, g_succ, g_coll, k, target_succ_b)
                     if chosen_loc.size == 0:
                         continue
-
+                    
+                    init_pose_pick = g_poses[pick_local]   # << anchor object's pose at the pick
+                    
                     for j_local in chosen_loc.tolist():
-                        pose_j = g_poses[j_local]
+                        pose_j = g_poses[j_local]          # final pose for this pair
                         dims_j = g_dims[j_local].tolist()
                         face_j = int(g_faces[j_local])
                         s_j    = float(g_succ[j_local])
@@ -274,6 +308,7 @@ def build_rich_pairs(data_dir: str = DATA_DIR,
 
                         out["t_loc_list"].append(pick_t)
                         out["R_loc6_list"].append(pick_R)
+                        out["init_object_poses"].append(init_pose_pick)   # NEW
                         out["final_object_poses"].append(pose_j)
                         out["final_face_ids"].append(face_j)
                         out["object_dimensions"].append(dims_j)
@@ -292,7 +327,10 @@ def build_rich_pairs(data_dir: str = DATA_DIR,
         n    = len(out["success_labels"])
         col  = sum(1 for x in out["collision_labels"] if x > 0.5)
         succ_rate = sum(1 for s,c in zip(out["success_labels"], out["collision_labels"]) if (s > 0.5 and c < 0.5)) / max(1,n)
-        print(f"  {os.path.basename(out_path)}: {n} pairs | success {succ_rate:.3f} | collision {col/max(1,n):.3f}")
+        col_rate = sum(1 for x in out["collision_labels"] if x > 0.5) / max(1, n)
+        bucket_counts = Counter(out["final_face_ids"])  # crude—face ids, not relations
+        print(f"  {os.path.basename(out_path)}: {n} pairs | collision {col_rate:.3f}")
+
 
     if total_pairs > 0:
         succ_rate = succ_pairs / total_pairs
@@ -326,6 +364,7 @@ def combine_processed_data(data_dir: str = DATA_DIR,
                 obj = {
                     "t_loc": d["t_loc_list"][i],
                     "R_loc6": d["R_loc6_list"][i],
+                    "init_object_pose":  d["init_object_poses"][i],   # NEW
                     "final_object_pose": d["final_object_poses"][i],
                     "final_face_id": int(d["final_face_ids"][i]),
                     "object_dimensions": d["object_dimensions"][i],
@@ -454,6 +493,197 @@ def split_all_data(data_dir: str = DATA_DIR,
     print(f"leaky buckets (train∩test): {leak_tt}")
     print(f"leaky buckets (val∩test): {leak_vt}")
 
+# ============================ DIRECT: RAW -> SPLIT (streamed) ============================
+
+def direct_split_from_raw(data_dir: str = DATA_DIR,
+                          source_subdir: str = RAW_SUBDIR,
+                          source_glob: str = SOURCE_GLOB,
+                          out_subdir: str = COMBINED_SUBDIR,
+                          quotas: Dict[str,int] = QUOTAS,
+                          group_cap: int = GROUP_CAP,
+                          small_thresh_deg: float = THRESH_SMALL_DEG,
+                          train_frac: float = TRAIN_FRAC,
+                          val_frac: float = VAL_FRAC,
+                          test_frac: float = TEST_FRAC,
+                          seed: int = SEED):
+    src_dir = os.path.join(data_dir, source_subdir)
+    out_dir = os.path.join(data_dir, out_subdir)
+    ensure_dir(out_dir)
+
+    train_p = os.path.join(out_dir, "train.json")
+    val_p   = os.path.join(out_dir, "val.json")
+    test_p  = os.path.join(out_dir, "test.json")
+
+    outs = {"train.json": open(train_p, "w"),
+            "val.json":   open(val_p, "w"),
+            "test.json":  open(test_p, "w")}
+    for f in outs.values(): f.write("[\n")
+    first = {k: True for k in outs}
+
+    def pick_split_by_key(key_tuple):
+        h = hashlib.md5((str(key_tuple) + f"|{seed}").encode("utf-8")).digest()
+        u = int.from_bytes(h[:8], "big") / 2**64
+        return "train.json" if u < train_frac else ("val.json" if u < train_frac + val_frac else "test.json")
+
+    files = sorted(glob.glob(os.path.join(src_dir, source_glob)))
+    print(f"[direct] {len(files)} raw files in {src_dir}")
+    print(f"[direct] writing splits to {out_dir}")
+
+    global_counts = Counter()
+    total_pairs, succ_pairs = 0, 0
+
+    for path in tqdm(files, desc="building & splitting (per-grasp)"):
+        raw = json.load(open(path, "r"))
+        rows = []
+        for _, lst in raw.items():
+            rows.extend(lst)
+
+        N = len(rows)
+        faces = np.empty(N, dtype=np.int16)
+        quats = np.empty((N,4), dtype=np.float64)
+        succ  = np.empty(N, dtype=np.int8)
+        coll  = np.empty(N, dtype=np.int8)
+        ghit  = np.empty(N, dtype=np.int8)
+        phit  = np.empty(N, dtype=np.int8)
+        bhit  = np.empty(N, dtype=np.int8)
+        poses = [None]*N
+        dims3 = np.empty((N,3), dtype=np.float32)
+        tloc  = np.empty((N,3), dtype=np.float32)
+        rloc6 = np.empty((N,6), dtype=np.float32)
+        sigs  = [None]*N
+
+        for j, c in enumerate(rows):
+            qw,qx,qy,qz  = c[1][3:7]
+            quats[j,:]   = (qw,qx,qy,qz)
+            succ[j]      = 1 if c[2] else 0
+            coll[j]      = 1 if c[3] else 0
+            ghit[j]      = 1 if c[4] else 0
+            phit[j]      = 1 if c[5] else 0
+            bhit[j]      = 1 if c[6] else 0
+            poses[j]     = c[1]
+            ex           = c[7]
+            faces[j]     = int(ex["final_face_id"])
+            dims3[j,:]   = np.asarray(ex["dims"], dtype=np.float32)
+            tloc[j,:]    = np.asarray(ex["t_loc"], dtype=np.float32)
+            rloc6[j,:]   = np.asarray(ex["R_loc6"], dtype=np.float32)
+            sigs[j]      = grasp_signature(ex["t_loc"], ex["R_loc6"])
+
+        quats = quat_normalize(quats)
+
+        groups = defaultdict(list)
+        for idx, key in enumerate(sigs):
+            groups[key].append(idx)
+
+        for _, g_idx in groups.items():
+            g_idx = np.asarray(g_idx, dtype=np.int64)
+
+            clean_mask = (succ[g_idx]==1) & (coll[g_idx]==0) & (ghit[g_idx]==0) & (phit[g_idx]==0) & (bhit[g_idx]==0)
+            clean_ids  = g_idx[clean_mask]
+            if clean_ids.size == 0:
+                continue
+
+            g_faces = faces[g_idx]
+            g_quats = quats[g_idx]
+            g_succ  = succ[g_idx]
+            g_coll  = coll[g_idx]
+            g_poses = [poses[int(k)] for k in g_idx]
+            g_dims  = dims3[g_idx]
+            g_tloc  = tloc[g_idx]
+            g_rloc6 = rloc6[g_idx]
+
+            for li, gi in enumerate(clean_ids):
+                pick_local = int(np.where(g_idx == gi)[0][0])
+
+                fi = int(g_faces[pick_local])
+
+                all_local = np.arange(g_idx.size, dtype=np.int64)
+                not_self  = all_local != pick_local
+
+                same_mask = (g_faces == fi)
+                opp_mask  = (g_faces == _OPPOSITE[fi])
+                adj_mask  = (~same_mask) & (~opp_mask)
+
+                ang_deg = quat_angle_deg_abs(g_quats[pick_local], g_quats)
+                small_mask  = same_mask & (ang_deg <= small_thresh_deg)
+                medium_mask = same_mask & (~small_mask)
+
+                bucket_lists = {
+                    "SMALL":    all_local[small_mask & not_self],
+                    "MEDIUM":   all_local[medium_mask & not_self],
+                    "ADJACENT": all_local[adj_mask   & not_self],
+                    "OPPOSITE": all_local[opp_mask   & not_self],
+                }
+
+                # target-driven allocation by BUCKET_TARGET (no binding caps)
+                alloc = _compute_target_alloc(bucket_lists, group_cap)
+
+                pick_t = g_tloc[pick_local].tolist()
+                pick_R = g_rloc6[pick_local].tolist()
+
+                for b in ("SMALL","MEDIUM","ADJACENT","OPPOSITE"):
+                    k = alloc[b]
+                    if k <= 0:
+                        continue
+                    idx_bucket = bucket_lists[b]
+                    if idx_bucket.size == 0:
+                        continue
+
+                    target_succ_b = TARGET_SUCCESS_RATE_BY_BUCKET[b]
+                    chosen_loc = sample_bucket_indices(idx_bucket, g_succ, g_coll, k, target_succ_b)
+                    if chosen_loc.size == 0:
+                        continue
+
+                    init_pose_pick = g_poses[pick_local]
+
+                    for j_local in chosen_loc.tolist():
+                        pose_j = g_poses[j_local]
+                        dims_j = g_dims[j_local].tolist()
+                        face_j = int(g_faces[j_local])
+                        s_j    = float(g_succ[j_local])
+                        c_j    = float(g_coll[j_local])
+
+                        obj = {
+                            "t_loc": pick_t,
+                            "R_loc6": pick_R,
+                            "init_object_pose":  init_pose_pick,
+                            "final_object_pose": pose_j,
+                            "final_face_id": face_j,
+                            "object_dimensions": dims_j,
+                            "success_label": s_j,
+                            "collision_label": c_j
+                        }
+
+                        key = _dims_key(obj["object_dimensions"])
+                        tgt = pick_split_by_key(key)
+                        if not first[tgt]:
+                            outs[tgt].write(",\n")
+                        else:
+                            first[tgt] = False
+                        outs[tgt].write(json.dumps(obj))
+
+                        global_counts[b] += 1
+                        total_pairs += 1
+                        if (s_j > 0.5) and (c_j < 0.5):
+                            succ_pairs += 1
+
+    for k, f in outs.items():
+        f.write("\n]"); f.close()
+
+    if total_pairs > 0:
+        succ_rate = succ_pairs / total_pairs
+        print(f"[direct] GLOBAL: pairs={total_pairs}  success_rate={succ_rate:.3f}  (target={TARGET_SUCCESS_RATE:.3f})")
+        for k in ("SMALL","MEDIUM","ADJACENT","OPPOSITE"):
+            n = global_counts[k]
+            print(f"         {k:<8} {n:>8}  {n/total_pairs:6.3f}")
+
+    train_stats = _count_split_file(train_p)
+    val_stats   = _count_split_file(val_p)
+    test_stats  = _count_split_file(test_p)
+
+    print(f"train.json: n={train_stats['n']}  success_rate={train_stats['succ_rate']:.3f}  collision_rate={train_stats['coll_rate']:.3f}")
+    print(f"val.json:   n={val_stats['n']}    success_rate={val_stats['succ_rate']:.3f}    collision_rate={val_stats['coll_rate']:.3f}")
+    print(f"test.json:  n={test_stats['n']}   success_rate={test_stats['succ_rate']:.3f}   collision_rate={test_stats['coll_rate']:.3f}")
+
 # ============================ 4) SANITY (light) ============================
 
 def run_sanity_checks(data_dir: str = DATA_DIR,
@@ -467,7 +697,9 @@ def run_sanity_checks(data_dir: str = DATA_DIR,
     for fp in files:
         d = json.load(open(fp, "r"))
         n = len(d["t_loc_list"])
-        assert n == len(d["R_loc6_list"]) == len(d["final_object_poses"]) == len(d["final_face_ids"]) == len(d["object_dimensions"]) == len(d["success_labels"]) == len(d["collision_labels"])
+        assert n == len(d["R_loc6_list"]) == len(d["init_object_poses"]) == len(d["final_object_poses"]) \
+            == len(d["final_face_ids"]) == len(d["object_dimensions"]) == len(d["success_labels"]) \
+            == len(d["collision_labels"])
         print(f"  {os.path.basename(fp)}: n={n}")
 
     comb_dir = os.path.join(data_dir, combined_subdir)
@@ -486,7 +718,5 @@ def run_sanity_checks(data_dir: str = DATA_DIR,
 # ============================ main ============================
 
 if __name__ == "__main__":
-    build_rich_pairs()
-    combine_processed_data()
-    split_all_data()
-    run_sanity_checks()
+    # Direct streaming path: raw_data -> train/val/test (no intermediates)
+    direct_split_from_raw()

@@ -1218,6 +1218,7 @@ def transform_relative_pose(grasp_pose, relative_translation, relative_rotation=
 
 def local_transform(pose, offset):
     """Apply offset in the local frame of the pose"""
+    print(f"Pose: {pose}, Offset: {offset}")
     from pyquaternion import Quaternion
     position = pose[:3]
     orientation = pose[3:]
@@ -1240,7 +1241,7 @@ def local_transform(pose, offset):
     q_new = Quaternion(matrix=T_result[:3, :3])
     new_orientation = q_new.elements.tolist()  # [w, x, y, z]
     
-    return new_position + new_orientation
+    return [new_position, new_orientation]
 
 
 

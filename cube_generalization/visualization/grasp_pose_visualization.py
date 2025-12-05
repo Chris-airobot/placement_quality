@@ -13,9 +13,13 @@ Grasp pose visualizer (positions from generate_contact_metadata + surface-frame 
 """
 
 import numpy as np
-from typing import List, Tuple, Iterable
+import os
+import json
+from typing import List, Tuple, Iterable, Optional, Dict
 
 from isaacsim import SimulationApp
+import math
+import argparse
 
 CONFIG = {
     "width": 1920,
@@ -44,7 +48,7 @@ from placement_quality.ycb_simulation.utils.helper import local_transform
 # Pose/contact utilities from your grasp code
 
 from placement_quality.cube_generalization.grasp_pose_generator import (
-    generate_grasp_poses,
+    generate_grasp_poses_including_bottom_updated,
     six_face_up_orientations,
     pose_from_R_t
 )
@@ -84,7 +88,7 @@ MIN_PALM_CLEAR = 0.01
 APPROACH_BACKOFF = 0.09
 
 # Toggle to quickly enable/disable clearance filters
-ENABLE_CLEARANCE_FILTERS = True
+ENABLE_CLEARANCE_FILTERS = False
 
 # Tilt controls (no yaw). 90° means no change relative to surface frame
 ENABLE_TILT = True
@@ -105,52 +109,89 @@ EXTRA_INSERT = -0.0334
 # -----------------------------
 # 1) Contact position sampler (your function)
 # -----------------------------
-def generate_contact_metadata(dims: np.ndarray, approach_offset: float = 0.01, G_max: float = 0.08):
+def generate_contact_metadata(
+    dims_xyz: np.ndarray,
+    approach_offset: float = 0.01,
+    u_fracs_long: Tuple[float, ...] = (0.20, 0.35, 0.50, 0.65, 0.80),
+    v_fracs_short: Tuple[float, ...] = (0.35, 0.50, 0.65),
+    include_faces: Optional[Tuple[str, ...]] = None,
+) -> List[Dict]:
     """
-    Computes up to 18 local contact points on a cuboid's 6 faces (3 per face),
-    with metadata for approach, binormal, psi_max, and outward normal.
+    Generate a 2-D lattice of local contact points per face of a cuboid.
+
+    - For each face, define in-plane axes ej (index j) and ek (index k).
+    - 'u' moves along the *longer* in-plane side; 'v' moves along the *shorter* side.
+    - Closing axis 'axis' is the unit vector along the shorter in-plane side.
+    - Approach is -normal (into the object), so Z_tool aligns with approach later.
+
+    Returns a list of dicts with keys:
+      'face', 'u_frac', 'v_frac', 'fraction' (alias of the long-side frac for backward-compat),
+      'p_local' (3,), 'approach' (3,), 'binormal' (3,), 'normal' (3,), 'axis' (3,)
     """
-    metadata = []
+    metadata: List[Dict] = []
+
+    # Face index mapping: (i, j, k) => normal axis index, two in-plane axis indices
     face_axes = {
-        '+X': (0,1,2), '-X': (0,1,2),
-        '+Y': (1,0,2), '-Y': (1,0,2),
-        '+Z': (2,0,1), '-Z': (2,0,1),
+        '+X': (0, 1, 2), '-X': (0, 1, 2),
+        '+Y': (1, 0, 2), '-Y': (1, 0, 2),
+        '+Z': (2, 0, 1), '-Z': (2, 0, 1),
     }
-    fractions = [0.25, 0.50, 0.75]
-    half = dims * 0.5
+
+    dims_xyz = np.asarray(dims_xyz, dtype=float)
+    half = 0.5 * dims_xyz
+    I = np.eye(3)
 
     for face, (i, j, k) in face_axes.items():
-        sign = 1 if face[0] == '+' else -1
-        normal   = sign * np.eye(3)[i]      # outward face normal
-        approach = -normal                  # gripper approach direction
+        if include_faces is not None and face not in include_faces:
+            continue
 
-        ej = np.eye(3)[j]
-        ek = np.eye(3)[k]
-        du, dv = dims[j], dims[k]
-        long_vec, long_len = (ej, du) if du >= dv else (ek, dv)
-        axis_vec = ek if du >= dv else ej  # shorter edge as closing axis
-        axis = axis_vec / np.linalg.norm(axis_vec)
-        binormal = np.cross(approach, axis)    # Z × X  (right-handed)
+        sign = 1.0 if face[0] == '+' else -1.0
+        normal = sign * I[i]                  # outward face normal
+        approach = -normal                    # tool approaches into the face
+
+        ej, ek = I[j], I[k]                   # in-plane unit axes (object frame)
+        dj, dk = float(dims_xyz[j]), float(dims_xyz[k])
+
+        # Decide which in-plane side is long vs short
+        long_axis, long_len, short_axis, short_len = (ej, dj, ek, dk) if dj >= dk else (ek, dk, ej, dj)
+
+        # Closing axis is along the *shorter* in-plane side
+        axis = short_axis / (np.linalg.norm(short_axis) + 1e-12)
+
+        # Binormal completes the orthogonal set in the face plane
+        binormal = np.cross(approach, axis)
         binormal /= (np.linalg.norm(binormal) + 1e-12)
-        # DEBUG: handedness check for the face basis you’re about to store
-        triple = np.dot(np.cross(axis, binormal), approach)  # should be +1 after the fix
-        print(f"[META] face={face:>2s} axis={axis} approach={approach} binormal={binormal}  (XxY)·Z={triple:+.0f}")
 
+        # Base point: slightly outside the surface along the face normal
+        base = normal * (half[i] + float(approach_offset))
 
-        base = normal * (half[i] + approach_offset)
-        for frac in fractions:
-            offset = (frac - 0.5) * long_len
-            p_local = base + long_vec * offset
-            metadata.append({
-                'face':     face,
-                'fraction': frac,
-                'p_local':  p_local,
-                'approach': approach,
-                'binormal': binormal,
-                'normal':   normal,
-                'axis':     axis
-            })
+        # 2-D lattice over the face (u along long side, v along short side)
+        for u in u_fracs_long:
+            for v in v_fracs_short:
+                # Convert center-biased fractions to offsets in meters
+                offset_u = (float(u) - 0.5) * long_len
+                offset_v = (float(v) - 0.5) * short_len
+
+                # Build contact point in the object frame
+                p_local = base + long_axis * offset_u + short_axis * offset_v
+
+                # Back-compat 'fraction' = frac along the long side (old code used 1-D along long)
+                frac_alias = float(u)
+
+                metadata.append({
+                    'face': face,
+                    'u_frac': float(u),
+                    'v_frac': float(v),
+                    'fraction': frac_alias,          # backward compatibility
+                    'p_local': p_local.astype(float),
+                    'approach': approach.astype(float),
+                    'binormal': binormal.astype(float),
+                    'normal': normal.astype(float),
+                    'axis': axis.astype(float),      # closing axis (short side)
+                })
+
     return metadata
+
 
 # -----------------------------
 # 2) Surface-frame orientation (no tilts), then map to world
@@ -330,7 +371,7 @@ def ensure_cuboid(world: World, prim_path: str, size_xyz: np.ndarray, color_rgb=
     obj = VisualCuboid(
         prim_path=prim_path,
         name=prim_path.split('/')[-1],
-        position=np.zeros(3),
+        position=np.ones(3),
         orientation=np.array([1.0, 0.0, 0.0, 0.0]),  # wxyz
         scale=np.array(size_xyz, dtype=float),
         color=np.array(color_rgb, dtype=float),
@@ -359,7 +400,7 @@ def setup_kinematics(articulation: Articulation) -> ArticulationKinematicsSolver
 # -----------------------------
 # 4) Main
 # -----------------------------
-def main():
+def main(args):
     world = World(stage_units_in_meters=1.0, physics_dt=1.0 / 60.0)
     world.scene.add_default_ground_plane()
     setup_lighting()
@@ -368,151 +409,286 @@ def main():
 
     # Object dims and orientation
     # dims_xyz = np.array(sample_dims(1, seed=77)[0], dtype=float) * 1.5
-    dims_xyz = np.array([0.111, 0.149, 0.05], dtype=float)
+    dims_xyz = np.array([0.143, 0.0915, 0.051], dtype=float)
     R_init = six_face_up_orientations(spin_degs=(INIT_SPIN_DEG,))["+Z"][0]
 
     # Base pedestal top (reference height for first instance)
     t_base = np.array([0.0, 0.0, PEDESTAL_TOP_Z], dtype=float)
 
-    # Generate all candidate grasps once (we will index into this list per cell)
-    base_t_obj = np.array([0.0, 0.0, PEDESTAL_TOP_Z], dtype=float)
-    grasps_all = generate_grasp_poses(
+    # Export all grasps in OBJECT frame (call with identity pose)
+    local_R = np.eye(3, dtype=float)
+    local_t = np.zeros(3, dtype=float)
+    grasps_object_frame = generate_grasp_poses_including_bottom_updated(
         dims_xyz=dims_xyz,
-        R_obj_to_world=R_init,
-        t_obj_world=base_t_obj,
-        filter_by_gripper_open=True,
-        enable_tilt=ENABLE_TILT, tilt_deg=TILT_DEG,
-        enable_yaw=ENABLE_YAW,  yaw_deg=YAW_DEG,
-        enable_roll=ENABLE_ROLL, roll_deg=ROLL_DEG,
-        apply_hand_to_tcp=False,
+        R_obj_to_world=local_R,
+        t_obj_world=local_t,
+        include_faces=('+X','-X','+Y','-Y'),
+        # Straight grasps only (no yaw/tilt/roll)
+        yaw_set=(0.0,),
+        tilt_set=(0.0,),
+        roll_set=(0.0,),
+        # 10 contacts per face: 5 along long side x 2 along short side
+        # (keep default long-side samples; reduce short-side to 2 center-biased samples)
+        u_fracs_long=(0.20, 0.35, 0.50, 0.65, 0.80),
+        v_fracs_short=(0.45, 0.55),
     )
-    grasps_all = grasps_all[: GRID_COLS * GRID_ROWS]
-    print(f"Contacts (metadata) kept for visualization: {len(grasps_all)}")
+    # === NEW: save in a format compatible with your loader (numeric string keys) ===
+    grasp_lib = {}
+    for idx, g in enumerate(grasps_object_frame):
+        # Because R_obj_to_world is identity here, these are OBJECT-frame values
+        pos_obj = (g.get('p_local', g['contact_position_world']))
+        quat_obj_wxyz = g['tool_quaternion_wxyz']
 
-    robots: List[Articulation] = []
-    ik_solvers: List[ArticulationKinematicsSolver] = []
-    targets: List[XFormPrim] = []
+        grasp_lib[str(idx)] = {
+            # Back-compat fields your code already uses:
+            "position": np.asarray(pos_obj, dtype=float).tolist(),
+            "orientation_wxyz": np.asarray(quat_obj_wxyz, dtype=float).tolist(),
 
-    colors = [
-        (0.8, 0.2, 0.2), (0.2, 0.8, 0.2), (0.2, 0.2, 0.8),
-        (0.8, 0.8, 0.2), (0.8, 0.2, 0.8), (0.2, 0.8, 0.8),
-        (1.0, 0.5, 0.0), (0.5, 0.0, 1.0), (0.0, 1.0, 0.5),
-        (1.0, 0.0, 0.5), (0.5, 1.0, 0.0), (0.0, 0.5, 1.0),
-        (1.0, 1.0, 0.0), (0.0, 1.0, 1.0), (1.0, 0.0, 1.0),
+            # Extra metadata for smarter pairing / analysis (safe to ignore in runtime):
+            "face": g.get("face"),
+            "u_frac": g.get("u_frac"),
+            "v_frac": g.get("v_frac"),
+            "axis_obj": np.asarray(g.get("axis_obj"), dtype=float).tolist() if g.get("axis_obj") is not None else None,
+            "angles_deg": g.get("angles_deg"),
+            "dims_xyz": np.asarray(dims_xyz, dtype=float).tolist(),  # duplicated per entry to avoid non-numeric top keys
+            "version": 2
+        }
+
+    out_path = "/home/chris/Chris/placement_ws/src/40_grasps_meta_data.json"  # <-- set this to your desired file path
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w") as f:
+        json.dump(grasp_lib, f, indent=2)
+    print(f"Saved {len(grasp_lib)} grasps to {out_path}")
+
+
+
+    export_data = {}
+    for idx, g in enumerate(grasps_object_frame, start=1):
+        p = list(map(float, np.asarray(g['contact_position_world'], dtype=float).tolist()))
+        q = list(map(float, np.asarray(g['tool_quaternion_wxyz'], dtype=float).tolist()))
+        export_data[str(idx)] = {
+            "position": p,
+            "orientation_wxyz": q,
+        }
+    out_path = "/home/chris/Chris/placement_ws/src/40_grasps.json"
+    with open(out_path, "w") as f:
+        json.dump(export_data, f, indent=2)
+    print(f"Saved {len(export_data)} object-frame grasps to {out_path}")
+
+        # === Visualization setup: single object + single robot ===
+
+    # Put one pedestal at the origin in XY
+    cell_xy = np.array([0.0, 0.0], dtype=float)
+    ped_center = np.array([cell_xy[0], cell_xy[1], PEDESTAL_CENTER_Z], dtype=float)
+    ped_top_z  = float(ped_center[2] + 0.5 * PEDESTAL_HEIGHT)
+
+    # Object pose: resting on the pedestal
+    half_extents = 0.5 * dims_xyz
+    h_z = float(np.sum(np.abs(R_init[2, :]) * half_extents))  # projected half-height along world Z
+    t_obj = np.array([cell_xy[0], cell_xy[1], ped_top_z + h_z], dtype=float)
+    pos_obj, quat_obj = pose_from_R_t(R_init, t_obj)
+
+    # === Build contacts from generate_contact_metadata (multiple positions per face) ===
+    # Bottom face excluded, side faces only
+    meta_all = generate_contact_metadata(
+        dims_xyz=dims_xyz,
+        approach_offset=0.01,
+        include_faces=("+X", "-X", "+Y", "-Y"),
+        # u_fracs_long / v_fracs_short defaults give 5 x 3 = 15 positions per face
+    )
+
+    grasps_all: List[Dict] = []
+    for meta in meta_all:
+        # Local contact position (object frame)
+        p_local = np.asarray(meta["p_local"], dtype=float)  # (3,)
+
+        # World contact position: p_world = R_init @ p_local + t_obj
+        p_world = R_init @ p_local + t_obj
+
+        # Tool orientation from surface frame + short edge axis
+        R_tool, q_wxyz = build_tool_orientation_from_meta(
+            meta,
+            R_init_obj_to_world=R_init,
+        )
+
+        # Face normal in world (for the cos(theta) correction later)
+        normal_obj = np.asarray(meta["normal"], dtype=float)
+        face_normal_world = R_init @ normal_obj
+
+        grasps_all.append(
+            {
+                "contact_position_world": p_world,
+                "tool_quaternion_wxyz": q_wxyz,
+                "tool_rotation": R_tool,
+                "face_normal_world": face_normal_world,
+                "face": meta["face"],
+                "u_frac": meta["u_frac"],
+                "v_frac": meta["v_frac"],
+                "p_local": p_local,
+            }
+        )
+
+    total = len(grasps_all)
+    num_to_show = total if int(args.num_grasps) < 0 else min(int(args.num_grasps), total)
+    grasps_all = grasps_all[:num_to_show]
+    print(f"Contacts available: {total}; will cycle through: {len(grasps_all)}")
+
+    if len(grasps_all) == 0:
+        print("WARNING: grasps_all is empty – nothing to visualize.")
+        # Keep going so you at least see the object and robot idle.
+
+    # Pre-cache face normals for IK offset (same length/order as grasps_all)
+    face_normals_world: List[np.ndarray] = [
+        np.asarray(g["face_normal_world"], dtype=float) for g in grasps_all
     ]
 
-    valid_contacts = 0
-    face_normals_world: List[np.ndarray] = []
-    for i, g in enumerate(grasps_all):
-        row = i // GRID_COLS
-        col = i % GRID_COLS
-        cell_xy = np.array([col * CELL_SPACING_X, -row * CELL_SPACING_Y], dtype=float)
 
-        # Per-cell pedestal geometry (compute top height for clearance checks)
-        ped_center = np.array([cell_xy[0], cell_xy[1], PEDESTAL_CENTER_Z], dtype=float)
-        ped_top_z  = float(ped_center[2] + 0.5 * PEDESTAL_HEIGHT)
 
-        # Object pose at this cell (same rotation R_init)
-        half_extents = 0.5 * dims_xyz
-        h_z = float(np.sum(np.abs(R_init[2, :]) * half_extents))  # projected half-height onto world Z
-        t_obj = np.array([cell_xy[0], cell_xy[1], ped_top_z + h_z], dtype=float)
-        pos_obj, quat_obj = pose_from_R_t(R_init, t_obj)
-        # Compute per-cell grasp by re-generating for this t_obj and using the i-th index
-        grasps_cell = generate_grasp_poses(
-            dims_xyz=dims_xyz,
-            R_obj_to_world=R_init,
-            t_obj_world=t_obj,
-            enable_tilt=ENABLE_TILT, tilt_deg=TILT_DEG,
-            enable_yaw=ENABLE_YAW,  yaw_deg=YAW_DEG,
-            enable_roll=ENABLE_ROLL, roll_deg=ROLL_DEG,
-            apply_hand_to_tcp=False,
-        )
-        if i >= len(grasps_cell):
-            continue
-        g_cell = grasps_cell[i]
-        p_world = np.array(g_cell['contact_position_world'], dtype=float)
-        q_wxyz = np.array(g_cell['tool_quaternion_wxyz'], dtype=float)
-        R_tool = np.array(g_cell['tool_rotation'], dtype=float)
-        n_face_world = np.array(g_cell['face_normal_world'], dtype=float)
 
-        # Clearance checks (toggleable)
-        if ENABLE_CLEARANCE_FILTERS:
-            if not passes_clearance(p_world, ped_top_z, R_tool,
-                                    MIN_CLEARANCE, MIN_PALM_CLEAR,
-                                    PALM_DEPTH, APPROACH_BACKOFF, FINGER_THICK):
-                continue
+    # --- Create scene prims (one of each) ---
 
-        # Now create visuals only for valid contacts
-        ped = VisualCylinder(
-            prim_path=f"/World/Pedestal_{i:02d}",
-            name=f"pedestal_{i:02d}",
-            position=ped_center,
-            radius=float(PEDESTAL_RADIUS),
-            height=float(PEDESTAL_HEIGHT),
-            color=np.array([0.6, 0.6, 0.6], dtype=float),
-        )
-        world.scene.add(ped)
+    ped = VisualCylinder(
+        prim_path="/World/Pedestal",
+        name="pedestal",
+        position=ped_center,
+        radius=float(PEDESTAL_RADIUS),
+        height=float(PEDESTAL_HEIGHT),
+        color=np.array([0.6, 0.6, 0.6], dtype=float),
+    )
+    world.scene.add(ped)
 
-        cube = ensure_cuboid(world, f"/World/Object_{i:02d}", dims_xyz, color_rgb=colors[i % len(colors)])
-        cube.set_world_pose(np.array(pos_obj, dtype=float), np.array(quat_obj, dtype=float))
+    cube = ensure_cuboid(world, "/World/Object", dims_xyz, color_rgb=(0.8, 0.8, 0.8))
+    cube.set_world_pose(np.array(pos_obj, dtype=float), np.array(quat_obj, dtype=float))
 
-        # Visual markers
-        contact_sphere = ensure_sphere(world, f"/World/contacts/sphere_{i:02d}", SPHERE_RADIUS, (1.0, 0.2, 0.2))
+    contact_sphere = ensure_sphere(
+        world,
+        prim_path="/World/contacts/sphere",
+        radius=SPHERE_RADIUS,
+        color_rgb=(1.0, 0.2, 0.2),
+    )
+
+    contact_frame = add_frame_prim("/World/contacts/contact_frame")
+    target = add_frame_prim("/World/target")
+
+    robot = add_franka(world, "/World/panda", name="franka_robot")
+    base_pose = np.array([t_obj[0], t_obj[1], 0.0], dtype=float) + ROBOT_BASE_OFFSET
+    robot.set_world_pose(base_pose, np.array([1.0, 0.0, 0.0, 0.0]))
+    kin = setup_kinematics(robot)
+
+    # --- Small helper to apply a given grasp index to the visuals ---
+
+    def apply_grasp(idx: int) -> Tuple[np.ndarray, np.ndarray]:
+        g = grasps_all[idx]
+        p_world = np.array(g["contact_position_world"], dtype=float)
+        q_wxyz = np.array(g["tool_quaternion_wxyz"], dtype=float)
+
         contact_sphere.set_world_pose(p_world, np.array([1.0, 0.0, 0.0, 0.0]))
-        frame = add_frame_prim(f"/World/contacts/contact_{i:02d}")
-        frame.set_world_pose(p_world, q_wxyz)
+        contact_frame.set_world_pose(p_world, q_wxyz)
+        target.set_world_pose(p_world, q_wxyz)
 
-        # Robot + IK target
-        robot = add_franka(world, f"/World/panda_{i:02d}", name=f"franka_robot_{i:02d}")
-        base_pose = np.array([t_obj[0], t_obj[1], 0.0], dtype=float) + ROBOT_BASE_OFFSET
-        robot.set_world_pose(base_pose, np.array([1.0, 0.0, 0.0, 0.0]))
-        kin = setup_kinematics(robot)
+        # For debugging
+        face_lbl = g.get("face", "?")
+        u_frac = g.get("u_frac", None)
+        v_frac = g.get("v_frac", None)
+        p_local = np.array(g.get("p_local", [np.nan, np.nan, np.nan]), dtype=float)
+        print(
+            f"[Grasp {idx:03d}] face={face_lbl} "
+            f"p_local={np.round(p_local, 4).tolist()} "
+            f"u={u_frac} v={v_frac}"
+        )
+        return p_world, q_wxyz
 
-        tgt = add_frame_prim(f"/World/target_{i:02d}")
-        tgt.set_world_pose(p_world, q_wxyz)
+    # Initialize default states
+    ped.set_default_state(ped_center, np.array([1.0, 0.0, 0.0, 0.0]))
+    cube.set_default_state(pos_obj, quat_obj)
 
-        robots.append(robot)
-        ik_solvers.append(kin)
-        targets.append(tgt)
-        face_normals_world.append(n_face_world)
-        valid_contacts += 1
+    # If there are grasps, set the first one as the default visual state
+    if len(grasps_all) > 0:
+        p0, q0 = apply_grasp(0)
+    else:
+        p0 = pos_obj
+        q0 = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
 
-        # Default states (for clean reload)
-        ped.set_default_state(ped_center, np.array([1.0, 0.0, 0.0, 0.0]))
-        cube.set_default_state(pos_obj, quat_obj)
-        frame.set_default_state(p_world, q_wxyz)
-        tgt.set_default_state(p_world, q_wxyz)
-        XFormPrim(robot.prim_path).set_default_state(base_pose, np.array([1.0, 0.0, 0.0, 0.0]))
-        contact_sphere.set_default_state(p_world, np.array([1.0, 0.0, 0.0, 0.0]))
+    contact_sphere.set_default_state(p0, np.array([1.0, 0.0, 0.0, 0.0]))
+    contact_frame.set_default_state(p0, q0)
+    target.set_default_state(p0, q0)
+    XFormPrim(robot.prim_path).set_default_state(
+        base_pose, np.array([1.0, 0.0, 0.0, 0.0])
+    )
 
-    print(f"Valid contacts visualized: {valid_contacts}")
+    print(f"Valid contacts to cycle through: {len(grasps_all)}")
     world.reset()
     print("Starting simulation loop...")
 
-    try:
-        while simulation_app.is_running():
-            for i, (robot, kin, tgt) in enumerate(zip(robots, ik_solvers, targets)):
-                tgt_pos, tgt_quat = tgt.get_world_pose()
-                target_pose = tgt_pos.tolist() + tgt_quat.tolist()
-                # Orientation-aware offset along local -Z (panda_hand -> TCP), corrected by cos(theta)
-                R_tgt = R.from_quat([tgt_quat[1], tgt_quat[2], tgt_quat[3], tgt_quat[0]]).as_matrix()
-                z_tool_w = R_tgt[:, 2]
-                n_face_w = face_normals_world[i]
-                cos_theta = max(1e-3, -float(np.dot(z_tool_w, n_face_w)))
-                z_local = -(float(HAND_TO_TCP_Z) + float(EXTRA_INSERT)) / cos_theta
-                fixed_grasp_pose = local_transform(target_pose, [0.0, 0.0, float(z_local)])
-                grasp_position = np.array(fixed_grasp_pose[:3], dtype=float)
-                grasp_orientation = np.array(fixed_grasp_pose[3:], dtype=float)
+        # --- Simulation loop: cycle through grasps one-by-one ---
+    steps_per_grasp = 18  # ~3 seconds per grasp at 60Hz
+    current_idx = 0        # which grasp is currently active
+    frames_left = steps_per_grasp
 
-                base_p, base_q = robot.get_world_pose()
-                kin._kinematics_solver.set_robot_base_pose(base_p, base_q)
-                action, ok = kin.compute_inverse_kinematics(grasp_position, grasp_orientation)
-                if ok:
-                    robot.apply_action(action)
-            world.step(render=True)
-    finally:
-        simulation_app.close()
+    while simulation_app.is_running():
+        if len(grasps_all) > 0:
+            # When frames for this grasp are exhausted, switch to the next one
+            if frames_left <= 0:
+                current_idx = (current_idx + 1) % len(grasps_all)
+                p_world, q_wxyz = apply_grasp(current_idx)
+                frames_left = steps_per_grasp
+
+            # IK to the current target
+                       # IK to the current target
+            tgt_pos, tgt_quat = target.get_world_pose()
+            target_pose = tgt_pos.tolist() + tgt_quat.tolist()
+
+            # Orientation-aware Z offset from panda_hand to TCP
+            R_tgt = R.from_quat(
+                [tgt_quat[1], tgt_quat[2], tgt_quat[3], tgt_quat[0]]
+            ).as_matrix()
+            z_tool_w = R_tgt[:, 2]
+            n_face_w = face_normals_world[current_idx]
+
+            cos_theta = max(1e-3, -float(np.dot(z_tool_w, n_face_w)))
+            z_local = -(float(HAND_TO_TCP_Z) + float(EXTRA_INSERT)) / cos_theta
+
+            fixed_grasp_pose = local_transform(target_pose, [0.0, 0.0, float(z_local)])
+
+            # --- Robustly handle local_transform output shape ---
+            # Case 1: (pos, quat)
+            if isinstance(fixed_grasp_pose, (tuple, list)) and len(fixed_grasp_pose) == 2:
+                pos_part, quat_part = fixed_grasp_pose
+                grasp_position = np.asarray(pos_part, dtype=float).reshape(3)
+                grasp_orientation = np.asarray(quat_part, dtype=float).reshape(4)
+            else:
+                # Case 2: flat [x, y, z, w, x, y, z]
+                fixed_arr = np.asarray(fixed_grasp_pose, dtype=float).ravel()
+                if fixed_arr.shape[0] != 7:
+                    raise RuntimeError(
+                        f"local_transform returned shape {fixed_arr.shape}, expected 7 "
+                        f"(either (pos, quat) or flat 7D pose)."
+                    )
+                grasp_position = fixed_arr[:3]
+                grasp_orientation = fixed_arr[3:]
+
+            base_p, base_q = robot.get_world_pose()
+            kin._kinematics_solver.set_robot_base_pose(base_p, base_q)
+
+            action, ok = kin.compute_inverse_kinematics(grasp_position, grasp_orientation)
+            if ok:
+                robot.apply_action(action)
+
+
+            frames_left -= 1
+
+        # Even if there are no grasps, still step the world so the window stays alive
+        world.step(render=True)
+
+
+
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Grasp pose visualization")
+    parser.add_argument("--num-grasps", type=int, default=36,
+                        help="Number of grasps to visualize (-1 for all)")
+    parser.add_argument("--grid-cols", type=int, default=6,
+                        help="Number of columns in the grid layout")
+    args = parser.parse_args()
+    main(args)
